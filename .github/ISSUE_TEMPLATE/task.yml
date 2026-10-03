@@ -1,0 +1,32 @@
+name: Development task
+description: Capture a scoped task with acceptance criteria and verification evidence.
+title: "[Task]: "
+labels: [sdlc]
+body:
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Intended outcome
+      description: What should a user be able to do after this change?
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List observable conditions that establish completion.
+      placeholder: "- [ ] ..."
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and constraints
+      description: Affected packages, dependencies, runtime versions, and exclusions.
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification plan
+      description: Tests, isolated reproductions, and evidence needed for review.
+    validations:
+      required: true
