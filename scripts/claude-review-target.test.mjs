@@ -94,3 +94,11 @@ test("rejects an invalid dispatch PR number without exporting a checkout SHA", (
   assert.notEqual(result.status, 0);
   assert.equal(result.output, "");
 });
+
+test("review tools cannot execute shell commands or read credential files", () => {
+  const review = workflow.jobs["claude-review"].steps.find(step => step.name === "Review pull request");
+  assert.ok(review.with.claude_args.includes('--tools ""'));
+  assert.ok(review.with.claude_args.includes("mcp__github__pull_request_read"));
+  assert.ok(review.with.claude_args.includes("mcp__github__add_issue_comment"));
+  assert.ok(!review.with.claude_args.includes("Bash("));
+});
