@@ -68,6 +68,7 @@ test("validates a trusted target without an undeclared jq dependency", () => {
 test("automatic secret reviews use protected base workflow code and the restricted environment", () => {
   assert.equal(workflow.on.pull_request, undefined);
   assert.deepEqual(workflow.on.pull_request_target?.branches, ["main"]);
+  assert.ok(workflow.on.pull_request_target.types.includes("edited"));
   assert.equal(workflow.jobs["claude-review"].environment, "claude-review");
 });
 

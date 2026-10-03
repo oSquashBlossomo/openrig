@@ -3,7 +3,7 @@ name: Claude Code Review
 on:
   pull_request_target:
     branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   workflow_dispatch:
     inputs:
       pull_request_number:
@@ -26,7 +26,8 @@ jobs:
     if: >-
       vars.CLAUDE_REVIEW_ENABLED == 'true' &&
       (github.event_name == 'workflow_dispatch' ||
-      (!github.event.pull_request.draft &&
+      ((github.event.action != 'edited' || github.event.changes.base.ref) &&
+      !github.event.pull_request.draft &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)))
     runs-on: ubuntu-latest
