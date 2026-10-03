@@ -77,7 +77,8 @@ For a manual Claude review after activation, use the CLI:
 gh workflow run claude-code-review.yml --repo oSquashBlossomo/openrig --ref main -f pull_request_number=6
 ```
 
-The manual path validates the same trusted-branch and author conditions before
+The manual path requires a base in this fork's protected `main` and validates
+the same trusted-head and author conditions before
 loading Claude credentials. It can review the merged setup PR as an activation
 check. This workflow responds to automatic PR events and manual dispatch, not
 to `@claude` mentions.

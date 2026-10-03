@@ -44,6 +44,8 @@ jobs:
           gh api "repos/$REVIEW_REPOSITORY/pulls/$REVIEW_PR_NUMBER" > "$RUNNER_TEMP/review-target.json"
           jq -e --arg repo "$REVIEW_REPOSITORY" '
             .head.repo.full_name == $repo and
+            .base.repo.full_name == $repo and
+            .base.ref == "main" and
             .draft == false and
             (.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR")
           ' "$RUNNER_TEMP/review-target.json" > /dev/null
