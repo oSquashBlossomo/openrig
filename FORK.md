@@ -47,14 +47,17 @@ Do not start a development daemon against production state or provider settings.
 ## Reviews
 
 Codex's GitHub connector must cover this fork, and automatic review must be
-enabled in Codex's repository review settings. An installed connector alone
+enabled in [Codex's repository review settings](https://chatgpt.com/codex/cloud/settings/code-review).
+This fork is set to review all PRs and every push. An installed connector alone
 does not enable reviews. Use `@codex review` in a PR comment for a manual pass.
 Codex follows `AGENTS.md`. See the
 [official setup](https://learn.chatgpt.com/docs/third-party/github).
 
 Claude uses `.github/workflows/claude-code-review.yml` and follows `CLAUDE.md`
 and `AGENTS.md`. The Claude GitHub app must cover this repository and the
-repository must have the `CLAUDE_CODE_OAUTH_TOKEN` Actions secret. Generate a
+repository must have the `CLAUDE_CODE_OAUTH_TOKEN` Actions secret. Once that
+secret is installed, set repository variable `CLAUDE_REVIEW_ENABLED` to `true`.
+Until then, Claude jobs are explicitly skipped. Generate a
 dedicated token with `claude setup-token`; never put it in an issue, PR, file,
 command argument, or chat. Use GitHub's hidden secret input or `gh secret set`
 with standard input. See the
@@ -65,6 +68,19 @@ this fork. It does not receive secrets for external-fork PRs. It checks out the
 base revision and reads the diff via GitHub; PR code is not executed. External
 contributions can receive Codex review and an independent local Claude review.
 Claude runs have a timeout and turn limit. Subscription usage still applies.
+The workflow must be merged into main before Claude's GitHub app will trust it;
+its bootstrap PR can show a successful workflow-validation skip without a review.
+
+For a manual Claude review after activation, use the CLI:
+
+```sh
+gh workflow run claude-code-review.yml --repo oSquashBlossomo/openrig --ref main -f pull_request_number=6
+```
+
+The manual path validates the same trusted-branch and author conditions before
+loading Claude credentials. It can review the merged setup PR as an activation
+check. This workflow responds to automatic PR events and manual dispatch, not
+to `@claude` mentions.
 
 Review activation is complete only after a PR receives actual reviewer output.
 Keep setup issue #1 open until both integrations and required checks are verified.
