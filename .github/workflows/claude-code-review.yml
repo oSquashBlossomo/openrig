@@ -1,7 +1,7 @@
 name: Claude Code Review
 
 on:
-  pull_request:
+  pull_request_target:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
@@ -30,6 +30,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)))
     runs-on: ubuntu-latest
+    environment: claude-review
     timeout-minutes: 20
     steps:
       - name: Validate review target
@@ -42,15 +43,16 @@ jobs:
           set -euo pipefail
           [[ "$REVIEW_PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo 'Invalid PR number'; exit 1; }
           gh api "repos/$REVIEW_REPOSITORY/pulls/$REVIEW_PR_NUMBER" > "$RUNNER_TEMP/review-target.json"
-          jq -e --arg repo "$REVIEW_REPOSITORY" '
-            .head.repo.full_name == $repo and
-            .base.repo.full_name == $repo and
-            .base.ref == "main" and
-            .draft == false and
-            (.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR")
-          ' "$RUNNER_TEMP/review-target.json" > /dev/null
-          printf 'number=%s\n' "$REVIEW_PR_NUMBER" >> "$GITHUB_OUTPUT"
-          printf 'base=%s\n' "$(jq -r '.base.sha' "$RUNNER_TEMP/review-target.json")" >> "$GITHUB_OUTPUT"
+          node <<'NODE'
+          const fs = require('node:fs');
+          const { REVIEW_REPOSITORY: repo, REVIEW_PR_NUMBER: number, RUNNER_TEMP: directory, GITHUB_OUTPUT: output } = process.env;
+          const target = JSON.parse(fs.readFileSync(`${directory}/review-target.json`, 'utf8'));
+          const trusted = target.head?.repo?.full_name === repo &&
+            target.base?.repo?.full_name === repo && target.base.ref === 'main' &&
+            target.draft === false && ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(target.author_association);
+          if (!trusted) process.exit(1);
+          fs.appendFileSync(output, `number=${number}\nbase=${target.base.sha}\n`);
+          NODE
       - name: Verify Claude authentication is configured
         env:
           CLAUDE_REVIEW_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

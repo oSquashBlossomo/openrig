@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,21 +22,22 @@ function trustedTarget() {
   };
 }
 
-function validate(metadata, number = "6") {
+function validate(metadata, number = "6", nodeOnlyPath = false) {
   const directory = mkdtempSync(join(tmpdir(), "openrig-review-target-"));
   try {
     const fixture = join(directory, "fixture.json");
     const output = join(directory, "outputs");
     writeFileSync(fixture, JSON.stringify(metadata));
     // Only the GitHub transport is replaced. Execute the maintained workflow's
-    // complete validation shell step, including its real jq predicate.
-    writeFileSync(join(directory, "gh"), '#!/bin/sh\ncat "$REVIEW_TEST_FIXTURE"\n', { mode: 0o700 });
-    const result = spawnSync("bash", ["-c", targetStep.run], {
+    // complete validation shell step, including its real metadata predicate.
+    writeFileSync(join(directory, "gh"), '#!/bin/sh\n/bin/cat "$REVIEW_TEST_FIXTURE"\n', { mode: 0o700 });
+    symlinkSync(process.execPath, join(directory, "node"));
+    const result = spawnSync("/bin/bash", ["-c", targetStep.run], {
       encoding: "utf8",
       timeout: 5000,
       env: {
         ...process.env,
-        PATH: `${directory}:${process.env.PATH}`,
+        PATH: nodeOnlyPath ? directory : `${directory}:${process.env.PATH}`,
         GH_TOKEN: "test-fixture-only",
         REVIEW_TEST_FIXTURE: fixture,
         REVIEW_REPOSITORY: repository,
@@ -56,6 +57,18 @@ test("exports the exact PR number and protected-main base SHA for a trusted targ
   const result = validate(trustedTarget());
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.output, `number=6\nbase=${baseSha}\n`);
+});
+
+test("validates a trusted target without an undeclared jq dependency", () => {
+  const result = validate(trustedTarget(), "6", true);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.output, `number=6\nbase=${baseSha}\n`);
+});
+
+test("automatic secret reviews use protected base workflow code and the restricted environment", () => {
+  assert.equal(workflow.on.pull_request, undefined);
+  assert.deepEqual(workflow.on.pull_request_target?.branches, ["main"]);
+  assert.equal(workflow.jobs["claude-review"].environment, "claude-review");
 });
 
 for (const [name, mutate] of [

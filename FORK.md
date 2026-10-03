@@ -55,7 +55,9 @@ Codex follows `AGENTS.md`. See the
 
 Claude uses `.github/workflows/claude-code-review.yml` and follows `CLAUDE.md`
 and `AGENTS.md`. The Claude GitHub app must cover this repository and the
-repository must have the `CLAUDE_CODE_OAUTH_TOKEN` Actions secret. Once that
+`claude-review` environment must have the `CLAUDE_CODE_OAUTH_TOKEN` Actions
+secret. That environment allows execution only from `main`; do not store this
+credential as a repository-wide secret. Once that
 secret is installed, set repository variable `CLAUDE_REVIEW_ENABLED` to `true`.
 Until then, Claude jobs are explicitly skipped. Generate a
 dedicated token with `claude setup-token`; never put it in an issue, PR, file,
@@ -63,9 +65,12 @@ command argument, or chat. Use GitHub's hidden secret input or `gh secret set`
 with standard input. See the
 [official setup](https://code.claude.com/docs/en/github-actions).
 
-The workflow reviews ready PRs from trusted members whose branch belongs to
-this fork. It does not receive secrets for external-fork PRs. It checks out the
-base revision and reads the diff via GitHub; PR code is not executed. External
+The workflow uses `pull_request_target` so its definition comes from the
+protected base, and reviews ready PRs from trusted members whose branch belongs
+to this fork. The job is gated off for external-fork PRs. It checks out only a
+validated `main` base revision and reads the diff via GitHub; PR code is not
+executed. The environment's branch restriction also blocks feature-branch
+workflow definitions from receiving the Claude secret. External
 contributions can receive Codex review and an independent local Claude review.
 Claude runs have a timeout and turn limit. Subscription usage still applies.
 The workflow must be merged into main before Claude's GitHub app will trust it;
