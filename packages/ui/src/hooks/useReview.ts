@@ -6,6 +6,8 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
+import { boundedJsonRead } from "../lib/bounded-json-read.js";
+import { isObject, OperatorReadError } from "../lib/operator-read.js";
 
 // --- Contract mirror (subset of packages/daemon/src/domain/review/types.ts) ---
 
@@ -226,18 +228,24 @@ export interface ComposedRigAgents {
 
 // --- Hooks ---
 
-async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url, { signal: AbortSignal.timeout(5_000) });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return (await res.json()) as T;
+const exactIdentity = (value: string | null) => typeof value === "string" && !!value.trim();
+function requireIdentity(value: string | null) {
+  if (!exactIdentity(value)) throw new OperatorReadError("invalid_request", "Choose an exact review identity before reading.");
+}
+async function fetchReview<T>(url: string, signal: AbortSignal, field: string, identity: string): Promise<T> {
+  const value = await boundedJsonRead<T>(url, { signal });
+  // The daemon echoes folder names / AgentsScope verbatim. Nullable identifiers
+  // and additive composed evidence remain untouched; no identity is inferred.
+  if (!isObject(value) || value[field] !== identity) throw new OperatorReadError("invalid_contract", "Review response belongs to another selection or lacks its identity.");
+  return value;
 }
 
 export function useSliceReview(name: string | null) {
   const client = useQueryClient();
   const query = useQuery({
     queryKey: ["review", "slice", name],
-    queryFn: () => fetchJson<ComposedSliceReview>(`/api/review/slice/${encodeURIComponent(name!)}`),
-    enabled: !!name,
+    queryFn: ({ signal }) => { requireIdentity(name); return fetchReview<ComposedSliceReview>(`/api/review/slice/${encodeURIComponent(name!)}`, signal, "slice", name!); },
+    enabled: exactIdentity(name), retry: false, placeholderData: undefined,
     // Refresh-after-action rides invalidation (useInvalidateReview), not
     // window focus; keep a short staleTime so recompositions surface.
     staleTime: 15_000,
@@ -250,8 +258,8 @@ export function useMissionReview(name: string | null) {
   const client = useQueryClient();
   const query = useQuery({
     queryKey: ["review", "mission", name],
-    queryFn: () => fetchJson<ComposedMissionReview>(`/api/review/mission/${encodeURIComponent(name!)}`),
-    enabled: !!name,
+    queryFn: ({ signal }) => { requireIdentity(name); return fetchReview<ComposedMissionReview>(`/api/review/mission/${encodeURIComponent(name!)}`, signal, "mission", name!); },
+    enabled: exactIdentity(name), retry: false, placeholderData: undefined,
     staleTime: 15_000,
     refetchInterval: 30_000,
   });
@@ -259,10 +267,14 @@ export function useMissionReview(name: string | null) {
 }
 
 export function useReviewAgents(scope: AgentsScope | null) {
+  const validScope = scope === "rig" || (typeof scope === "string" && (scope.startsWith("slice:") || scope.startsWith("mission:")) && !!scope.slice(scope.indexOf(":") + 1).trim());
   return useQuery({
     queryKey: ["review", "agents", scope],
-    queryFn: () => fetchJson<AgentsBand>(`/api/review/agents?scope=${encodeURIComponent(scope!)}`),
-    enabled: !!scope,
+    queryFn: ({ signal }) => {
+      if (!validScope) throw new OperatorReadError("invalid_request", "Choose a supported review agents scope before reading.");
+      return fetchReview<AgentsBand>(`/api/review/agents?scope=${encodeURIComponent(scope!)}`, signal, "scope", scope!);
+    },
+    enabled: validScope, retry: false, placeholderData: undefined,
     staleTime: 15_000,
   });
 }
@@ -273,7 +285,8 @@ export function useReviewAgents(scope: AgentsScope | null) {
 export function useRigAgents() {
   return useQuery({
     queryKey: ["review", "rig-agents"],
-    queryFn: () => fetchJson<ComposedRigAgents>("/api/review/rig"),
+    queryFn: ({ signal }) => fetchReview<ComposedRigAgents>("/api/review/rig", signal, "scope", "rig"),
+    retry: false, placeholderData: undefined,
     staleTime: 15_000,
   });
 }
