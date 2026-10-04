@@ -175,8 +175,13 @@ describe("SpecsTreeView — slice 28 HG-3 (PLUGINS section dual-action label)", 
 
 describe("SpecsTreeView — slice 19 sidebar density follow-up", () => {
   it("renders Library Explorer spec/plugin entries as single-row name-only leaves with metadata kept out of visible text", async () => {
+    // Hold the actual-shaped spec response until the first expansion decision.
+    // An expanded section has no leaf yet while its read is pending.
+    let releaseLibrary!: () => void;
+    const libraryReady = new Promise<void>((resolve) => { releaseLibrary = resolve; });
     mockFetch.mockImplementation(async (url: string) => {
       if (url === "/api/specs/library") {
+        await libraryReady;
         return {
           ok: true,
           json: async () => [
@@ -232,10 +237,11 @@ describe("SpecsTreeView — slice 19 sidebar density follow-up", () => {
 
     for (const entry of entries) {
       const section = await screen.findByTestId(`specs-section-${entry.section}`);
-      const leafAlreadyVisible = within(section).queryByTestId(`specs-leaf-${entry.leaf}`);
-      if (!leafAlreadyVisible) {
+      // The child list exists when expanded, even before entries load.
+      if (!within(section).queryByRole("list")) {
         fireEvent.click(await screen.findByTestId(`specs-section-toggle-${entry.section}`));
       }
+      if (entry.section === "rig-specs") releaseLibrary();
       const leaf = await within(section).findByTestId(`specs-leaf-${entry.leaf}`);
 
       expect(leaf.parentElement?.children).toHaveLength(1);

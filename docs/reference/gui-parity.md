@@ -121,8 +121,30 @@ verified changes without implying that the rest of the matrix is complete.
   restart an in-flight bounded read. Reconnect and narrower event families
   coalesce into one follow-up per affected query after it settles. Startup and
   related health events also refresh Health-derived Attention. Fifty focused
-  tests and the original independent slow-read reproduction pass. Legacy
-  topology/process/project event families are still being investigated separately.
+  tests and the original independent slow-read reproduction pass.
+- **Shared event refresh ownership:** Topology, process, project, activity and
+  workflow event subscribers now share a refresh scheduler per query client.
+  A delivered event causes one refresh even with multiple subscribers; distinct
+  later events retain their follow-up. Slow reads can settle without repeatedly
+  being canceled, and departing subscribers release their pending work without
+  canceling surviving readers. One hundred seven focused tests pass, including
+  twelve legacy/coalescing regressions and the canonical event suites. Event
+  membership and host/rig query identities remain intact.
+- **File read and write scope:** Files now require a known local selection,
+  including manual refetch and a retained editor's Save after switching hosts.
+  Disabled readers hide warm cached content. Cancellable five-second reads retain
+  the original root/path spelling and canonical source metadata; the existing
+  local cache keys preserve the editor's latest-preview safety check. Ninety-four
+  focused tests and four independent actual-file cases pass, including complete
+  UTF-8 saves, conflict retention and late binary/truncated preview protection.
+  Asset links, unsupported-scope presentation and richer navigation remain open.
+- **Fleet selection boundaries:** Summary, graph, process and node inventory
+  hooks clear previous-host/rig placeholders. Inventory reads validate exact rig
+  identity, retain legitimate nullable native bindings and use cancellable
+  five-second deadlines through the supported remote read-through path. One
+  hundred sixty-three focused tests pass, including actual private daemon routes.
+  The table's separate inventory query owner still needs transport migration;
+  malformed partial graph entries still need defensive 2D rendering.
 - **Spatial browser checkpoint:** The actual application, with fictional API data,
   now fits a 526×448 canvas inside an unchanged 1280×720 browser viewport. Seat
   selection, focus, evidence, relationships, search and List mode were exercised.
@@ -134,7 +156,14 @@ verified changes without implying that the rest of the matrix is complete.
   retries reuse downloaded code. Sixty-two focused tests and independent
   concurrent-mount checks pass. Additional viewport sizes and complete integration
   remain open; this checkpoint does not establish full spatial acceptance.
-- **Current integrated UI checkpoint:** 214 files passed (1,963 tests, one
+- **Current data integration checkpoint:** All 240 UI test files pass (2,269
+  tests, one existing skip). This includes the file/fleet scope changes and
+  shared event scheduler. Older fixtures now supply the actual daemon DTOs and
+  known local selection; a deferred library response pins a test expansion race
+  without changing density assertions. An isolated archive of the committed UI
+  passes typecheck and production build. Three type errors remain in uncommitted
+  startup components, and full frontend/browser acceptance is still outstanding.
+- **Earlier integrated UI checkpoint:** 214 files passed (1,963 tests, one
   existing skip) after the contract/data changes and compatible dependency
   refresh. Workspace build and typechecks pass. This local run includes the
   unfinished spatial renderer; its known visual/interaction corrections remain
