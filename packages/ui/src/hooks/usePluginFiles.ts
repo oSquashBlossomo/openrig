@@ -12,6 +12,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import type { FileEntry } from "./useFiles.js";
+import { readCatalogFile, readCatalogFilesList } from "../lib/catalog-file-read.js";
 
 export interface PluginFilesListResponse {
   pluginId: string;
@@ -32,36 +33,24 @@ export interface PluginFilesReadResponse {
   totalBytes?: number;
 }
 
-async function fetchList(pluginId: string, path: string): Promise<PluginFilesListResponse> {
-  const res = await fetch(
-    `/api/plugins/${encodeURIComponent(pluginId)}/files/list?path=${encodeURIComponent(path)}`,
-  );
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return (await res.json()) as PluginFilesListResponse;
-}
-
-async function fetchRead(pluginId: string, path: string): Promise<PluginFilesReadResponse> {
-  const res = await fetch(
-    `/api/plugins/${encodeURIComponent(pluginId)}/files/read?path=${encodeURIComponent(path)}`,
-  );
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return (await res.json()) as PluginFilesReadResponse;
-}
-
 export function usePluginFilesList(pluginId: string | null, path: string | null) {
   return useQuery({
     queryKey: ["plugin-files", "list", pluginId, path],
-    queryFn: () => fetchList(pluginId!, path ?? ""),
+    queryFn: ({ signal }) => readCatalogFilesList("plugin", pluginId, path, signal),
     enabled: !!pluginId,
     staleTime: 15_000,
+    retry: false,
+    placeholderData: undefined,
   });
 }
 
 export function usePluginFilesRead(pluginId: string | null, path: string | null) {
   return useQuery({
     queryKey: ["plugin-files", "read", pluginId, path],
-    queryFn: () => fetchRead(pluginId!, path!),
+    queryFn: ({ signal }) => readCatalogFile("plugin", pluginId, path, signal),
     enabled: !!pluginId && !!path,
     staleTime: 15_000,
+    retry: false,
+    placeholderData: undefined,
   });
 }
