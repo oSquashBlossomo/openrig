@@ -328,6 +328,8 @@ export class WorkflowInstanceStore {
       bumpHopCount?: boolean;
       lastContinuationDecision?: Record<string, unknown> | null;
       fallbackSynthesis?: string | null;
+      /** Current terminal episode timestamp: a string sets it, explicit null
+       * clears it, and omitted/undefined preserves the existing value. */
       completedAt?: string | null;
       /**
        * R2: explicit next current_step_id. When provided, OVERWRITES
@@ -378,7 +380,7 @@ export class WorkflowInstanceStore {
            ${setVersion}${setHop}${setResume}${currentStepClause}status = ?, current_frontier_json = ?,
            last_continuation_decision_json = COALESCE(?, last_continuation_decision_json),
            fallback_synthesis = COALESCE(?, fallback_synthesis),
-           completed_at = COALESCE(?, completed_at)
+           completed_at = CASE WHEN ? = 1 THEN ? ELSE completed_at END
          WHERE instance_id = ?${versionWhere}`;
     const stmt = this.db.prepare(sql);
     const params: unknown[] = [];
@@ -388,6 +390,7 @@ export class WorkflowInstanceStore {
       JSON.stringify(nextFrontier),
       opts.lastContinuationDecision ? JSON.stringify(opts.lastContinuationDecision) : null,
       opts.fallbackSynthesis ?? null,
+      opts.completedAt === undefined ? 0 : 1,
       opts.completedAt ?? null,
       instanceId,
     );

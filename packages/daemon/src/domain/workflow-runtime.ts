@@ -1214,6 +1214,7 @@ export class WorkflowRuntime {
       // (concurrent resumes: exactly one commits).
       this.instanceStore.updateFrontier(instance.instanceId, [created.qitemId], "active", {
         currentStepId: step.id,
+        completedAt: null,
         expectedVersion: instance.version,
         resumeStamp: {
           resumeCount: (instance.resumeCount ?? 0) + 1,
@@ -1421,6 +1422,7 @@ export class WorkflowRuntime {
       const bindings = this.instanceStore.listFrontierBindings(instance.instanceId);
       this.instanceStore.updateFrontier(instance.instanceId, nextFrontier, "active", {
         currentStepId: bindings.length === 1 ? bindings[0]!.stepId : "clear",
+        completedAt: null,
         expectedVersion: instance.version,
         resumeStamp: { resumeCount: instance.resumeCount + 1, hopsBaseline: instance.hopCount },
         lastContinuationDecision: { action: "resume_occurrence", occurrenceId: occurrence.occurrenceId, redrivePacketId: created.qitemId, actorSession: input.actorSession, decision: input.decision ?? null },
