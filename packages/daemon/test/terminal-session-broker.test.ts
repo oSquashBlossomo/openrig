@@ -37,7 +37,7 @@ function makeTmux(overrides: Partial<BrokerTmux> = {}): BrokerTmux {
     sendKeys: async () => ({ ok: true }),
     sendText: async () => ({ ok: true }),
     capturePaneScreen: async () => null,
-    getPaneCursorPosition: async () => null,
+    getPaneCursorPosition: async () => ({ x: 0, y: 0, width: 90, height: 27 }),
     capturePaneContent: async () => null,
     ...overrides,
   };
@@ -201,28 +201,21 @@ describe("TerminalSessionBroker", () => {
     const resizeWindow = vi.fn(async () => ({ ok: true as const }));
     const broker = track(new TerminalSessionBroker("dev@rig", makeTmux({ resizeWindow }), { pollMs: 10 }));
     await broker.attach(makeSub());
-    resizeWindow.mockClear(); // ignore the one canonical-geometry resize at open
     // The broker input API only accepts keys/text; there is no client-driven resize.
     await broker.input({ type: "text", text: "x" });
     expect(resizeWindow).not.toHaveBeenCalled();
   });
 
-  it("test 7b: canonical geometry is set ONCE at open (window-size manual + 120xN, NOT aggressive-resize)", async () => {
+  it("viewing never sets window-size, resizes the pane or sends redraw keys", async () => {
     const setWindowOption = vi.fn(async () => ({ ok: true as const }));
     const resizeWindow = vi.fn(async () => ({ ok: true as const }));
-    const broker = track(new TerminalSessionBroker("dev@rig", makeTmux({ setWindowOption, resizeWindow }), {
-      pollMs: 10,
-      cols: 120,
-      rows: 40,
-    }));
+    const sendKeys = vi.fn(async () => ({ ok: true as const }));
+    const broker = track(new TerminalSessionBroker("dev@rig", makeTmux({ setWindowOption, resizeWindow, sendKeys }), { pollMs: 10 }));
     await broker.attach(makeSub());
     await broker.attach(makeSub());
-
-    expect(resizeWindow).toHaveBeenCalledOnce();
-    expect(resizeWindow).toHaveBeenCalledWith("dev@rig", 120, 40);
-    expect(setWindowOption).toHaveBeenCalledWith("dev@rig", "window-size", "manual");
-    // aggressive-resize fights fixed geometry (shrinks to smallest client) — must NOT be set.
-    expect(setWindowOption).not.toHaveBeenCalledWith("dev@rig", "aggressive-resize", expect.anything());
+    expect(resizeWindow).not.toHaveBeenCalled();
+    expect(setWindowOption).not.toHaveBeenCalled();
+    expect(sendKeys).not.toHaveBeenCalled();
   });
 
   it("test 8: seeds on FIRST attach with NO resize message, as the first bytes the subscriber sees", async () => {
@@ -602,7 +595,7 @@ describe("TerminalSessionBroker - per-subscriber scroll-back (OPR.0.4.0.39)", ()
       const count = Math.min(BUF.length, n + ROWS); // -S -N => ~N + rows lines, bottom-anchored
       return BUF.slice(BUF.length - count).join("\n");
     });
-    const broker = track(new TerminalSessionBroker("dev@rig", makeTmux({ capturePaneContent }), { pollMs: 10, rows: ROWS }));
+    const broker = track(new TerminalSessionBroker("dev@rig", makeTmux({ capturePaneContent, getPaneCursorPosition: async () => ({ x: 0, y: 0, width: 90, height: ROWS }) }), { pollMs: 10 }));
     const a = makeSub();
     const b = makeSub();
     await broker.attach(a);
@@ -631,7 +624,8 @@ describe("TerminalSessionBroker - per-subscriber scroll-back (OPR.0.4.0.39)", ()
   it("a scrolled-back subscriber is SKIPPED by the live fanout; the live viewer still streams", async () => {
     const broker = track(new TerminalSessionBroker("dev@rig", makeTmux({
       capturePaneContent: async () => "x1\nx2\nx3\nx4",
-    }), { pollMs: 10, rows: 3 }));
+      getPaneCursorPosition: async () => ({ x: 0, y: 0, width: 90, height: 3 }),
+    }), { pollMs: 10 }));
     const a = makeSub();
     const b = makeSub();
     await broker.attach(a);
@@ -655,7 +649,7 @@ describe("TerminalSessionBroker - per-subscriber scroll-back (OPR.0.4.0.39)", ()
       capturePaneContent: async () => "g1\ng2\ng3\ng4",
       capturePaneScreen,
       getPaneCursorPosition: async () => ({ x: 0, y: 0, width: 90, height: 3 }),
-    }), { pollMs: 10, rows: 3 }));
+    }), { pollMs: 10 }));
     const a = makeSub();
     await broker.attach(a);
 
@@ -677,11 +671,173 @@ describe("TerminalSessionBroker - per-subscriber scroll-back (OPR.0.4.0.39)", ()
   });
 
   it("scroll on an UNKNOWN subscriber is a no-op (never throws, sends nothing)", async () => {
-    const broker = track(new TerminalSessionBroker("dev@rig", makeTmux(), { pollMs: 10, rows: 3 }));
+    const broker = track(new TerminalSessionBroker("dev@rig", makeTmux(), { pollMs: 10 }));
     await broker.attach(makeSub());
     const ghost = makeSub(); // never attached
     await broker.scroll(ghost, 5);
     expect(ghost.received.length).toBe(0);
     expect(ghost.closed.length).toBe(0);
   });
+});
+
+describe("native geometry mirroring", () => {
+  it("sends actual geometry before the first seed and closes honestly for unavailable/bounded geometry", async () => {
+    const events: string[] = [];
+    const broker = track(new TerminalSessionBroker("dev@rig", makeTmux({
+      capturePaneScreen: async () => "native screen",
+      getPaneCursorPosition: async () => ({ x: 5, y: 2, width: 137, height: 43 }),
+    })));
+    await broker.attach({ geometry: (cols, rows) => events.push(`geometry:${cols}:${rows}`), send: data => events.push(data), close: () => {} });
+    expect(events[0]).toBe("geometry:137:43");
+    expect(events[1]).toContain("native screen");
+    for (const cursor of [null, { x: 0, y: 0, width: 501, height: 43 }, { x: 0, y: 0, width: 500, height: 300 }]) {
+      const bad = track(new TerminalSessionBroker("bad@rig", makeTmux({ getPaneCursorPosition: async () => cursor })));
+      const sub = makeSub(); await bad.attach(sub);
+      expect(sub.closed[0]).toEqual({ code: 1011, reason: "terminal geometry unavailable or outside supported bounds" });
+      expect(bad.subscriberCount).toBe(0);
+      expect(bad.pipeOutputPath).toBeNull();
+    }
+  });
+
+  it("repaints resized geometry while keeping each viewer's independent scroll offset", async () => {
+    let rows = 3;
+    const content = Array.from({ length: 100 }, (_, index) => `L${index + 1}`).join("\n");
+    const broker = track(new TerminalSessionBroker("dev@rig", makeTmux({
+      capturePaneScreen: async () => "LIVE",
+      capturePaneContent: async () => content,
+      getPaneCursorPosition: async () => ({ x: 0, y: 0, width: 137, height: rows }),
+    }), { pollMs: 5, geometryMs: 5 }));
+    const a = makeSub(), b = makeSub();
+    const aGeometry: number[] = [], bGeometry: number[] = [];
+    a.geometry = (_cols, height) => aGeometry.push(height);
+    b.geometry = (_cols, height) => bGeometry.push(height);
+    await broker.attach(a); await broker.attach(b);
+    await broker.scroll(a, 3);
+    rows = 5;
+    await vi.waitFor(() => { expect(aGeometry).toEqual([3, 5]); expect(bGeometry).toEqual([3, 5]); });
+    expect(a.received.at(-1)).toContain("\x1b[1;1HL93");
+    expect(a.received.at(-1)).toContain("\x1b[5;1HL97");
+    expect(b.received.at(-1)).toContain("LIVE");
+    fs.appendFileSync(broker.pipeOutputPath!, "NEXT-LIVE");
+    await vi.waitFor(() => expect(b.received.join("")).toContain("NEXT-LIVE"));
+    expect(a.received.join("")).not.toContain("NEXT-LIVE");
+  });
+});
+
+describe("resize capture/output boundary", () => {
+  it("delivers bytes appended after resize capture exactly once before a later authoritative repaint", async () => {
+    let cols = 90, appendAfterCapture = false, appended = false;
+    const events: string[] = [];
+    let broker: TerminalSessionBroker;
+    broker = track(new TerminalSessionBroker("boundary@fixture", makeTmux({
+      capturePaneScreen: async () => {
+        if (cols === 100 && !appended) appendAfterCapture = true;
+        return appended ? "CURRENT SCREEN AFTER LATE OUTPUT" : "SNAPSHOT BEFORE LATE OUTPUT";
+      },
+      getPaneCursorPosition: async () => {
+        if (appendAfterCapture) {
+          appendAfterCapture = false; appended = true;
+          fs.appendFileSync(broker.pipeOutputPath!, "LATE_AFTER_SNAPSHOT");
+        }
+        return { x: 0, y: 0, width: cols, height: 27 };
+      },
+    }), { pollMs: 5, geometryMs: 5 }));
+    await broker.attach({ send: data => events.push(data), geometry: (width, rows) => events.push(`geometry:${width}:${rows}`), close: () => {} });
+    cols = 100;
+    await vi.waitFor(() => expect(events).toContain("LATE_AFTER_SNAPSHOT"));
+    await vi.waitFor(() => expect(events.at(-1)).toContain("CURRENT SCREEN AFTER LATE OUTPUT"));
+    expect(events.filter(event => event === "LATE_AFTER_SNAPSHOT")).toHaveLength(1);
+    expect(events.indexOf("geometry:100:27")).toBeLessThan(events.indexOf("LATE_AFTER_SNAPSHOT"));
+    expect(events.slice(events.indexOf("LATE_AFTER_SNAPSHOT") + 1).every(event => event.startsWith("\x1b[2J"))).toBe(true);
+  });
+
+  it("keeps output live under continuous capture-time writes instead of retrying indefinitely or repainting stale snapshots", async () => {
+    let cols = 90, captureCount = 0, appendAfterCapture = false;
+    const events: string[] = [];
+    let broker: TerminalSessionBroker;
+    broker = track(new TerminalSessionBroker("busy@fixture", makeTmux({
+      capturePaneScreen: async () => {
+        if (cols === 100) { captureCount++; appendAfterCapture = true; }
+        return "STALE RESIZE SNAPSHOT";
+      },
+      getPaneCursorPosition: async () => {
+        if (appendAfterCapture) {
+          appendAfterCapture = false;
+          fs.appendFileSync(broker.pipeOutputPath!, `LIVE-${captureCount};`);
+        }
+        return { x: 0, y: 0, width: cols, height: 27 };
+      },
+    }), { pollMs: 5, geometryMs: 5 }));
+    await broker.attach({ send: data => events.push(data), geometry: (width, rows) => events.push(`geometry:${width}:${rows}`), close: () => {} });
+    events.length = 0;
+    cols = 100;
+    await vi.waitFor(() => expect(events.filter(event => event.startsWith("LIVE-")).length).toBeGreaterThanOrEqual(3));
+    expect(events[0]).toBe("geometry:100:27");
+    expect(events.some(event => event.includes("STALE RESIZE SNAPSHOT"))).toBe(false);
+    expect(captureCount).toBeLessThan(30); // one bounded capture per pending poll, not a retry spin
+    expect(new Set(events.filter(event => event.startsWith("LIVE-"))).size).toBe(events.filter(event => event.startsWith("LIVE-")).length);
+    broker.dispose();
+    const afterDispose = captureCount;
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(captureCount).toBe(afterDispose);
+  });
+});
+
+it("retains a partially decoded UTF-8 character across a native resize boundary", async () => {
+  let cols = 90, appendAfterCapture = false, completed = false;
+  const bytes = Buffer.from("🚀");
+  const events: string[] = [];
+  let broker: TerminalSessionBroker;
+  broker = track(new TerminalSessionBroker("unicode-resize@fixture", makeTmux({
+    capturePaneScreen: async () => {
+      if (cols === 100 && !completed) appendAfterCapture = true;
+      return completed ? "COMPLETE SCREEN" : "CURRENT SCREEN";
+    },
+    getPaneCursorPosition: async () => {
+      if (appendAfterCapture) {
+        appendAfterCapture = false; completed = true;
+        fs.appendFileSync(broker.pipeOutputPath!, bytes.subarray(2));
+      }
+      return { x: 0, y: 0, width: cols, height: 27 };
+    },
+  }), { pollMs: 5, geometryMs: 5 }));
+  await broker.attach({ send: data => events.push(data), close: () => {} });
+  fs.appendFileSync(broker.pipeOutputPath!, bytes.subarray(0, 2));
+  await new Promise(resolve => setTimeout(resolve, 25));
+  cols = 100;
+  await vi.waitFor(() => expect(events).toContain("🚀"));
+  expect(events.filter(event => event === "🚀")).toHaveLength(1);
+  expect(events.join("")).not.toContain("\ufffd");
+});
+
+it("serializes concurrent late attaches and resize capture without duplicate tail delivery", async () => {
+  let cols = 90, appendAfterCapture = false, appended = false;
+  const frames = [[], [], []] as string[][];
+  let broker: TerminalSessionBroker;
+  broker = track(new TerminalSessionBroker("concurrent-resize@fixture", makeTmux({
+    capturePaneScreen: async () => {
+      if (cols === 100 && !appended) appendAfterCapture = true;
+      return "CURRENT";
+    },
+    getPaneCursorPosition: async () => {
+      if (appendAfterCapture) {
+        appendAfterCapture = false; appended = true;
+        fs.appendFileSync(broker.pipeOutputPath!, "CONCURRENT-LATE");
+      }
+      return { x: 0, y: 0, width: cols, height: 27 };
+    },
+  }), { pollMs: 5, geometryMs: 5 }));
+  const sub = (index: number): TerminalSubscriber => ({
+    geometry: (width, rows) => frames[index]!.push(`geometry:${width}:${rows}`),
+    send: data => frames[index]!.push(data), close: () => {},
+  });
+  await broker.attach(sub(0));
+  cols = 100;
+  await Promise.all([broker.attach(sub(1)), broker.attach(sub(2))]);
+  await vi.waitFor(() => expect(frames.every(viewer => viewer.includes("CONCURRENT-LATE"))).toBe(true));
+  for (const viewer of frames) {
+    expect(viewer.filter(frame => frame === "CONCURRENT-LATE")).toHaveLength(1);
+    expect(viewer.filter(frame => frame === "geometry:100:27")).toHaveLength(1);
+    expect(viewer.indexOf("geometry:100:27")).toBeLessThan(viewer.indexOf("CONCURRENT-LATE"));
+  }
 });

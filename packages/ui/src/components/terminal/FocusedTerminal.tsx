@@ -9,6 +9,7 @@ import {
   LIVE_TERMINAL_FONT_SIZE,
   LIVE_TERMINAL_LINE_HEIGHT,
   LIVE_TERMINAL_FONT_FAMILY,
+  parseTerminalServerFrame,
 } from "./terminal-geometry.js";
 import "@xterm/xterm/css/xterm.css";
 
@@ -119,8 +120,9 @@ export function applyOpaqueTerminalBackground(container: HTMLElement): void {
   }
 }
 
-export function scrollTerminalViewportToPrompt(container: HTMLElement): void {
+export function scrollTerminalViewportToPrompt(container: HTMLElement, allowed: () => boolean = () => true): void {
   const scroll = () => {
+    if (!allowed()) return;
     const cursor = container.querySelector<HTMLElement>("textarea.xterm-helper-textarea");
     const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
     if (!cursor) {
@@ -146,7 +148,7 @@ interface FocusedTerminalProps {
   daemonBaseUrl?: string;
   /**
    * OPR.0.4.0.39: how the live xterm sizes to its container. "natural" (default) =
-   * render at the native 90x27 size (callers that don't scale, e.g. the feed-card).
+   * render at the native pane size (callers that don't scale, e.g. the feed-card).
    * "width" = scale DOWN via fontSize to fit the container width (never upscale) -
    * the grid/graph/table cells. "contain" = fit both axes via fontSize with capped
    * upscale, centered - the node-detail panel. fontSize-scaling (not CSS transform)
@@ -170,7 +172,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
   // OPR.0.4.0.39: the fit wrapper fills the available container; the inner
   // containerRef holds the natural-sized xterm. We measure the wrapper (available)
   // vs the xterm's natural size (captured once at the base font) and set the xterm
-  // fontSize so 90x27 fits - no CSS transform, so selection stays native-correct.
+  // fontSize so the actual pane fits - no CSS transform, so selection stays native-correct.
   const fitWrapperRef = useRef<HTMLDivElement>(null);
   const naturalSizeRef = useRef<{ w: number; h: number } | null>(null);
   const fitRef = useRef(fit);
@@ -188,6 +190,8 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
   // wheel handler; the broker paints the matching tmux history window. Typing or
   // wheeling back to 0 returns to live.
   const scrollOffsetRef = useRef(0);
+  const geometryRef = useRef<{ cols: number; rows: number } | null>(null);
+  const [geometryReady, setGeometryReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // OPR.0.4.3.21 — shared daemon-health signal (context; healthy default when
@@ -206,7 +210,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
 
   // OPR.0.4.0.39 (selection fix): size the xterm to its container by FONT SIZE (not a
   // CSS transform, which breaks xterm's mouse/selection coords - #6023). Reads only
-  // refs so it is a stable, dependency-free callback. natural is the xterm's 90x27
+  // refs so it is a stable, dependency-free callback. natural is the current xterm grid's
   // pixel size at the base font (captured once); the wrapper is the available space.
   const applyFontSizeFit = useCallback(() => {
     const mode = fitRef.current;
@@ -241,7 +245,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
       term.scrollToBottom();
     }
     if (containerRef.current) {
-      scrollTerminalViewportToPrompt(containerRef.current);
+      scrollTerminalViewportToPrompt(containerRef.current, () => Date.now() <= promptScrollUntilRef.current && scrollOffsetRef.current === 0);
     }
   }, []);
 
@@ -249,13 +253,18 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
     const base = daemonBaseUrl ?? window.location.origin;
     const wsUrl = base.replace(/^http/, "ws");
     const token = readTerminalBearerToken();
-    const tokenParam = token ? `?token=${encodeURIComponent(token)}` : "";
+    const params = new URLSearchParams({ protocol: "2" });
+    if (token) params.set("token", token);
+    const tokenParam = `?${params}`;
+    let protocolFailed = false;
     const ws = new WebSocket(`${wsUrl}/api/terminal/${encodeURIComponent(sessionName)}${tokenParam}`);
 
     ws.onopen = () => {
       if (generationRef.current !== gen) { ws.close(); return; }
-      // The daemon broker owns fixed canonical geometry (90x27). The client keeps
-      // the same grid and scrolls history server-side (per-subscriber capture-pane).
+      // Await actual native geometry before displaying any mirror bytes.
+      geometryRef.current = null;
+      setGeometryReady(false);
+      // History remains server-side and independent for each subscriber.
       // A (re)connect starts at the live bottom.
       scrollOffsetRef.current = 0;
       promptScrollUntilRef.current = Date.now() + 2500;
@@ -269,18 +278,49 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
     };
 
     ws.onmessage = (evt) => {
-      if (generationRef.current !== gen) return;
-      const term = termRef.current as { write(data: string): void; scrollToBottom(): void } | null;
-      if (typeof evt.data === "string" && term) {
-        term.write(evt.data);
-        if (Date.now() <= promptScrollUntilRef.current) {
-          scrollLiveTerminalToPrompt(term);
+      if (generationRef.current !== gen || wsRef.current !== ws) return;
+      const term = termRef.current as { write(data: string, done?: () => void): void; scrollToBottom(): void; resize(cols: number, rows: number): void; options: { fontSize: number } } | null;
+      if (typeof evt.data !== "string" || !term) return;
+      try {
+        const frame = parseTerminalServerFrame(evt.data);
+        if (frame.type === "geometry") {
+          const previous = geometryRef.current;
+          const viewport = containerRef.current;
+          const scrollTop = viewport?.scrollTop ?? 0, scrollLeft = viewport?.scrollLeft ?? 0;
+          if (previous) promptScrollUntilRef.current = 0;
+          term.resize(frame.cols, frame.rows);
+          geometryRef.current = { cols: frame.cols, rows: frame.rows };
+          setGeometryReady(true);
+          // Measure the new grid, correcting for current font fitting. Do not
+          // retain the old 90x27 pixel reference or send a pane resize upstream.
+          requestAnimationFrame(() => {
+            if (generationRef.current !== gen || wsRef.current !== ws || !containerRef.current) return;
+            const ratio = LIVE_TERMINAL_FONT_SIZE / term.options.fontSize;
+            const w = containerRef.current.offsetWidth * ratio, h = containerRef.current.offsetHeight * ratio;
+            if (w > 0 && h > 0) naturalSizeRef.current = { w, h };
+            applyFontSizeFit();
+            if (previous && viewport) { viewport.scrollTop = scrollTop; viewport.scrollLeft = scrollLeft; }
+          });
+          if (previous && viewport) { viewport.scrollTop = scrollTop; viewport.scrollLeft = scrollLeft; }
+          return;
         }
+        if (!geometryRef.current) throw new Error("terminal output arrived before native geometry");
+        const viewport = containerRef.current;
+        const top = viewport?.scrollTop ?? 0, left = viewport?.scrollLeft ?? 0;
+        term.write(frame.data, () => {
+          if (promptScrollUntilRef.current === 0 && viewport) { viewport.scrollTop = top; viewport.scrollLeft = left; }
+        });
+        if (Date.now() <= promptScrollUntilRef.current) scrollLiveTerminalToPrompt(term);
+      } catch (err) {
+        protocolFailed = true;
+        ws.close();
+        disposeTerminal();
+        setError(err instanceof Error ? err.message : "Terminal protocol unavailable");
       }
     };
 
     ws.onclose = (evt) => {
-      if (generationRef.current !== gen) return;
+      if (generationRef.current !== gen || protocolFailed || wsRef.current !== ws) return;
       const definitive = evt.code === 1008 || evt.code === 1011 || evt.code === 1001;
       if (definitive) {
         disposeTerminal();
@@ -309,13 +349,16 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
 
     wsRef.current = ws;
     return ws;
-  }, [sessionName, daemonBaseUrl, disposeTerminal, scrollLiveTerminalToPrompt]);
+  }, [sessionName, daemonBaseUrl, disposeTerminal, scrollLiveTerminalToPrompt, applyFontSizeFit]);
 
   useEffect(() => {
     if (!containerRef.current) return;
     mountedRef.current = true;
     generationRef.current++;
     const currentGen = generationRef.current;
+    naturalSizeRef.current = null;
+    geometryRef.current = null;
+    setGeometryReady(false);
     let cleanedUp = false;
 
     (async () => {
@@ -382,14 +425,12 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
           return false;
         });
 
-        // OPR.0.4.0.38 FR-7: no term.onResize -> ws resize relay. The pane
-        // geometry is fixed daemon-side; the client grid matches it exactly
-        // and never asks the pane to resize.
+        // Browser layout/renderer resize never asks the shared pane to resize.
 
         connectForGeneration(currentGen);
 
-        // OPR.0.4.0.39 (selection fix): capture the xterm's NATURAL 90x27 pixel size
-        // at the base font (before any fontSize-fit) as the fixed reference, then
+        // OPR.0.4.0.39 (selection fix): capture the xterm's initial pixel size
+        // at the base font; protocol geometry replaces this placeholder reference, then
         // apply the initial fit. rAF so layout has settled. Guarded for jsdom (0 size).
         requestAnimationFrame(() => {
           if (cleanedUp || !containerRef.current) return;
@@ -444,7 +485,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
     );
   }
 
-  // The xterm always renders at its NATURAL full 90x27 geometry (w-max) so the WHOLE
+  // The xterm always renders at its NATURAL full native geometry (w-max) so the WHOLE
   // screen + cursor are visible (no min-h/h-full cap that hid the bottom rows).
   const liveTerminal = (
     <div
@@ -452,12 +493,14 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
       ref={containerRef}
       data-testid={`focused-terminal-${sessionName}`}
       className="w-max bg-stone-950/85 backdrop-blur-sm"
+      style={{ visibility: geometryReady ? "visible" : "hidden" }}
+      aria-busy={!geometryReady}
     />
   );
 
   // OPR.0.4.0.39 (selection fix): in "natural" mode the xterm renders at native size
   // (no scaling). In "width"/"contain" mode it is wrapped in a fit-wrapper that fills
-  // the container; applyFontSizeFit sets the xterm fontSize so 90x27 fits - NO CSS
+  // the container; applyFontSizeFit sets the xterm fontSize so the actual pane fits - NO CSS
   // transform, so xterm's selection/click hit-testing stays native-correct (#6023).
   if (fit === "natural") return liveTerminal;
 
@@ -467,8 +510,8 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
       data-testid={`focused-terminal-fit-${sessionName}`}
       className={
         fit === "contain"
-          ? "flex h-full w-full items-center justify-center overflow-hidden"
-          : "w-full overflow-hidden"
+          ? "flex h-full w-full items-center justify-center overflow-auto"
+          : "w-full overflow-auto"
       }
     >
       {liveTerminal}

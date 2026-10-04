@@ -30,6 +30,20 @@ verified changes without implying that the rest of the matrix is complete.
   stale-plan refresh, saved-name collisions, unknown deep links and host changes.
   These are HTTP-boundary UI tests; native terminal opening and shared-pane sizing
   require separate integration evidence.
+- **Shared terminal geometry:** Protocol 2 transmits the native pane dimensions
+  before terminal output; opening or resizing a browser no longer changes the
+  tmux window size or sizing policy. Private tmux/WebSocket tests verify pane
+  identity, two viewers sharing one pipe, native resize propagation and cleanup.
+  Seventy daemon tests and 34 focused UI tests pass. Independent review reproduced
+  and then verified the repair of a resize/output race. Busy output can defer a
+  screen repaint until a quiet boundary, while raw output continues streaming.
+  Clients must reload across this protocol change; older raw-stream clients get
+  explicit update/reload guidance. Actual native Claude/Codex rendering remains
+  part of browser integration verification.
+- **Integrated UI checkpoint:** 209 files passed (1,860 tests, one existing skip)
+  after the read-contract and terminal changes. The spatial feature was included
+  in this local run, but still needs visual and refresh-state corrections before
+  its feature commit; this is not a full parity or browser acceptance verdict.
 - **Initial local baseline:** 198 UI test files passed (1,729 tests, one existing
   skip). Build passed. The first full package run exposed 14 daemon and one CLI
   test-fixture failures involving macOS path aliases and an ambient daemon state

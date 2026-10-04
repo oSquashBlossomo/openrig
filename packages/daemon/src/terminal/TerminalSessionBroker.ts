@@ -14,8 +14,8 @@ import type { TmuxResult, TmuxCursorPosition } from "../adapters/tmux.js";
 // for the same session (the per-connection bug): a second viewer of one seat
 // fought the first for output. The broker fixes that: ONE tmux pipe per
 // session, MANY subscribers, output fanned out to all, each subscriber seeded
-// with a cursor-safe snapshot of the current screen on attach, fixed geometry
-// (no client-driven resize), honest session-death reporting to ALL subscribers,
+// with actual native geometry followed by a cursor-safe screen snapshot on attach
+// (no shared-pane resize), honest session-death reporting to ALL subscribers,
 // and full cleanup when the last subscriber leaves.
 
 const PIPE_PANE_POLL_MS = 50;
@@ -31,23 +31,23 @@ const DEFAULT_LIVENESS_MS = 2000;
  */
 const MAX_HISTORY_BYTES = 64 * 1024;
 
-/**
- * Canonical fixed terminal geometry (FR-7). 90 cols (OPR.0.4.0.39, founder-directed):
- * Claude Code (Ink) + Codex CLI are RESPONSIVE TUIs that reflow to whatever width they
- * are given - they have no required width; 80 is the legacy fallback that users find
- * too narrow, so 90 sits comfortably above the 80 floor while being narrower than 120 so
- * the scaled static/live mirror reads bigger (more legible) in the topology grid cells.
- * 27 rows gives the classic-terminal 1.72:1 landscape shape (90x27 = ~650x378px, matching the canonical 80x24 aspect) (founder: classic terminal rectangle) while staying a workable agent-TUI height; subscribers fit/scroll/pan their
- * viewport but never resize the pane - so multiple viewers cannot shrink the session to
- * the smallest one. MUST stay in sync with the client mirror LIVE_TERMINAL_COLS
- * (packages/ui/.../terminal/terminal-geometry.ts) - the xterm grid must match the pane.
- */
-export const CANONICAL_COLS = 90;
-export const CANONICAL_ROWS = 27;
+/** Bounds shared with the browser decoder. Geometry outside these limits is unavailable. */
+export const MAX_TERMINAL_COLS = 500;
+export const MAX_TERMINAL_ROWS = 300;
+export const MAX_TERMINAL_CELLS = 100_000;
+
+function validCursor(cursor: TmuxCursorPosition | null): cursor is TmuxCursorPosition {
+  return !!cursor && [cursor.x, cursor.y, cursor.width, cursor.height].every(Number.isInteger)
+    && cursor.width > 0 && cursor.width <= MAX_TERMINAL_COLS && cursor.height > 0 && cursor.height <= MAX_TERMINAL_ROWS
+    && cursor.width * cursor.height <= MAX_TERMINAL_CELLS
+    && cursor.x >= 0 && cursor.x < cursor.width && cursor.y >= 0 && cursor.y < cursor.height;
+}
 
 /** A connected viewer of one broker. The route adapts a WebSocket to this. */
 export interface TerminalSubscriber {
   send(data: string): void;
+  /** Geometry is delivered before screen/history bytes and on native size changes. */
+  geometry?(cols: number, rows: number): void;
   close(code: number, reason: string): void;
 }
 
@@ -58,8 +58,8 @@ export interface TerminalSubscriber {
 export interface BrokerTmux {
   humanInput?<T>(name: string, fn: () => Promise<T>): Promise<T>;
   hasSession(name: string): Promise<boolean>;
-  setWindowOption(name: string, option: string, value: string): Promise<TmuxResult>;
-  resizeWindow(name: string, cols: number, rows: number): Promise<TmuxResult>;
+  setWindowOption?(name: string, option: string, value: string): Promise<TmuxResult>;
+  resizeWindow?(name: string, cols: number, rows: number): Promise<TmuxResult>;
   startPipePane(name: string, outputPath: string): Promise<TmuxResult>;
   stopPipePane(name: string): Promise<TmuxResult>;
   sendKeys(name: string, keys: string[]): Promise<TmuxResult>;
@@ -76,10 +76,8 @@ export interface BrokerOptions {
   pollMs?: number;
   /** Session-liveness probe interval (ms). Default 2000. */
   livenessMs?: number;
-  /** Canonical pane width. Default CANONICAL_COLS (90). */
-  cols?: number;
-  /** Canonical pane height. Default CANONICAL_ROWS (27). */
-  rows?: number;
+  /** Read-only native geometry poll interval, default 250ms. */
+  geometryMs?: number;
   /** Bounded size of the recent-output history ring in bytes. Default 64KB. */
   maxHistoryBytes?: number;
   /** Called when the broker has no remaining subscribers (or open failed). */
@@ -155,8 +153,15 @@ export class TerminalSessionBroker {
   private readonly tmux: BrokerTmux;
   private readonly pollMs: number;
   private readonly livenessMs: number;
-  private readonly cols: number;
-  private readonly rows: number;
+  private cols = 0;
+  private rows = 0;
+  private readonly geometryMs: number;
+  private lastGeometryRead = 0;
+  private displayQueue: Promise<void> = Promise.resolve();
+  private tickPending = false;
+  private readonly pendingRepaints = new Set<TerminalSubscriber>();
+  private settleTimer: ReturnType<typeof setTimeout> | null = null;
+  private settleResolve: (() => void) | null = null;
   private readonly maxHistoryBytes: number;
   private readonly onEmpty?: (sessionName: string) => void;
 
@@ -195,8 +200,7 @@ export class TerminalSessionBroker {
     this.tmux = tmux;
     this.pollMs = opts.pollMs ?? PIPE_PANE_POLL_MS;
     this.livenessMs = opts.livenessMs ?? DEFAULT_LIVENESS_MS;
-    this.cols = opts.cols ?? CANONICAL_COLS;
-    this.rows = opts.rows ?? CANONICAL_ROWS;
+    this.geometryMs = opts.geometryMs ?? 250;
     this.maxHistoryBytes = opts.maxHistoryBytes ?? MAX_HISTORY_BYTES;
     this.onEmpty = opts.onEmpty;
   }
@@ -217,7 +221,7 @@ export class TerminalSessionBroker {
 
   /**
    * Attach a subscriber. The FIRST subscriber stands up the single pipe-pane
-   * (fixed geometry, one outputPath, tail + liveness). Every subscriber - first
+   * (one outputPath, tail + liveness). Every subscriber - first
    * or later - is seeded with the current screen BEFORE it joins the fanout, so
    * it sees coherent state immediately and does not depend on a resize message.
    */
@@ -255,7 +259,11 @@ export class TerminalSessionBroker {
 
     // Open succeeded: seed this subscriber (ring replay + current screen) BEFORE
     // it joins the fanout.
-    await this.seed(sub);
+    try { await this.enqueueDisplay(() => this.seed(sub)); } catch {
+      await this.failGeometry();
+      this.closeTorndown(sub);
+      return;
+    }
     // RECHECK after the async seed: liveness/dispose may have torn the broker
     // down while the capture was pending. Never add a subscriber to a dead
     // broker - close it honestly with the remembered teardown reason.
@@ -302,6 +310,11 @@ export class TerminalSessionBroker {
    * and the subscriber rejoins the live fanout.
    */
   async scroll(sub: TerminalSubscriber, offset: number): Promise<void> {
+    if (!Number.isFinite(offset)) return;
+    try { await this.enqueueDisplay(() => this.paintScroll(sub, Math.min(100_000, offset))); } catch { await this.failGeometry(); }
+  }
+
+  private async paintScroll(sub: TerminalSubscriber, offset: number): Promise<void> {
     if (this.torndown || !this.subscribers.has(sub)) return;
     const clamped = Math.max(0, Math.floor(offset));
     if (clamped === 0) {
@@ -338,13 +351,107 @@ export class TerminalSessionBroker {
 
   /** Repaint the current visible screen to ONE subscriber (scroll-back to live). */
   private async repaintScreen(sub: TerminalSubscriber): Promise<void> {
-    let snapshot: string | null = null;
-    let cursor: TmuxCursorPosition | null = null;
-    try { snapshot = await this.tmux.capturePaneScreen(this.sessionName); } catch { snapshot = null; }
-    try { cursor = await this.tmux.getPaneCursorPosition(this.sessionName); } catch { cursor = null; }
-    if (snapshot !== null) {
-      try { sub.send(screenSnapshotEscape(snapshot, cursor)); } catch { /* dead */ }
+    const screen = await this.readScreen();
+    this.applyGeometry(screen.cursor);
+    this.readTail();
+    this.pendingRepaints.add(sub);
+    await this.repaintPending(screen);
+  }
+
+  private pipeSize(): number {
+    return this.outputPath ? fs.statSync(this.outputPath).size : 0;
+  }
+
+  private async settlePipe(): Promise<void> {
+    if (this.torndown) return;
+    await new Promise<void>((resolve) => {
+      this.settleResolve = resolve;
+      this.settleTimer = setTimeout(() => {
+        this.settleTimer = null;
+        this.settleResolve = null;
+        resolve();
+      }, Math.min(this.pollMs, 50));
+    });
+  }
+
+  private async readScreen(): Promise<{ snapshot: string | null; cursor: TmuxCursorPosition; position: number; stable: boolean }> {
+    // Native geometry can change between reads. Output has no atomic shared
+    // sequence with capture-pane: use a bounded quiet sample, never skip bytes
+    // to make a snapshot look current. Busy output defers repaint, not delivery.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const before = await this.tmux.getPaneCursorPosition(this.sessionName);
+      if (!validCursor(before)) throw new Error("terminal geometry unavailable");
+      const position = this.pipeSize();
+      const snapshot = await this.tmux.capturePaneScreen(this.sessionName);
+      await this.settlePipe();
+      const cursor = await this.tmux.getPaneCursorPosition(this.sessionName);
+      if (validCursor(cursor) && before.width === cursor.width && before.height === cursor.height) {
+        return { snapshot, cursor, position, stable: position === this.lastSize && position === this.pipeSize()
+          && before.x === cursor.x && before.y === cursor.y };
+      }
     }
+    throw new Error("terminal geometry unavailable");
+  }
+
+  private applyGeometry(cursor: TmuxCursorPosition): void {
+    if (this.torndown || (this.cols === cursor.width && this.rows === cursor.height)) return;
+    // Drop old-size replay history, but keep the consumed cursor and decoder.
+    // Every unread byte, including a partial UTF-8 sequence, must still stream.
+    this.history = []; this.historyBytes = 0;
+    this.cols = cursor.width; this.rows = cursor.height;
+    for (const sub of this.subscribers) {
+      try { sub.geometry?.(this.cols, this.rows); } catch { this.detach(sub); continue; }
+      this.pendingRepaints.add(sub);
+    }
+  }
+
+  private async repaintPending(screen: { snapshot: string | null; cursor: TmuxCursorPosition; position: number; stable: boolean }): Promise<void> {
+    if (this.torndown || !screen.stable || screen.position !== this.lastSize || screen.position !== this.pipeSize()) return;
+    for (const sub of [...this.pendingRepaints]) {
+      if (!this.subscribers.has(sub)) continue;
+      const offset = this.scrollOffsets.get(sub) ?? 0;
+      if (offset > 0) await this.paintScroll(sub, offset);
+      else { try { sub.send(screenSnapshotEscape(screen.snapshot ?? "", screen.cursor)); } catch { this.detach(sub); } }
+      this.pendingRepaints.delete(sub);
+    }
+  }
+
+  private readTail(extra?: TerminalSubscriber): void {
+    const p = this.outputPath;
+    if (!p || this.torndown) return;
+    try {
+      const stat = fs.statSync(p);
+      if (stat.size <= this.lastSize) return;
+      const fd = fs.openSync(p, "r");
+      const buf = Buffer.alloc(Math.min(stat.size - this.lastSize, MAX_OUTPUT_BUFFER));
+      let read: number;
+      try { read = fs.readSync(fd, buf, 0, buf.length, this.lastSize); } finally { fs.closeSync(fd); }
+      // This is the ONLY advancing write to the consumed cursor. Geometry and
+      // capture observations never acknowledge bytes that were not delivered.
+      this.lastSize += read;
+      const output = this.outputDecoder.write(buf.subarray(0, read));
+      if (!output) return;
+      this.fanout(output);
+      if (extra && !this.subscribers.has(extra)) { try { extra.send(output); } catch { /* dead subscriber */ } }
+    } catch { /* transient tail failures; geometry/liveness own availability */ }
+  }
+
+  private async failGeometry(): Promise<void> {
+    if (this.torndown) return;
+    let alive = true;
+    try { alive = await this.tmux.hasSession(this.sessionName); } catch { /* geometry remains unavailable */ }
+    if (this.torndown) return;
+    if (!alive) { this.handleSessionDeath(); return; }
+    const subs = [...this.subscribers];
+    this.dispose();
+    this.lastClose = { code: 1011, reason: "terminal geometry unavailable or outside supported bounds" };
+    for (const sub of subs) { try { sub.close(this.lastClose.code, this.lastClose.reason); } catch { /* dead socket */ } }
+  }
+
+  private enqueueDisplay(op: () => Promise<void>): Promise<void> {
+    const run = this.displayQueue.then(op, op);
+    this.displayQueue = run.catch(() => {});
+    return run;
   }
 
   /**
@@ -354,6 +461,7 @@ export class TerminalSessionBroker {
   detach(sub: TerminalSubscriber): void {
     if (!this.subscribers.delete(sub)) return;
     this.scrollOffsets.delete(sub);
+    this.pendingRepaints.delete(sub);
     if (this.subscribers.size === 0) {
       void this.teardown();
     }
@@ -381,12 +489,6 @@ export class TerminalSessionBroker {
     const alive = await this.tmux.hasSession(this.sessionName);
     if (!alive) return { ok: false, code: 1008, reason: `session not found: ${this.sessionName}` };
 
-    // FR-7 fixed geometry: window-size manual so tmux will NOT auto-shrink the
-    // window to the smallest attached client; then the canonical width/height
-    // ONCE. Deliberately NOT aggressive-resize, which does the opposite.
-    await this.tmux.setWindowOption(this.sessionName, "window-size", "manual").catch(() => {});
-    await this.tmux.resizeWindow(this.sessionName, this.cols, this.rows).catch(() => {});
-
     const outputPath = path.join(
       os.tmpdir(),
       `openrig-term-${this.sessionName.replace(/[^a-zA-Z0-9@-]/g, "_")}-${Date.now()}.log`,
@@ -404,68 +506,44 @@ export class TerminalSessionBroker {
     }
     this.pipeActive = true;
 
-    // Nudge a redraw so the freshly attached pipe captures current pane content
-    // (parity with the prior single-connection behavior; FR-9 no regression).
-    await this.tmux.sendKeys(this.sessionName, ["", ""]).catch(() => {});
     return { ok: true };
   }
 
   private async seed(sub: TerminalSubscriber): Promise<void> {
-    // AC-5: replay the broker-owned recent-output ring FIRST so the late
-    // subscriber's xterm builds the same scrollback the earlier subscribers
-    // have for plain terminal streams. Cursor-addressed TUI repaint history is
-    // not scrollback; replaying it corrupts late subscribers, so those sessions
-    // seed from the current visible-screen snapshot only.
+    const screen = await this.readScreen();
+    this.applyGeometry(screen.cursor);
+    if (this.torndown) return;
+    try { sub.geometry?.(this.cols, this.rows); } catch { /* dead subscriber */ }
     if (this.historyBytes > 0) {
       const history = this.history.join("");
-      if (isSafeHistoryReplay(history)) {
-        try { sub.send(history); } catch { /* dead subscriber */ }
-      }
+      if (isSafeHistoryReplay(history)) { try { sub.send(history); } catch { /* dead socket */ } }
     }
-    // Best-effort: a failed capture (or an adapter without the seed methods)
-    // must never break the attach - the tail still streams live output.
-    let snapshot: string | null = null;
-    let cursor: TmuxCursorPosition | null = null;
-    try {
-      snapshot = await this.tmux.capturePaneScreen(this.sessionName);
-    } catch {
-      snapshot = null;
-    }
-    try {
-      cursor = await this.tmux.getPaneCursorPosition(this.sessionName);
-    } catch {
-      cursor = null;
-    }
-    if (snapshot != null) {
-      try {
-        sub.send(screenSnapshotEscape(snapshot, cursor));
-      } catch {
-        // a dead subscriber is harmless here; the route handles its own close
-      }
-    }
+    this.readTail(sub);
+    if (screen.stable && screen.position === this.lastSize && screen.position === this.pipeSize()) {
+      if (screen.snapshot !== null) { try { sub.send(screenSnapshotEscape(screen.snapshot, screen.cursor)); } catch { /* dead socket */ } }
+    } else this.pendingRepaints.add(sub);
   }
 
   private startTail(): void {
     if (this.tailInterval) return;
     this.tailInterval = setInterval(() => {
-      const p = this.outputPath;
-      if (!p) return;
-      try {
-        const stat = fs.statSync(p);
-        if (stat.size > this.lastSize) {
-          const fd = fs.openSync(p, "r");
-          const buf = Buffer.alloc(Math.min(stat.size - this.lastSize, MAX_OUTPUT_BUFFER));
-          fs.readSync(fd, buf, 0, buf.length, this.lastSize);
-          fs.closeSync(fd);
-          this.lastSize += buf.length;
-          // A pipe write or the read bound can split a multibyte character.
-          // Retain its pending bytes until the next poll before broadcasting.
-          const output = this.outputDecoder.write(buf);
-          if (output) this.fanout(output);
+      if (this.tickPending || this.torndown) return;
+      this.tickPending = true;
+      void this.enqueueDisplay(async () => {
+        if (this.torndown) return;
+        if (Date.now() - this.lastGeometryRead >= this.geometryMs) {
+          this.lastGeometryRead = Date.now();
+          const cursor = await this.tmux.getPaneCursorPosition(this.sessionName);
+          if (!validCursor(cursor)) throw new Error("terminal geometry unavailable");
+          this.applyGeometry(cursor);
         }
-      } catch {
-        // transient stat/read failures are tolerated; liveness owns death
-      }
+        this.readTail();
+        if (this.pendingRepaints.size) {
+          const screen = await this.readScreen();
+          this.applyGeometry(screen.cursor);
+          await this.repaintPending(screen);
+        }
+      }).catch(() => this.failGeometry()).finally(() => { this.tickPending = false; });
     }, this.pollMs);
   }
 
@@ -555,6 +633,10 @@ export class TerminalSessionBroker {
   }
 
   private teardownResources(): void {
+    this.pendingRepaints.clear();
+    if (this.settleTimer) { clearTimeout(this.settleTimer); this.settleTimer = null; }
+    this.settleResolve?.();
+    this.settleResolve = null;
     if (this.tailInterval) {
       clearInterval(this.tailInterval);
       this.tailInterval = null;

@@ -143,20 +143,22 @@ export function registerTerminalWs(
             // viewer scrolls independently (read-only on the shared pane).
             if (subscriber) await broker.scroll(subscriber, msg.offset);
           }
-          // FR-7: there is intentionally NO resize branch. The broker owns the
-          // fixed canonical geometry; a client-driven resize is ignored so
-          // multiple viewers cannot shrink the shared pane.
+          // No client resize path: native clients own pane geometry; browsers mirror it.
         } catch { /* ignore malformed frames */ }
       };
 
       return {
         async onOpen(_evt: unknown, ws: { send(data: string): void; close(code: number, reason: string): void }) {
+          if (c.req.query("protocol") !== "2") {
+            ws.close(1008, "terminal protocol update required; reload the web UI"); return;
+          }
           const tmux = c.get("tmuxAdapter") as TmuxAdapter | undefined;
           if (!tmux) { ws.close(1011, "tmux adapter unavailable"); return; }
           // Adapt the WebSocket to a broker subscriber. The broker owns the pipe,
           // the seed, the fanout, honest session-death close, and cleanup.
           const sub: TerminalSubscriber = {
-            send: (data: string) => { try { ws.send(data); } catch { /* closed socket */ } },
+            send: (data: string) => { try { ws.send(JSON.stringify({ type: "output", data })); } catch { /* closed socket */ } },
+            geometry: (cols, rows) => { ws.send(JSON.stringify({ type: "geometry", cols, rows })); },
             close: (code: number, reason: string) => { try { ws.close(code, reason); } catch { /* already closed */ } },
           };
           subscriber = sub;

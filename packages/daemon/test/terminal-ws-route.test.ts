@@ -16,6 +16,8 @@ beforeAll(async () => {
   app.use("*", async (c, next) => {
     c.set("tmuxAdapter" as never, {
       hasSession: async () => true,
+      getPaneCursorPosition: async () => ({ x: 0, y: 0, width: 137, height: 43 }),
+      capturePaneScreen: async () => null,
       setWindowOption: async () => ({ ok: true }),
       startPipePane: async () => ({ ok: true }),
       stopPipePane: async () => ({ ok: true }),
@@ -68,7 +70,7 @@ function rawUpgrade(path: string, extraHeaders?: Record<string, string>): Promis
 describe("terminal WebSocket route (production path)", () => {
   it("valid token WS upgrade does NOT return 404 (the QA blocker regression)", async () => {
     const result = await rawUpgrade(
-      `/api/terminal/test-session?token=${TOKEN}`,
+      `/api/terminal/test-session?protocol=2&token=${TOKEN}`,
       { Origin: "http://127.0.0.1" },
     );
     expect(result.statusCode, `expected non-404, got ${result.statusCode}: ${result.body}`).not.toBe(404);
@@ -84,7 +86,7 @@ describe("terminal WebSocket route (production path)", () => {
 
   it("bad Origin returns 403", async () => {
     const result = await rawUpgrade(
-      `/api/terminal/test-session?token=${TOKEN}`,
+      `/api/terminal/test-session?protocol=2&token=${TOKEN}`,
       { Origin: "http://evil.example.com" },
     );
     expect(result.statusCode).toBe(403);
@@ -92,7 +94,7 @@ describe("terminal WebSocket route (production path)", () => {
 
   it("wrong token returns 401", async () => {
     const result = await rawUpgrade(
-      `/api/terminal/test-session?token=wrong`,
+      `/api/terminal/test-session?protocol=2&token=wrong`,
       { Origin: "http://127.0.0.1" },
     );
     expect(result.statusCode).toBe(401);
@@ -108,6 +110,8 @@ describe("terminal WebSocket DNS rebinding and origin protection", () => {
     app.use("*", async (c, next) => {
       c.set("tmuxAdapter" as never, {
         hasSession: async () => true,
+      getPaneCursorPosition: async () => ({ x: 0, y: 0, width: 137, height: 43 }),
+      capturePaneScreen: async () => null,
         setWindowOption: async () => ({ ok: true }),
         startPipePane: async () => ({ ok: true }),
         stopPipePane: async () => ({ ok: true }),
@@ -239,6 +243,8 @@ describe("terminal WebSocket input ordering", () => {
     app3.use("*", async (c, next) => {
       c.set("tmuxAdapter" as never, {
         hasSession: async () => true,
+      getPaneCursorPosition: async () => ({ x: 0, y: 0, width: 137, height: 43 }),
+      capturePaneScreen: async () => null,
         setWindowOption: async () => ({ ok: true }),
         startPipePane: async () => ({ ok: true }),
         stopPipePane: async () => ({ ok: true }),
@@ -265,7 +271,7 @@ describe("terminal WebSocket input ordering", () => {
 
   it("serializes rapid text messages before calling tmux", async () => {
     textCompletions.length = 0;
-    const ws = new WebSocket(`ws://127.0.0.1:${ORDER_PORT}/api/terminal/order-test?token=${ORDER_TOKEN}`);
+    const ws = new WebSocket(`ws://127.0.0.1:${ORDER_PORT}/api/terminal/order-test?protocol=2&token=${ORDER_TOKEN}`);
     await new Promise<void>((resolve, reject) => {
       ws.onopen = () => resolve();
       ws.onerror = () => reject(new Error("websocket failed to open"));
@@ -294,6 +300,8 @@ describe("terminal WebSocket lifecycle (session death)", () => {
     app2.use("*", async (c, next) => {
       c.set("tmuxAdapter" as never, {
         hasSession: async () => sessionAlive,
+        getPaneCursorPosition: async () => ({ x: 0, y: 0, width: 137, height: 43 }),
+        capturePaneScreen: async () => null,
         setWindowOption: async () => ({ ok: true }),
         startPipePane: async () => ({ ok: true }),
         stopPipePane: async (name: string) => { stopPipePaneCalls.push(name); return { ok: true }; },
@@ -319,7 +327,7 @@ describe("terminal WebSocket lifecycle (session death)", () => {
     stopPipePaneCalls.length = 0;
 
     const closePromise = new Promise<{ code: number; reason: string }>((resolve) => {
-      const ws = new WebSocket(`ws://127.0.0.1:${LIFECYCLE_PORT}/api/terminal/death-test?token=${LIFECYCLE_TOKEN}`);
+      const ws = new WebSocket(`ws://127.0.0.1:${LIFECYCLE_PORT}/api/terminal/death-test?protocol=2&token=${LIFECYCLE_TOKEN}`);
       ws.onopen = () => {
         sessionAlive = false;
       };
@@ -356,6 +364,8 @@ describe("terminal WebSocket broker (multi-subscriber route)", () => {
     app.use("*", async (c, next) => {
       c.set("tmuxAdapter" as never, {
         hasSession: async () => true,
+      getPaneCursorPosition: async () => ({ x: 0, y: 0, width: 137, height: 43 }),
+      capturePaneScreen: async () => null,
         setWindowOption: async () => ({ ok: true }),
         resizeWindow: async (_n: string, cols: number, rows: number) => {
           resizeWindowCalls.push({ cols, rows });
@@ -369,8 +379,6 @@ describe("terminal WebSocket broker (multi-subscriber route)", () => {
         stopPipePane: async () => ({ ok: true }),
         sendKeys: async () => ({ ok: true }),
         sendText: async () => ({ ok: true }),
-        capturePaneScreen: async () => null,
-        getPaneCursorPosition: async () => null,
       });
       await next();
     });
@@ -386,7 +394,7 @@ describe("terminal WebSocket broker (multi-subscriber route)", () => {
   });
 
   function openWs(session: string): Promise<WebSocket> {
-    const ws = new WebSocket(`ws://127.0.0.1:${BROKER_PORT}/api/terminal/${session}?token=${BROKER_TOKEN}`);
+    const ws = new WebSocket(`ws://127.0.0.1:${BROKER_PORT}/api/terminal/${session}?protocol=2&token=${BROKER_TOKEN}`);
     return new Promise((resolve, reject) => {
       ws.onopen = () => resolve(ws);
       ws.onerror = () => reject(new Error("ws failed to open"));
@@ -419,19 +427,16 @@ describe("terminal WebSocket broker (multi-subscriber route)", () => {
     b.close();
   }, 10000);
 
-  it("a client resize message never resizes the pane (FR-7): only the one canonical geometry call", async () => {
+  it("viewing and client resize messages never resize the native pane", async () => {
     resizeWindowCalls.length = 0;
     const ws = await openWs("resize-session");
-    // One canonical-geometry resize happens at broker open.
-    await vi.waitFor(() => {
-      expect(resizeWindowCalls).toHaveLength(1);
-    }, { timeout: 1000 });
-    expect(resizeWindowCalls[0]).toEqual({ cols: 90, rows: 27 });
+    await vi.waitFor(() => expect(startPipePaneCalls).toContain("resize-session"));
+    expect(resizeWindowCalls).toHaveLength(0);
 
     ws.send(JSON.stringify({ type: "resize", cols: 200, rows: 9 }));
     // Give the message time to (not) be processed.
     await new Promise<void>((r) => setTimeout(r, 120));
-    expect(resizeWindowCalls).toHaveLength(1); // unchanged - the resize was ignored
+    expect(resizeWindowCalls).toHaveLength(0); // connect and resize are passive
 
     ws.close();
   }, 10000);
@@ -452,6 +457,8 @@ describe("terminal WebSocket detach-during-attach race", () => {
     app.use("*", async (c, next) => {
       c.set("tmuxAdapter" as never, {
         hasSession: async () => true,
+      getPaneCursorPosition: async () => ({ x: 0, y: 0, width: 137, height: 43 }),
+      capturePaneScreen: async () => null,
         setWindowOption: async () => ({ ok: true }),
         resizeWindow: async () => ({ ok: true }),
         // Slow pipe-start widens the attach window so the client close lands
@@ -464,8 +471,6 @@ describe("terminal WebSocket detach-during-attach race", () => {
         stopPipePane: async (name: string) => { stopPipePaneCalls.push(name); return { ok: true }; },
         sendKeys: async () => ({ ok: true }),
         sendText: async () => ({ ok: true }),
-        capturePaneScreen: async () => null,
-        getPaneCursorPosition: async () => null,
       });
       await next();
     });
@@ -484,7 +489,7 @@ describe("terminal WebSocket detach-during-attach race", () => {
     stopPipePaneCalls.length = 0;
     capturedOutputPath = null;
 
-    const ws = new WebSocket(`ws://127.0.0.1:${RACE_PORT}/api/terminal/race-session?token=${RACE_TOKEN}`);
+    const ws = new WebSocket(`ws://127.0.0.1:${RACE_PORT}/api/terminal/race-session?protocol=2&token=${RACE_TOKEN}`);
     // Close immediately on open - while the server's attach is still awaiting the
     // 120ms startPipePane.
     ws.onopen = () => { ws.close(); };
@@ -517,6 +522,8 @@ describe("terminal WebSocket send-at-open buffering (initialText race)", () => {
     app.use("*", async (c, next) => {
       c.set("tmuxAdapter" as never, {
         hasSession: async () => true,
+      getPaneCursorPosition: async () => ({ x: 0, y: 0, width: 137, height: 43 }),
+      capturePaneScreen: async () => null,
         setWindowOption: async () => ({ ok: true }),
         resizeWindow: async () => ({ ok: true }),
         // Slow pipe-start widens the attach window so the client's at-open text
@@ -528,8 +535,6 @@ describe("terminal WebSocket send-at-open buffering (initialText race)", () => {
         stopPipePane: async () => ({ ok: true }),
         sendKeys: async () => ({ ok: true }),
         sendText: async (_name: string, text: string) => { sentTexts.push(text); return { ok: true }; },
-        capturePaneScreen: async () => null,
-        getPaneCursorPosition: async () => null,
       });
       await next();
     });
@@ -546,7 +551,7 @@ describe("terminal WebSocket send-at-open buffering (initialText race)", () => {
 
   it("a text frame sent at ws-open (attach in flight) is buffered and delivered, not dropped", async () => {
     sentTexts.length = 0;
-    const ws = new WebSocket(`ws://127.0.0.1:${EARLY_PORT}/api/terminal/early-session?token=${EARLY_TOKEN}`);
+    const ws = new WebSocket(`ws://127.0.0.1:${EARLY_PORT}/api/terminal/early-session?protocol=2&token=${EARLY_TOKEN}`);
     const preamble = "[review fixture] Standing contract … user message begins here: ";
     ws.onopen = () => {
       // Exactly what FocusedTerminal does: one text frame, immediately at open.
@@ -560,7 +565,7 @@ describe("terminal WebSocket send-at-open buffering (initialText race)", () => {
 
   it("caps pre-attach buffering instead of accepting unbounded early frames", async () => {
     sentTexts.length = 0;
-    const ws = new WebSocket(`ws://127.0.0.1:${EARLY_PORT}/api/terminal/early-overflow?token=${EARLY_TOKEN}`);
+    const ws = new WebSocket(`ws://127.0.0.1:${EARLY_PORT}/api/terminal/early-overflow?protocol=2&token=${EARLY_TOKEN}`);
     const closed = new Promise<{ code: number }>((resolve) => { ws.onclose = (evt) => resolve({ code: evt.code }); });
     ws.onopen = () => {
       for (let i = 0; i < 40; i++) {
@@ -571,4 +576,12 @@ describe("terminal WebSocket send-at-open buffering (initialText race)", () => {
     expect(evt.code).toBe(1009);
     expect(sentTexts).toEqual([]);
   }, 10000);
+});
+
+it("legacy sockets receive an explicit reload requirement without touching native panes", async () => {
+  const ws = new WebSocket(`ws://127.0.0.1:${PORT}/api/terminal/legacy-session?token=${TOKEN}`);
+  const closed = await new Promise<{ code: number; reason: string }>(resolve => {
+    ws.onclose = event => resolve({ code: event.code, reason: event.reason });
+  });
+  expect(closed).toEqual({ code: 1008, reason: "terminal protocol update required; reload the web UI" });
 });
