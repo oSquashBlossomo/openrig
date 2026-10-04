@@ -165,12 +165,19 @@ describe("DaemonClient config integration", () => {
 
 describe("DaemonClient config-aware baseUrl", () => {
   it("new DaemonClient() without args resolves baseUrl from config env vars", async () => {
+    const instanceHome = mkdtempSync(join(tmpdir(), "client-config-empty-instance-"));
     const saved = {
       OPENRIG_URL: process.env["OPENRIG_URL"],
+      RIGGED_URL: process.env["RIGGED_URL"],
+      OPENRIG_HOME: process.env["OPENRIG_HOME"],
       OPENRIG_PORT: process.env["OPENRIG_PORT"],
       OPENRIG_HOST: process.env["OPENRIG_HOST"],
     };
+    // A real local daemon.json intentionally takes precedence over config defaults.
+    // Exercise the fallback in a private empty instance, never the operator's home.
+    process.env["OPENRIG_HOME"] = instanceHome;
     delete process.env["OPENRIG_URL"];
+    delete process.env["RIGGED_URL"];
     process.env["OPENRIG_PORT"] = "9999";
     process.env["OPENRIG_HOST"] = "10.0.0.5";
     try {
@@ -178,12 +185,11 @@ describe("DaemonClient config-aware baseUrl", () => {
       const client = new DaemonClient();
       expect(client.baseUrl).toBe("http://10.0.0.5:9999");
     } finally {
-      if (saved.OPENRIG_URL !== undefined) process.env["OPENRIG_URL"] = saved.OPENRIG_URL;
-      else delete process.env["OPENRIG_URL"];
-      if (saved.OPENRIG_PORT !== undefined) process.env["OPENRIG_PORT"] = saved.OPENRIG_PORT;
-      else delete process.env["OPENRIG_PORT"];
-      if (saved.OPENRIG_HOST !== undefined) process.env["OPENRIG_HOST"] = saved.OPENRIG_HOST;
-      else delete process.env["OPENRIG_HOST"];
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      rmSync(instanceHome, { recursive: true, force: true });
     }
   });
 });
