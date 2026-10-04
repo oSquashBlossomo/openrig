@@ -23,6 +23,8 @@
 // every focus.
 
 import { useQuery } from "@tanstack/react-query";
+import { boundedJsonRead } from "../lib/bounded-json-read.js";
+import { OperatorReadError } from "../lib/operator-read.js";
 
 export interface AttentionQueueItem {
   qitemId: string;
@@ -61,23 +63,49 @@ export interface AttentionData {
   hosts: AttentionHostStatus[];
 }
 
-async function fetchAttentionItems(limit?: number): Promise<AttentionQueueItem[]> {
-  const params = new URLSearchParams({ attention: "1" });
-  if (limit !== undefined) params.set("limit", String(limit));
-  const res = await fetch(`/api/queue/list?${params.toString()}`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return (await res.json()) as AttentionQueueItem[];
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function nullableText(value: unknown): boolean {
+  return value === null || typeof value === "string";
+}
+/** Validate the fields this legacy surface consumes without stripping newer
+ * queue facts or closing extensible state/priority vocabularies. */
+function isAttentionItem(value: unknown): value is AttentionQueueItem {
+  if (!isRecord(value)) return false;
+  return typeof value.qitemId === "string" && value.qitemId.length > 0
+    && ["tsCreated", "tsUpdated", "sourceSession", "destinationSession", "state", "priority", "body"]
+      .every(key => typeof value[key] === "string")
+    && ["tier", "blockedOn", "handedOffTo", "handedOffFrom"].every(key => nullableText(value[key]))
+    && (value.tags === null || (Array.isArray(value.tags) && value.tags.every(tag => typeof tag === "string")))
+    && ["summary", "evidenceRef"].every(key => value[key] === undefined || nullableText(value[key]))
+    && (value.hostId === undefined || (typeof value.hostId === "string" && value.hostId.length > 0));
+}
+function isHostStatus(value: unknown): value is AttentionHostStatus {
+  return isRecord(value) && typeof value.hostId === "string" && value.hostId.length > 0
+    && ["ok", "unreachable", "unsupported-transport", "auth-failed"].includes(value.status as string)
+    && ["error", "failedStep"].every(key => value[key] === undefined || typeof value[key] === "string");
 }
 
-async function fetchAggregatedAttention(limit?: number): Promise<AttentionData> {
-  const res = await fetch("/api/queue/attention-aggregate");
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const payload = (await res.json()) as Partial<AttentionData>;
-  const items = Array.isArray(payload.items) ? payload.items : [];
-  return {
-    items: limit !== undefined ? items.slice(0, limit) : items,
-    hosts: Array.isArray(payload.hosts) ? payload.hosts : [],
-  };
+async function fetchAttentionItems(limit: number, signal: AbortSignal): Promise<AttentionQueueItem[]> {
+  const params = new URLSearchParams({ attention: "1", limit: String(limit) });
+  const payload = await boundedJsonRead<unknown>(`/api/queue/list?${params.toString()}`, { signal });
+  if (!Array.isArray(payload) || !payload.every(isAttentionItem)) {
+    throw new OperatorReadError("invalid_contract", "Attention list did not serve a valid queue-item array.");
+  }
+  return payload;
+}
+
+async function fetchAggregatedAttention(limit: number, signal: AbortSignal): Promise<AttentionData> {
+  const payload = await boundedJsonRead<unknown>("/api/queue/attention-aggregate", { signal });
+  if (!isRecord(payload) || !Array.isArray(payload.items) || !Array.isArray(payload.hosts)
+    || !payload.items.every(value => isAttentionItem(value) && typeof value.hostId === "string")
+    || !payload.hosts.every(isHostStatus)) {
+    throw new OperatorReadError("invalid_contract", "Aggregated attention did not serve valid items and host statuses.");
+  }
+  // Preserve source host metadata, nullable/additive queue facts, and any
+  // future envelope facts. The render limit never truncates host failures.
+  return { ...payload, items: (payload.items as AttentionQueueItem[]).slice(0, limit), hosts: payload.hosts };
 }
 
 /**
@@ -99,9 +127,12 @@ export function useAttentionItems(limit: number = 50, aggregated: boolean = fals
   return useQuery<AttentionData>({
     queryKey: ["attention-items", limit, aggregated],
     queryFn: aggregated
-      ? () => fetchAggregatedAttention(limit)
-      : async () => ({ items: await fetchAttentionItems(limit), hosts: [] }),
+      ? ({ signal }) => fetchAggregatedAttention(limit, signal)
+      : async ({ signal }) => ({ items: await fetchAttentionItems(limit, signal), hosts: [] }),
     staleTime: 15_000,
+    retry: false,
+    // Mode and limit are separate facts, even under a global keepPreviousData default.
+    placeholderData: undefined,
     // HG-8: 'always' (not `true`) — see file header comment.
     refetchOnWindowFocus: "always",
   });
