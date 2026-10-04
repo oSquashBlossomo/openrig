@@ -201,7 +201,7 @@ describe("Specs CLI", () => {
   });
 
   it("specs add validates, copies, and reports entry ID", async () => {
-    const { mkdtempSync, writeFileSync, rmSync, existsSync } = await import("node:fs");
+    const { mkdtempSync, writeFileSync, rmSync, existsSync, realpathSync } = await import("node:fs");
     const { join } = await import("node:path");
     const { tmpdir } = await import("node:os");
 
@@ -224,7 +224,7 @@ describe("Specs CLI", () => {
           res.end(JSON.stringify({ kind: "rig", name: "test-spec" }));
         } else if (url === "/api/specs/library/sync" && req.method === "POST") {
           res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify([{ id: "new-id", kind: "rig", name: "test-spec", sourcePath: join(tmpDir, ".openrig", "specs", "test-spec.yaml") }]));
+          res.end(JSON.stringify([{ id: "new-id", kind: "rig", name: "test-spec", sourcePath: realpathSync(join(tmpDir, ".openrig", "specs", "test-spec.yaml")) }]));
         } else if (url === "/api/specs/library") {
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify([]));
@@ -261,7 +261,7 @@ describe("Specs CLI", () => {
   });
 
   it("specs add installs a full rig directory with adjacent resources", async () => {
-    const { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync } = await import("node:fs");
+    const { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, realpathSync } = await import("node:fs");
     const { join } = await import("node:path");
     const { tmpdir } = await import("node:os");
 
@@ -324,7 +324,7 @@ describe("Specs CLI", () => {
             id: "dir-id",
             kind: "rig",
             name: "building-openrig",
-            sourcePath: join(tmpDir, ".openrig", "specs", "building-openrig", "rig.yaml"),
+            sourcePath: realpathSync(join(tmpDir, ".openrig", "specs", "building-openrig", "rig.yaml")),
           }]));
         } else if (url === "/api/specs/library") {
           res.writeHead(200, { "Content-Type": "application/json" });

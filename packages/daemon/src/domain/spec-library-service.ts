@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, relative, dirname, extname } from "node:path";
 import { createHash } from "node:crypto";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
@@ -36,13 +36,19 @@ export interface SpecLibraryOpts {
 
 export type SpecLibraryMutationResult =
   | { ok: true; entry: SpecLibraryEntry }
-  | { ok: false; code: "not_found" | "read_only" | "conflict" | "invalid_spec"; error: string };
+  | { ok: false; code: "not_found" | "read_only" | "conflict" | "invalid_spec" | "legacy_spec_id" | "source_changed"; error: string };
 
-function makeId(sourceType: string, relativePath: string): string {
+/** File-address identity, not a portable package/name/content identity. */
+function makeId(canonicalSourcePath: string): string {
   return createHash("sha256")
-    .update(`${sourceType}:${relativePath}`)
-    .digest("hex")
-    .slice(0, 16);
+    .update(JSON.stringify(["spec-file", 2, canonicalSourcePath]))
+    .digest("hex");
+}
+
+export class SpecLibraryIdentityError extends Error {
+  constructor(readonly code: "legacy_spec_id" | "source_changed", message: string) {
+    super(message); this.name = "SpecLibraryIdentityError";
+  }
 }
 
 function isYamlFile(filename: string): boolean {
@@ -108,6 +114,7 @@ function shouldIndexRelativePath(sourceType: "builtin" | "user_file", relPath: s
 
 export class SpecLibraryService {
   private entries = new Map<string, SpecLibraryEntry>();
+  private fileBindings = new Map<string, { canonicalPath: string; authoredPath: string }>();
   /** Workflow entries are written by the route layer via
    *  setWorkflowEntries() — kept separate from the rig+agent scan
    *  because their source-of-truth is the workflow_specs SQLite cache,
@@ -123,8 +130,12 @@ export class SpecLibraryService {
 
   scan(): void {
     const newEntries = new Map<string, SpecLibraryEntry>();
+    const newBindings = new Map<string, { canonicalPath: string; authoredPath: string }>();
+    const ranks = new Map<string, string[]>();
 
     for (const root of this.roots) {
+      let canonicalRoot: string;
+      try { canonicalRoot = realpathSync(root.path); } catch { continue; }
       const files = walkYamlFiles(root.path);
       if (files.length === 0) {
         continue;
@@ -136,28 +147,39 @@ export class SpecLibraryService {
           continue;
         }
 
-        let yaml: string;
+        let yaml: string, canonicalPath: string;
         try {
-          yaml = readFileSync(absPath, "utf-8");
+          canonicalPath = realpathSync(absPath);
+          yaml = readFileSync(canonicalPath, "utf-8");
         } catch {
           continue; // Can't read — skip
         }
 
         let stat: { mtimeMs: number };
         try {
-          stat = statSync(absPath);
+          stat = statSync(canonicalPath);
         } catch {
           continue;
         }
 
-        const entry = this.classifySpec(yaml, root.sourceType, absPath, relPath, stat.mtimeMs);
+        const entry = this.classifySpec(yaml, root.sourceType, canonicalPath, relPath, stat.mtimeMs);
         if (entry) {
-          newEntries.set(entry.id, entry);
+          // Same physical address can appear through overlapping/aliased roots.
+          // Prefer read-only builtin classification, then a stable metadata tuple.
+          const rank = [root.sourceType === "builtin" ? "0" : "1", canonicalRoot, relPath, root.path];
+          const previous = ranks.get(entry.id);
+          const firstDifference = previous ? rank.findIndex((value, i) => value !== previous[i]) : -1;
+          if (!previous || (firstDifference >= 0 && rank[firstDifference]! < previous[firstDifference]!)) {
+            newEntries.set(entry.id, entry);
+            newBindings.set(entry.id, { canonicalPath, authoredPath: absPath });
+            ranks.set(entry.id, rank);
+          }
         }
       }
     }
 
     this.entries = newEntries;
+    this.fileBindings = newBindings;
   }
 
   list(filter?: { kind?: "rig" | "agent" | "workflow" }): SpecLibraryEntry[] {
@@ -191,7 +213,7 @@ export class SpecLibraryService {
       try { yaml = readFileSync(wfEntry.sourcePath, "utf-8"); } catch { /* tolerate */ }
       return { entry: wfEntry, yaml };
     }
-    const entry = this.entries.get(id);
+    const entry = this.admitFile(id);
     if (!entry) return null;
 
     try {
@@ -203,7 +225,12 @@ export class SpecLibraryService {
   }
 
   remove(id: string): SpecLibraryMutationResult {
-    const entry = this.entries.get(id);
+    let entry: SpecLibraryEntry | undefined;
+    try { entry = this.admitFile(id); }
+    catch (error) {
+      if (error instanceof SpecLibraryIdentityError) return { ok: false, code: error.code, error: error.message };
+      throw error;
+    }
     if (!entry) {
       return { ok: false, code: "not_found", error: `Spec '${id}' not found in library` };
     }
@@ -217,7 +244,12 @@ export class SpecLibraryService {
   }
 
   rename(id: string, newName: string): SpecLibraryMutationResult {
-    const entry = this.entries.get(id);
+    let entry: SpecLibraryEntry | undefined;
+    try { entry = this.admitFile(id); }
+    catch (error) {
+      if (error instanceof SpecLibraryIdentityError) return { ok: false, code: error.code, error: error.message };
+      throw error;
+    }
     if (!entry) {
       return { ok: false, code: "not_found", error: `Spec '${id}' not found in library` };
     }
@@ -267,6 +299,18 @@ export class SpecLibraryService {
       : { ok: false, code: "invalid_spec", error: `Renamed spec '${trimmedName}' could not be reloaded.` };
   }
 
+  private admitFile(id: string): SpecLibraryEntry | undefined {
+    // Relative-only IDs cannot establish a physical source, even if the current
+    // catalog has zero/one candidate. Never guess an alias for old links/writes.
+    if (/^[0-9a-f]{16}$/.test(id)) throw new SpecLibraryIdentityError("legacy_spec_id", "This legacy spec ID does not identify an exact source. Reselect the spec from the current library.");
+    const entry = this.entries.get(id), binding = this.fileBindings.get(id);
+    if (!entry || !binding) return undefined;
+    let currentPath: string;
+    try { currentPath = realpathSync(binding.authoredPath); } catch { return undefined; }
+    if (currentPath !== binding.canonicalPath) throw new SpecLibraryIdentityError("source_changed", "This spec source address changed. Refresh the library and reselect the exact source.");
+    return entry;
+  }
+
   private classifySpec(
     yaml: string,
     sourceType: "builtin" | "user_file",
@@ -283,7 +327,7 @@ export class SpecLibraryService {
         hasServices = !!(raw["services"] && typeof raw["services"] === "object");
       } catch { /* safe default */ }
       return {
-        id: makeId(sourceType, relPath),
+        id: `specfile:v2:${makeId(absPath)}`,
         kind: "rig",
         name: review.name,
         version: review.version,
@@ -302,7 +346,7 @@ export class SpecLibraryService {
     try {
       const review = this.specReviewService.reviewAgentSpec(yaml, "library_item");
       return {
-        id: makeId(sourceType, relPath),
+        id: `specfile:v2:${makeId(absPath)}`,
         kind: "agent",
         name: review.name,
         version: review.version,

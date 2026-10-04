@@ -57,7 +57,7 @@ describe("spec library routes", () => {
   it("keeps source provenance and serves canonical source identity for file-root mapping", async () => {
     const res = await createApp().request("/api/specs/library");
     const entries = await res.json() as Array<{ sourcePath: string; resolvedSourcePath: string }>;
-    expect(entries[0]!.sourcePath).toBe(join(tmpDir, "rig.yaml"));
+    expect(entries[0]!.sourcePath).toBe(realpathSync(join(tmpDir, "rig.yaml")));
     expect(entries[0]!.resolvedSourcePath).toBe(realpathSync(join(tmpDir, "rig.yaml")));
   });
 
