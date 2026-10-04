@@ -99,7 +99,18 @@ test("review tools cannot execute shell commands or read credential files", () =
   const review = workflow.jobs["claude-review"].steps.find(step => step.name === "Review pull request");
   // The action treats a separate empty value as a missing argument.
   assert.match(review.with.claude_args, /(?:^|\s)--tools=(?:\s|$)/);
-  assert.ok(review.with.claude_args.includes("mcp__github__pull_request_read"));
+  for (const name of ["get_pull_request", "get_pull_request_diff", "get_pull_request_files"]) {
+    assert.ok(review.with.claude_args.includes(`mcp__github__${name}`));
+  }
+  assert.ok(!review.with.claude_args.includes("mcp__github__pull_request_read"));
   assert.ok(review.with.claude_args.includes("mcp__github__add_issue_comment"));
   assert.ok(!review.with.claude_args.includes("Bash("));
+});
+
+test("PR reviews use the repository-scoped comment token without app OIDC exchange", () => {
+  const review = workflow.jobs["claude-review"].steps.find(step => step.name === "Review pull request");
+  assert.equal(review.with.github_token, "${{ github.token }}");
+  assert.equal(workflow.permissions["pull-requests"], "write");
+  assert.equal(workflow.permissions.contents, "read");
+  assert.equal(workflow.permissions["id-token"], undefined);
 });
