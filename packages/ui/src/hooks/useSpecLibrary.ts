@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { readLibraryEntries, readLibraryReview } from "../lib/node-library-reads.js";
+import { OperatorReadError } from "../lib/operator-read.js";
 import { useSelectedHostId } from "./useHosts.js";
 import type { RigSpecReview, AgentSpecReview } from "./useSpecReview.js";
 
@@ -88,25 +89,41 @@ export interface LibraryWorkflowReview {
   }>;
 }
 
-export function useSpecLibrary(kind?: SpecLibraryKind) {
-  const hostId = useSelectedHostId();
-  return useQuery({
-    queryKey: ["spec-library", kind ?? "all", hostId],
-    queryFn: ({ signal }) => readLibraryEntries(kind, hostId, { signal }),
-    placeholderData: undefined,
-    retry: false,
-  });
+export interface SpecLibraryReadOptions {
+  /** Undefined follows the selected host; an explicit host pins the read to
+   * that origin. Null means unknown: no read or cached evidence is exposed. */
+  sourceHostId?: string | null;
 }
 
-export function useLibraryReview(id: string | null) {
-  const hostId = useSelectedHostId();
-  return useQuery({
-    queryKey: ["spec-library", "review", id, hostId],
-    queryFn: ({ signal }) => readLibraryReview(id, hostId, { signal }),
-    enabled: !!id,
+function requireReadOrigin(sourceHostId: string | null): string {
+  if (sourceHostId === null) throw new OperatorReadError("invalid_request", "Choose a known spec-library read origin before reading.");
+  return sourceHostId;
+}
+
+export function useSpecLibrary(kind?: SpecLibraryKind, options: SpecLibraryReadOptions = {}) {
+  const selectedHostId = useSelectedHostId();
+  const sourceHostId = options.sourceHostId === undefined ? selectedHostId : options.sourceHostId;
+  const query = useQuery({
+    queryKey: ["spec-library", kind ?? "all", sourceHostId],
+    queryFn: ({ signal }) => readLibraryEntries(kind, requireReadOrigin(sourceHostId), { signal }),
+    enabled: sourceHostId !== null,
     placeholderData: undefined,
     retry: false,
   });
+  return { ...query, data: sourceHostId === null ? undefined : query.data, sourceHostId };
+}
+
+export function useLibraryReview(id: string | null, options: SpecLibraryReadOptions = {}) {
+  const selectedHostId = useSelectedHostId();
+  const sourceHostId = options.sourceHostId === undefined ? selectedHostId : options.sourceHostId;
+  const query = useQuery({
+    queryKey: ["spec-library", "review", id, sourceHostId],
+    queryFn: ({ signal }) => readLibraryReview(id, requireReadOrigin(sourceHostId), { signal }),
+    enabled: !!id && sourceHostId !== null,
+    placeholderData: undefined,
+    retry: false,
+  });
+  return { ...query, data: sourceHostId === null ? undefined : query.data, sourceHostId };
 }
 
 // NOTE (MH-2): active-lens deliberately does NOT retarget — it is a local
