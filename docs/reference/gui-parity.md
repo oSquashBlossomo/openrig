@@ -11,6 +11,16 @@ The inventory follows the eight entries in `packages/tui/src/sections.ts`, the c
 The findings below preserve the audited baseline. This section records subsequent
 verified changes without implying that the rest of the matrix is complete.
 
+- **Plugin and skill documentation reads:** All four directory/file readers now
+  bound headers and decoding to five seconds, cancel abandoned reads and verify
+  the exact catalog owner and original requested path. Empty content, nullable
+  directory facts, additive metadata and canonical symlink paths remain valid.
+  Missing identities are refused before fetching; dated same-file cache remains
+  available beside refresh errors. Sixty-four maintained checks and 20 independent
+  actual-route/discovery-service probes pass. The immutable `66488796` archive
+  passes UI typecheck, production build and all 261 UI files (2,671 tests, one
+  existing skip). These connected-instance reads do not add remote catalog or
+  file-write authority. Source-aware Markdown and catalog navigation remain open.
 - **Topology URL dependency:** Paired search adapters retain exact opaque source,
   rig and graph-node identities through the installed router's parsing and
   reserialization, including numeric-looking strings and reserved characters.
