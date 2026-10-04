@@ -104,6 +104,13 @@ verified changes without implying that the rest of the matrix is complete.
   editing remains supported. CR/CRLF editing is currently read-only until its
   line endings can be preserved; source/host identity and richer file navigation
   remain open requirements.
+- **Node and library read identity:** Seat detail, spec listings and opaque-ID
+  reviews no longer show a previous entity or host while the new selection loads.
+  Reads have cancellable five-second deadlines and validate exact returned IDs;
+  supported remote requests keep the daemon's read-through envelope. Original
+  nullable, diagnostic and source-provenance fields remain intact. One hundred
+  thirteen focused tests and an independent actual-source check pass. Consumers
+  still need consistent stale/error presentation and correct source destinations.
 - **Spatial browser checkpoint:** The actual application, with fictional API data,
   now fits a 526×448 canvas inside an unchanged 1280×720 browser viewport. Seat
   selection, focus, evidence, relationships, search and List mode were exercised.

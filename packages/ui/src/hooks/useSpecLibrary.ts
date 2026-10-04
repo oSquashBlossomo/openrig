@@ -1,5 +1,5 @@
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { withHostParam } from "../lib/host-param.js";
+import { useQuery } from "@tanstack/react-query";
+import { readLibraryEntries, readLibraryReview } from "../lib/node-library-reads.js";
 import { useSelectedHostId } from "./useHosts.js";
 import type { RigSpecReview, AgentSpecReview } from "./useSpecReview.js";
 
@@ -13,6 +13,7 @@ export interface SpecLibraryEntry {
   sourceType: "builtin" | "user_file";
   sourcePath: string;
   relativePath: string;
+  resolvedSourcePath?: string | null;
   updatedAt: string;
   summary?: string;
   hasServices?: boolean;
@@ -87,30 +88,13 @@ export interface LibraryWorkflowReview {
   }>;
 }
 
-async function fetchLibraryEntries(kind: SpecLibraryKind | undefined, hostId: string): Promise<SpecLibraryEntry[]> {
-  // OPR.0.4.6.MH2 FR-2 — selected-host envelope; origin shape verbatim;
-  // local path unchanged (withHostParam is identity for local).
-  const url = kind ? `/api/specs/library?kind=${kind}` : "/api/specs/library";
-  const res = await fetch(withHostParam(url, hostId));
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
-async function fetchLibraryReview(id: string, hostId: string): Promise<LibraryRigReview | LibraryAgentReview | LibraryWorkflowReview> {
-  const res = await fetch(withHostParam(`/api/specs/library/${encodeURIComponent(id)}/review`, hostId));
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error((data as { error?: string }).error ?? `HTTP ${res.status}`);
-  }
-  return res.json();
-}
-
 export function useSpecLibrary(kind?: SpecLibraryKind) {
   const hostId = useSelectedHostId();
   return useQuery({
     queryKey: ["spec-library", kind ?? "all", hostId],
-    queryFn: () => fetchLibraryEntries(kind, hostId),
-    placeholderData: keepPreviousData,
+    queryFn: ({ signal }) => readLibraryEntries(kind, hostId, { signal }),
+    placeholderData: undefined,
+    retry: false,
   });
 }
 
@@ -118,9 +102,10 @@ export function useLibraryReview(id: string | null) {
   const hostId = useSelectedHostId();
   return useQuery({
     queryKey: ["spec-library", "review", id, hostId],
-    queryFn: () => fetchLibraryReview(id!, hostId),
+    queryFn: ({ signal }) => readLibraryReview(id, hostId, { signal }),
     enabled: !!id,
-    placeholderData: keepPreviousData,
+    placeholderData: undefined,
+    retry: false,
   });
 }
 

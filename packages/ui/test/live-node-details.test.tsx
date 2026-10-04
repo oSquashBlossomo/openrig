@@ -623,10 +623,10 @@ describe("LiveNodeDetails (slice 25 Overview + Details)", () => {
         return { ok: true, json: async () => NODE_DETAIL };
       }
       if (typeof url === "string" && url === "/api/specs/library?kind=agent") {
-        return { ok: true, json: async () => [{ id: "agent-1", kind: "agent", name: "impl", version: "1.0.0", sourceType: "builtin", sourcePath: "/x/agent.yaml", relativePath: "x/agent.yaml" }] };
+        return { ok: true, json: async () => [{ id: "agent-1", kind: "agent", name: "impl", version: "1.0.0", updatedAt: "2026-05-04T00:00:00.000Z", sourceType: "builtin", sourcePath: "/x/agent.yaml", relativePath: "x/agent.yaml" }] };
       }
       if (typeof url === "string" && url.includes("/api/specs/library/agent-1/review")) {
-        return { ok: true, json: async () => ({ kind: "agent", name: "impl", version: "1.0.0", raw: "", sourcePath: "/x/agent.yaml", sourceState: "library_item", libraryEntryId: "agent-1", description: null, profiles: [], resources: { plugins: [], skills: [], guidance: [], hooks: [] }, startup: { files: [], actions: [] } }) };
+        return { ok: true, json: async () => ({ kind: "agent", name: "impl", version: "1.0.0", raw: "", sourcePath: "/x/agent.yaml", sourceState: "library_item", libraryEntryId: "agent-1", description: null, profiles: [], resources: { plugins: [], skills: [], guidance: [], subagents: [] }, startup: { files: [], actions: [] } }) };
       }
       if (typeof url === "string" && url.startsWith("/api/specs/library")) {
         return { ok: true, json: async () => [] };
