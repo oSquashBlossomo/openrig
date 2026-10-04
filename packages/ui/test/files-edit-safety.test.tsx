@@ -11,8 +11,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Hono } from "hono";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { transferableAbortController } from "node:util";
 import { join } from "node:path";
 import { FilesWorkspace, FileEditor, assessFileEditability } from "../src/components/files/FilesWorkspace.js";
+import { readFilesFile } from "../src/lib/files-read.js";
 import type { FilesReadResponse } from "../src/hooks/useFiles.js";
 import { filesRoutes } from "../../daemon/src/routes/files.js";
 import { FileWriteService } from "../../daemon/src/domain/files/file-write-service.js";
@@ -29,6 +31,7 @@ afterEach(() => {
 
 function newClient() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  client.setQueryData(["hosts"], { ownName: "Private local test", selected: "local", hosts: [] });
   clients.push(client);
   return client;
 }
@@ -46,7 +49,15 @@ async function mountWorkspace(name: string, bytes: Buffer) {
   const reads: FilesReadResponse[] = [];
   const writes: Array<{ request: Record<string, unknown>; status: number }> = [];
   vi.stubGlobal("fetch", vi.fn(async (url: string, options: RequestInit = {}) => {
-    const response = await app.request(`http://private.test${url}`, options);
+    // Hono's in-process Request uses Node's realm, while the UI owns a jsdom
+    // signal. Bridge cancellation rather than discard it at the fixture edge.
+    const controller = transferableAbortController();
+    const abort = () => controller.abort();
+    options.signal?.addEventListener("abort", abort, { once: true });
+    if (options.signal?.aborted) abort();
+    let response: Response;
+    try { response = await app.request(`http://private.test${url}`, { ...options, signal: controller.signal }); }
+    finally { options.signal?.removeEventListener("abort", abort); }
     if (url.startsWith("/api/files/read")) reads.push(await response.clone().json());
     if (url === "/api/files/write") writes.push({ request: JSON.parse(options.body as string), status: response.status });
     return response;
@@ -114,6 +125,28 @@ describe("FilesWorkspace edit safety against actual files routes", () => {
     expect(screen.getByTestId("files-edit-unavailable").getAttribute("data-reason")).toBe("line-endings");
     expectNoEditorSurface();
     expect(readFileSync(f.target).equals(f.bytes)).toBe(true);
+  });
+
+  it.each(["binary", "truncated"] as const)("rechecks the actual hook cache before immediate Save after a late %s read", async change => {
+    const f = await mountWorkspace(`late-${change}.opaque`, Buffer.from("safe complete text\n"));
+    fireEvent.click(screen.getByTestId("files-edit-toggle"));
+    fireEvent.change(await screen.findByTestId("files-editor-textarea"), { target: { value: "dirty draft\n" } });
+    const save = screen.getByTestId("files-editor-save");
+    const newBytes = change === "binary" ? Buffer.from([65, 0, 255]) : Buffer.alloc(FILE_READ_TRUNCATION_BYTES + 1, 66);
+    writeFileSync(f.target, newBytes);
+    const current = f.reads[0]!;
+    const latest = await readFilesFile("local", current.root, current.path);
+    const actualQuery = f.client.getQueryCache().getAll().find(q => q.queryKey[0] === "files" && q.queryKey[1] === "read" && q.queryKey[2] === current.root && q.queryKey[3] === current.path)!;
+    await act(async () => {
+      // Update the real reader's current key, then click before React receives
+      // that new prop. The editor must consult that exact cache synchronously.
+      f.client.setQueryData(actualQuery.queryKey, latest);
+      fireEvent.click(save);
+      await Promise.resolve();
+    });
+    expect(f.writes).toHaveLength(0);
+    expect(vi.mocked(fetch).mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(0);
+    expect(readFileSync(f.target).equals(newBytes)).toBe(true);
   });
 
   it("drops an open draft when a refetch shows the file is now truncated, without writing", async () => {

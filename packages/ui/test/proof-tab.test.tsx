@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { useState, type ReactNode } from "react";
 import { render, screen, cleanup, waitFor, within, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { HostsResponse } from "../src/hooks/useHosts.js";
 import { ScopeProofRollup, SliceProofTab } from "../src/components/project/ProofTab.js";
 import { DrawerSelectionContext } from "../src/components/AppShell.js";
 import { SharedDetailDrawer, type DrawerSelection } from "../src/components/SharedDetailDrawer.js";
@@ -115,6 +116,7 @@ function row(name: string, displayName: string, slice: string) {
 
 function renderRollup(rows: ReturnType<typeof row>[]) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  qc.setQueryData(["hosts"], { ownName: "fixture", selected: "local", hosts: [] } satisfies HostsResponse);
   return render(
     <QueryClientProvider client={qc}>
       <ScopeProofRollup rows={rows} />
@@ -190,6 +192,7 @@ describe("OPR.0.4.1.23 — PROOF tab", () => {
 
   it("AC-6: slice-altitude SliceProofTab renders the single slice's proof card", async () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    qc.setQueryData(["hosts"], { ownName: "fixture", selected: "local", hosts: [] } satisfies HostsResponse);
     render(
       <QueryClientProvider client={qc}>
         <SliceProofTab sliceId="OPR.0.4.1.16" title="brief" slicePath="/ws/missions/m/slices/16-brief" />
@@ -236,6 +239,7 @@ const GUARD_READ = "missions%2Fm%2Fslices%2F20-drawer%2Fproof%2Fguard.md";
 
 function renderSliceInDrawer() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  qc.setQueryData(["hosts"], { ownName: "fixture", selected: "local", hosts: [] } satisfies HostsResponse);
   return render(
     <QueryClientProvider client={qc}>
       <DrawerHost>

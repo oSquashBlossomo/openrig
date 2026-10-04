@@ -60,6 +60,7 @@ afterEach(() => {
 
 function withQuery(node: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  qc.setQueryData(["hosts"], { ownName: "Private local test", selected: "local", hosts: [] });
   return <QueryClientProvider client={qc}>{node}</QueryClientProvider>;
 }
 
@@ -98,7 +99,10 @@ describe("FileViewer — resolvable-target honesty (retro-demo fixback)", () => 
   it("fetches and RENDERS the 200 /api/files/read content for an explicit root target", async () => {
     vi.stubGlobal("fetch", async (url: string) => {
       if (String(url).startsWith("/api/files/read")) {
-        return new Response(JSON.stringify({ content: "# Proof body from read API", truncated: false }), {
+        const content = "# Proof body from read API";
+        return new Response(JSON.stringify({ root: "workspace", path: "missions/m/slices/s/PROOF.md",
+          absolutePath: "/private/workspace/missions/m/slices/s/PROOF.md", content,
+          mtime: "2026-10-04T00:00:00.000Z", contentHash: "fixture-full-file-hash", size: content.length, truncated: false }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         });

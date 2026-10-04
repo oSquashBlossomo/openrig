@@ -22,7 +22,8 @@
 // useSliceTimelineMarkdown is kept exported as a thin wrapper so
 // existing callsites (TimelineTab) keep working without modification.
 
-import { useFilesRead, useFilesRoots, FilesReadError, type AllowlistRoot } from "./useFiles.js";
+import type { OperatorReadError } from "../lib/operator-read.js";
+import { useFilesRead, useFilesRoots, FilesReadError, type AllowlistRoot, type FilesReadResponse } from "./useFiles.js";
 
 export type ScopeMarkdownState =
   | "idle"
@@ -69,6 +70,13 @@ export interface UseScopeMarkdownResult {
    *  as a benign placeholder) — consumers MUST gate on `isLoading` before
    *  branching on `state`. */
   state: ScopeMarkdownState;
+  /** Local file authority is independent of the selected scope path. */
+  scopeSupported: boolean;
+  selectionKnown: boolean;
+  scopeError: OperatorReadError | null;
+  /** Served file metadata, including binary/truncated/canonical path facts. */
+  file: FilesReadResponse | null;
+  error: Error | null;
 }
 
 /** Returns true when `parent` is a path-prefix of `child`, treating
@@ -128,7 +136,7 @@ export function useScopeMarkdown(
     rootsResp && "roots" in rootsResp ? rootsResp.roots : null;
 
   const resolved =
-    absoluteScopePath && rootsList
+    enabled && rootsQuery.readEnabled && absoluteScopePath && rootsList
       ? resolveScopePathToAllowlist(rootsList, absoluteScopePath)
       : null;
 
@@ -141,6 +149,7 @@ export function useScopeMarkdown(
   const readQuery = useFilesRead(
     resolved ? resolved.rootName : null,
     filePath,
+    { enabled: enabled && rootsQuery.readEnabled },
   );
 
   // R1 (release-0.4.7): classify the read outcome into a discriminated
@@ -154,7 +163,7 @@ export function useScopeMarkdown(
   let resolvedOut: { rootName: string; relPath: string } | null = null;
   let isLoading = false;
 
-  if (!absoluteScopePath) {
+  if (!enabled || !rootsQuery.readEnabled) {
     // caller gated — no scope selected / remote selection (the query never fired)
     state = "idle";
   } else if (rootsQuery.isError) {
@@ -204,5 +213,10 @@ export function useScopeMarkdown(
     mtime,
     resolved: resolvedOut,
     state,
+    scopeSupported: rootsQuery.scopeSupported,
+    selectionKnown: rootsQuery.selectionKnown,
+    scopeError: rootsQuery.scopeError,
+    file: state === "content" ? readQuery.data ?? null : null,
+    error: rootsQuery.scopeError ?? (rootsQuery.isError ? rootsQuery.error : readQuery.isError ? readQuery.error : null),
   };
 }

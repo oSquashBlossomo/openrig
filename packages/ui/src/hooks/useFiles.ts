@@ -11,6 +11,17 @@
 // allowlist is configured.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSelectedHostId, type HostsResponse } from "./useHosts.js";
+import { filesReadScope, readFilesRoots, readFilesList, readFilesFile } from "../lib/files-read.js";
+export { FilesReadError } from "../lib/files-read.js";
+
+function useFilesReadScope(enabled = true) {
+  const hostId = useSelectedHostId();
+  const selectionKnown = useQueryClient().getQueryData<HostsResponse>(["hosts"])?.selected === hostId;
+  const selectedHostId = selectionKnown ? hostId : undefined;
+  const scope = filesReadScope(selectedHostId);
+  return { ...scope, selectedHostId, selectionKnown, readEnabled: enabled && scope.scopeSupported };
+}
 
 export interface FilesUnavailable {
   unavailable: true;
@@ -28,27 +39,16 @@ export interface FilesRootsResponse {
   hint?: string;
 }
 
-async function fetchRoots(): Promise<FilesRootsResponse | FilesUnavailable> {
-  const res = await fetch("/api/files/roots");
-  if (res.status === 503) {
-    const body = (await res.json().catch(() => ({}))) as Partial<FilesUnavailable> & { error?: string; hint?: string };
-    return { unavailable: true, error: body.error ?? "files_routes_unavailable", hint: body.hint };
-  }
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return (await res.json()) as FilesRootsResponse;
-}
-
 export function useFilesRoots(opts?: { enabled?: boolean }) {
-  return useQuery({
-    queryKey: ["files", "roots"],
-    queryFn: fetchRoots,
-    staleTime: 60_000,
-    // OPR.0.4.6.MH2 FR-7/guard-B1 — /api/files/* is LOCAL-filesystem-only
-    // and deliberately excluded from the remote read-through; file-backed
-    // surfaces pass enabled:false under a remote host selection so the
-    // request never FIRES (a render-gate alone still issues the fetch).
-    enabled: opts?.enabled ?? true,
+  const scope = useFilesReadScope(opts?.enabled ?? true);
+  const query = useQuery({
+    // Preserve exact local keys: the editor reads its newest cache snapshot
+    // synchronously before Save. Disabled scopes use separate identities.
+    queryKey: scope.scopeSupported ? ["files", "roots"] : ["files", "roots", "scope", scope.selectedHostId ?? null],
+    queryFn: ({ signal }) => readFilesRoots(scope.selectedHostId, { signal, enabled: opts?.enabled }),
+    staleTime: 60_000, enabled: scope.readEnabled, retry: false, placeholderData: undefined,
   });
+  return { ...query, ...scope, data: scope.readEnabled ? query.data : undefined };
 }
 
 // --- list ---
@@ -66,30 +66,17 @@ export interface FilesListResponse {
   entries: FileEntry[];
 }
 
-async function fetchList(root: string, path: string): Promise<FilesListResponse> {
-  const res = await fetch(`/api/files/list?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return (await res.json()) as FilesListResponse;
-}
-
-export function useFilesList(root: string | null, path: string | null) {
-  return useQuery({
-    queryKey: ["files", "list", root, path],
-    queryFn: () => fetchList(root!, path ?? ""),
-    enabled: !!root,
-    staleTime: 15_000,
-    // V0.3.1 slice 17 walk-item 8 (Explorer auto-show): refetch on
-    // window focus so new files / folders created while the operator
-    // was off-tab appear without a manual refresh click.
-    //
-    // Forward-fix #2: 'always' instead of `true`. With staleTime:
-    // 15_000, plain `true` gates the refetch on staleness — short
-    // refocus within the 15-second window observed no refetch in the
-    // VM proof. 'always' refetches on every focus regardless of
-    // staleness. This is the load-bearing hook for the Explorer
-    // sidebar (driven via useMissionDiscovery + ProjectTreeView).
-    refetchOnWindowFocus: "always",
+export function useFilesList(root: string | null, path: string | null, opts?: { enabled?: boolean }) {
+  const scope = useFilesReadScope(opts?.enabled ?? true);
+  const readEnabled = scope.readEnabled && !!root;
+  const query = useQuery({
+    queryKey: scope.scopeSupported ? ["files", "list", root, path] : ["files", "list", root, path, "scope", scope.selectedHostId ?? null],
+    queryFn: ({ signal }) => readFilesList(scope.selectedHostId, root, path ?? "", { signal, enabled: opts?.enabled }),
+    enabled: readEnabled, staleTime: 15_000,
+    // Preserve Explorer's refocus refresh even within the stale-time window.
+    refetchOnWindowFocus: "always", retry: false, placeholderData: undefined,
   });
+  return { ...query, ...scope, readEnabled, data: readEnabled ? query.data : undefined };
 }
 
 // --- read ---
@@ -98,6 +85,8 @@ export interface FilesReadResponse {
   root: string;
   path: string;
   absolutePath: string;
+  /** Canonical root-relative target; may differ from the authored path. */
+  resolvedPath?: string;
   content: string;
   mtime: string;
   contentHash: string;
@@ -112,46 +101,17 @@ export interface FilesReadResponse {
   totalBytes?: number;
 }
 
-/**
- * R1 (release-0.4.7) — a typed, discriminated read failure.
- *
- * The daemon already distinguishes the causes in the HTTP status
- * (`routes/files.ts`: `stat_failed → 404`, `root_unknown`/path errors → 400,
- * fallthrough → 500). Pre-R1, `fetchRead` collapsed all of them into an opaque
- * `new Error("HTTP <status>")`, so every consumer saw only `isError` and
- * rendered disk-absence copy for what might be an infra or config failure.
- * `FilesReadError` carries the distinction as `code` WITHOUT changing the
- * `message` text — consumers that render only `err.message` (FileViewer,
- * FilesWorkspace) stay byte-identical with zero edits (message-compat pin).
- */
-export class FilesReadError extends Error {
-  readonly code: "absent" | "read_error" | "bad_path";
-  readonly status: number;
-  constructor(status: number) {
-    super(`HTTP ${status}`); // message BYTE-SAME as the pre-R1 `new Error("HTTP <status>")` (arch pin)
-    // DELIBERATE byte-compat (arch ruling P2): name stays "Error" so any
-    // `${err}` / err.name render is byte-identical to pre-split output. Do NOT
-    // "fix" this to "FilesReadError" in a cleanup pass — it would change every
-    // name-rendering site's output.
-    this.name = "Error";
-    this.status = status;
-    this.code = status === 404 ? "absent" : status === 400 ? "bad_path" : "read_error";
-  }
-}
-
-async function fetchRead(root: string, path: string): Promise<FilesReadResponse> {
-  const res = await fetch(`/api/files/read?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`);
-  if (!res.ok) throw new FilesReadError(res.status);
-  return (await res.json()) as FilesReadResponse;
-}
-
-export function useFilesRead(root: string | null, path: string | null) {
-  return useQuery({
-    queryKey: ["files", "read", root, path],
-    queryFn: () => fetchRead(root!, path!),
-    enabled: !!root && !!path,
+export function useFilesRead(root: string | null, path: string | null, opts?: { enabled?: boolean }) {
+  const scope = useFilesReadScope(opts?.enabled ?? true);
+  const readEnabled = scope.readEnabled && !!root && !!path;
+  const query = useQuery({
+    queryKey: scope.scopeSupported ? ["files", "read", root, path] : ["files", "read", root, path, "scope", scope.selectedHostId ?? null],
+    queryFn: ({ signal }) => readFilesFile(scope.selectedHostId, root, path, { signal, enabled: opts?.enabled }),
+    enabled: readEnabled,
     staleTime: 0, // always re-read for edit-mode mtime/contentHash freshness
+    retry: false, placeholderData: undefined,
   });
+  return { ...query, ...scope, readEnabled, data: readEnabled ? query.data : undefined };
 }
 
 // --- write (item 4) ---
@@ -208,7 +168,14 @@ async function postWrite(req: FileWriteRequest): Promise<FileWriteResult> {
 export function useFilesWrite() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: postWrite,
+    mutationFn: (req: FileWriteRequest) => {
+      // Retained editors can outlive a host switch. Read current authority at
+      // admission, not a host captured when this hook/component mounted.
+      const selected = qc.getQueryData<HostsResponse>(["hosts"])?.selected;
+      const error = filesReadScope(selected).scopeError;
+      if (error) throw error;
+      return postWrite(req);
+    },
     onSuccess: (result, vars) => {
       // Only invalidate when the write actually landed. On a 409
       // conflict we MUST keep the read query stable so the editor's

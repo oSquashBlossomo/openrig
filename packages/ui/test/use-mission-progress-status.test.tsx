@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook, waitFor, cleanup } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { HostsResponse } from "../src/hooks/useHosts.js";
 import { createElement, type ReactNode } from "react";
 import { useMissionProgressStatus } from "../src/hooks/useMissionProgressStatus.js";
 
@@ -15,6 +16,7 @@ let fetchSpy: ReturnType<typeof vi.fn>;
 
 function makeWrapper() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["hosts"], { ownName: "fixture", selected: "local", hosts: [] } satisfies HostsResponse);
   return ({ children }: { children: ReactNode }) =>
     createElement(QueryClientProvider, { client }, children);
 }
@@ -41,7 +43,7 @@ async function settle(root: string | null, missionPath: string | null) {
 describe("useMissionProgressStatus — reason split (R1)", () => {
   it("PROGRESS.md 404 → reason 'absent', unavailable=true, status 'unknown'", async () => {
     fetchSpy.mockImplementation(async () => new Response("missing", { status: 404 }));
-    const r = await settle("ws", "/x/missions/m");
+    const r = await settle("ws", "missions/m");
     expect(r.current.reason).toBe("absent");
     expect(r.current.unavailable).toBe(true);
     expect(r.current.status).toBe("unknown");
@@ -49,7 +51,7 @@ describe("useMissionProgressStatus — reason split (R1)", () => {
 
   it("PROGRESS.md 500 → reason 'read_error' (infra, not absence), unavailable=true", async () => {
     fetchSpy.mockImplementation(async () => new Response("boom", { status: 500 }));
-    const r = await settle("ws", "/x/missions/m");
+    const r = await settle("ws", "missions/m");
     expect(r.current.reason).toBe("read_error");
     expect(r.current.unavailable).toBe(true);
   });
@@ -64,7 +66,7 @@ describe("useMissionProgressStatus — reason split (R1)", () => {
       contentHash: "h",
       size: 33,
     }), { status: 200 }));
-    const r = await settle("ws", "/x/missions/m");
+    const r = await settle("ws", "missions/m");
     expect(r.current.reason).toBeNull();
     expect(r.current.unavailable).toBe(false);
   });

@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { useState, type ReactNode } from "react";
 import { render, screen, cleanup, waitFor, fireEvent, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { HostsResponse } from "../src/hooks/useHosts.js";
 import { ArtifactsNavigator } from "../src/components/project/ArtifactsNavigator.js";
 import { EvidenceOpener, type EvidenceContext } from "../src/components/review/EvidenceOpener.js";
 import { DrawerSelectionContext } from "../src/components/AppShell.js";
@@ -107,6 +108,7 @@ function listedPaths(): string[] {
 
 function renderNav(scopePath: string | null = "/ws/missions/release-0.4.1", scopeLabel = "release-0.4.1") {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(["hosts"], { ownName: "fixture", selected: "local", hosts: [] } satisfies HostsResponse);
   return render(
     <QueryClientProvider client={queryClient}>
       <ArtifactsNavigator scopePath={scopePath} scopeLabel={scopeLabel} />
@@ -228,6 +230,7 @@ describe("OPR.0.4.1.21 — Artifacts navigator", () => {
       slicePath: "/ws/missions/release-0.4.1/slices/15-workspace-ux",
     };
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    qc.setQueryData(["hosts"], { ownName: "fixture", selected: "local", hosts: [] } satisfies HostsResponse);
     render(
       <QueryClientProvider client={qc}>
         <DrawerHost>
@@ -317,6 +320,7 @@ const TREE_FILE_TID = `artifacts-tree-file-${PROOF_READ_PATH}`;
 
 function renderProofNavInDrawer() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  qc.setQueryData(["hosts"], { ownName: "fixture", selected: "local", hosts: [] } satisfies HostsResponse);
   return render(
     <QueryClientProvider client={qc}>
       <DrawerHost>

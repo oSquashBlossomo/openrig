@@ -7,6 +7,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, cleanup, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { HostsResponse } from "../src/hooks/useHosts.js";
 import { SliceProofTab } from "../src/components/project/ProofTab.js";
 
 const mockFetch = vi.fn();
@@ -21,6 +22,7 @@ const SID = "OPR.TEST.1";
 
 function renderProof(slicePath: string | null = SLICE) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  qc.setQueryData(["hosts"], { ownName: "fixture", selected: "local", hosts: [] } satisfies HostsResponse);
   return render(
     <QueryClientProvider client={qc}>
       <SliceProofTab sliceId={SID} title="test slice" slicePath={slicePath} />
@@ -37,7 +39,7 @@ describe("R1 C4a — ProofTab empty-state honest copy", () => {
       const url = String(input);
       if (url.includes("/api/files/roots")) return json({ roots: [{ name: "work", path: "/ws" }] });
       if (url.includes("/api/files/read")) return json({ error: "boom" }, 500);
-      if (url.includes("/api/files/list")) return json({ root: "work", path: "", entries: [] });
+      if (url.includes("/api/files/list")) return json({ root: "work", path: new URL(url, "http://fixture.local").searchParams.get("path") ?? "", entries: [] });
       return json([]);
     });
     renderProof();
@@ -66,7 +68,7 @@ describe("R1 C4a — ProofTab empty-state honest copy", () => {
       const url = String(input);
       if (url.includes("/api/files/roots")) return json({ roots: [{ name: "work", path: "/ws" }] });
       if (url.includes("/api/files/read")) return json({ error: "not found" }, 404);
-      if (url.includes("/api/files/list")) return json({ root: "work", path: "", entries: [] });
+      if (url.includes("/api/files/list")) return json({ root: "work", path: new URL(url, "http://fixture.local").searchParams.get("path") ?? "", entries: [] });
       return json([]);
     });
     renderProof();

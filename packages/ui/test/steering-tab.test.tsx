@@ -80,7 +80,10 @@ function routeFetch(opts: RouteOpts = {}) {
     }
     if (url.includes("/api/files/read")) {
       if (briefContent === null) return Promise.resolve(jsonResponse({ error: "not_found" }, 404));
-      return Promise.resolve(jsonResponse({ content: briefContent, mtime: "2026-06-23T08:30:00.000Z", contentHash: "abc" }));
+      const params = new URL(url, "http://fixture.local").searchParams;
+      const root = params.get("root")!;
+      const path = params.get("path")!;
+      return Promise.resolve(jsonResponse({ root, path, absolutePath: `/root/${path}`, content: briefContent, mtime: "2026-06-23T08:30:00.000Z", contentHash: "abc", size: new TextEncoder().encode(briefContent).length }));
     }
     return Promise.resolve(jsonResponse({}, 404));
   };

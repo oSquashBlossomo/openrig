@@ -20,6 +20,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, fireEvent, cleanup, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { HostsResponse } from "../src/hooks/useHosts.js";
 import type { ReactElement } from "react";
 
 import {
@@ -43,6 +44,7 @@ function renderWithQuery(ui: ReactElement) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
+  queryClient.setQueryData(["hosts"], { ownName: "fixture", selected: "local", hosts: [] } satisfies HostsResponse);
   return render(
     <QueryClientProvider client={queryClient}>
       {ui}
