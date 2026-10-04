@@ -54,9 +54,8 @@ Codex follows `AGENTS.md`. See the
 [official setup](https://learn.chatgpt.com/docs/third-party/github).
 
 Claude uses `.github/workflows/claude-code-review.yml` and follows `CLAUDE.md`
-and `AGENTS.md`. The Claude GitHub app must cover this repository and the
-`claude-review` environment must have the `CLAUDE_CODE_OAUTH_TOKEN` Actions
-secret. That environment allows execution only from `main`; do not store this
+and `AGENTS.md`. Reviews use Opus 5.5. The `claude-review` environment must
+have the `CLAUDE_CODE_OAUTH_TOKEN` Actions secret. That environment allows execution only from `main`; do not store this
 credential as a repository-wide secret. Once that
 secret is installed, set repository variable `CLAUDE_REVIEW_ENABLED` to `true`.
 Until then, Claude jobs are explicitly skipped. Generate a
@@ -73,8 +72,12 @@ executed. The environment's branch restriction also blocks feature-branch
 workflow definitions from receiving the Claude secret. External
 contributions can receive Codex review and an independent local Claude review.
 Claude runs have a timeout and turn limit. Subscription usage still applies.
-The workflow must be merged into main before Claude's GitHub app will trust it;
-its bootstrap PR can show a successful workflow-validation skip without a review.
+The workflow uses the temporary repository GitHub token with read-only code
+access and permission to post PR comments. This avoids the Claude app's
+`pull_request_target` OIDC exchange issue. Comments are posted by
+`github-actions[bot]` and identify themselves as Claude reviews. The reviewer
+uses the GitHub connector's structured tools; built-in shell/file tools are
+disabled. Merge workflow updates into main before testing the automatic path.
 
 For a manual Claude review after activation, use the CLI:
 
