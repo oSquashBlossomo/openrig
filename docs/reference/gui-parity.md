@@ -11,6 +11,23 @@ The inventory follows the eight entries in `packages/tui/src/sections.ts`, the c
 The findings below preserve the audited baseline. This section records subsequent
 verified changes without implying that the rest of the matrix is complete.
 
+- **Node/session capture reads:** Preview requests now bound headers and decoding,
+  cancel abandoned reads and reject cross-session responses. A node's native
+  binding remains daemon-authoritative; no session name is inferred from its
+  logical ID. Paused same-target captures, terminal authentication and documented
+  unavailable responses remain compatible. Fifty-five root checks, 102 independent
+  UI checks, 18 daemon tests and three independent Hono/SQLite probes pass. An
+  immutable archive of `d608aa7d` passes UI typecheck, production build and all
+  251 UI test files (2,431 tests, one existing skip).
+- **Native Codex browser checkpoint:** A fresh private Codex 0.160.0 conversation
+  using 6.1 Sol/high produced two replies through the actual browser terminal,
+  source broker and private tmux adapter. Two viewers retained identical current
+  text, including Unicode, across native 137×43 to 155×37 resizing and late
+  attachment. The native process and conversation stayed fixed, and the last
+  detach removed the pipe without stopping the process. This also exposed a
+  remaining layout defect: focusing a fitted viewer can scroll its response out
+  of sight even with product styles loaded. Native Claude rendering, phone
+  readability and complete product navigation remain unverified.
 - **Composed Review and Fleet reads:** One five-second deadline now covers
   headers and decoding, including ignored cancellation. Exact review identities
   are checked against the daemon's echoes; nullable and partial Fleet evidence
@@ -70,8 +87,8 @@ verified changes without implying that the rest of the matrix is complete.
   and then verified the repair of a resize/output race. Busy output can defer a
   screen repaint until a quiet boundary, while raw output continues streaming.
   Clients must reload across this protocol change; older raw-stream clients get
-  explicit update/reload guidance. Actual native Claude/Codex rendering remains
-  part of browser integration verification.
+  explicit update/reload guidance. The later native Codex checkpoint above adds
+  browser evidence and a remaining layout finding; Claude acceptance remains open.
 - **Exact project reads:** Catalog, scopes, execution and slice readers now retain
   project ID and canonical root in requests and cache keys. Selected-project
   document routes reuse the same catalog/mission resolver and reject symlink
