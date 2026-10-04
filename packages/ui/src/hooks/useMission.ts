@@ -5,10 +5,12 @@
 // with useScopeMarkdown for README / PROGRESS content via
 // /api/files/read.
 
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { withHostParam } from "../lib/host-param.js";
 import { useSelectedHostId } from "./useHosts.js";
-import type { SliceListEntry } from "./useSlices.js";
+import { boundedJsonRead } from "../lib/bounded-json-read.js";
+import { isObject, isText, OperatorReadError } from "../lib/operator-read.js";
+import type { SliceListEntry, ProofReadiness } from "./useSlices.js";
 import type { SpecGraphPayload } from "./useSlices.js";
 
 /** V0.3.1 slice 13 walk-item 7 — mission frontmatter `workflow_spec`
@@ -29,6 +31,9 @@ export interface MissionTopology {
 
 export interface MissionDataResponse {
   missionId: string;
+  /** Additive authored/native facts returned by current daemons. */
+  readiness?: ProofReadiness;
+  status?: string | null;
   /** Absolute filesystem path of the mission folder. */
   missionPath: string;
   /** Slices in this mission (SliceListEntry[] filtered). */
@@ -45,35 +50,31 @@ export interface MissionUnavailable {
   hint?: string;
 }
 
-async function fetchMission(missionId: string, hostId: string): Promise<MissionDataResponse | MissionUnavailable> {
-  // OPR.0.4.6.MH2 FR-2 — selected-host envelope; origin shape verbatim;
-  // local path unchanged (withHostParam is identity for local).
-  const res = await fetch(withHostParam(`/api/missions/${encodeURIComponent(missionId)}`, hostId), { signal: AbortSignal.timeout(5_000) });
-  if (res.status === 503) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string; hint?: string };
-    return {
-      unavailable: true,
-      error: body.error ?? "missions_route_unavailable",
-      hint: body.hint,
-    };
-  }
-  if (res.status === 404) {
-    return {
-      unavailable: true,
-      error: "mission_not_found",
-    };
-  }
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return (await res.json()) as MissionDataResponse;
+export async function readMission(missionId: string | null, hostId: string, signal?: AbortSignal): Promise<MissionDataResponse | MissionUnavailable> {
+  if (!isText(missionId) || !missionId.trim()) throw new OperatorReadError("invalid_request", "Choose an exact mission before fetching.");
+  return boundedJsonRead(withHostParam(`/api/missions/${encodeURIComponent(missionId)}`, hostId), { signal, readResponse: async res => {
+    if (res.status === 503) {
+      const body: unknown = await res.json().catch(() => ({}));
+      return { unavailable: true, error: isObject(body) && isText(body.error) ? body.error : "missions_route_unavailable",
+        hint: isObject(body) && isText(body.hint) ? body.hint : undefined };
+    }
+    if (res.status === 404) { return { unavailable: true, error: "mission_not_found" }; }
+    if (!res.ok) { throw new Error(`HTTP ${res.status}`); }
+    const value = await res.json() as MissionDataResponse;
+    if (!isObject(value) || value.missionId !== missionId || !isText(value.missionPath) || !Array.isArray(value.slices))
+      throw new OperatorReadError("invalid_contract", "Mission response identity could not be verified for this selection.");
+    return value;
+  } });
 }
 
 export function useMission(missionId: string | null) {
   const hostId = useSelectedHostId();
-  return useQuery({
+  const query = useQuery({
     queryKey: ["mission", "detail", missionId, hostId],
-    queryFn: () => fetchMission(missionId!, hostId),
-    enabled: !!missionId,
-    placeholderData: keepPreviousData,
+    queryFn: ({ signal }) => readMission(missionId, hostId, signal),
+    enabled: !!missionId?.trim(),
+    placeholderData: undefined,
+    retry: false,
     staleTime: 30_000,
     refetchInterval: 30_000,
     // V0.3.1 slice 17 workspace-state-correctness pattern: refetch on
@@ -81,4 +82,5 @@ export function useMission(missionId: string | null) {
     // back to the tab sees the new slice without a manual refresh.
     refetchOnWindowFocus: true,
   });
+  return { ...query, data: missionId?.trim() ? query.data : undefined };
 }

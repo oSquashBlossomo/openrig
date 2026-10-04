@@ -6,9 +6,19 @@
 // instead of the raw 503.
 
 import { useMemo } from "react";
-import { keepPreviousData, useQueries, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { withHostParam } from "../lib/host-param.js";
 import { useSelectedHostId } from "./useHosts.js";
+import { boundedJsonRead } from "../lib/bounded-json-read.js";
+import { isObject, isText, OperatorReadError, operatorScopeState, LOCAL_OPERATOR_INSTANCE, type OperatorInstanceScope } from "../lib/operator-read.js";
+
+const exactIdentity = (v: unknown): v is string => isText(v) && !!v.trim();
+function requireIdentity(value: unknown) {
+  if (!exactIdentity(value)) throw new OperatorReadError("invalid_request", "Choose an exact read identity before fetching.");
+}
+function requireContract(valid: boolean) {
+  if (!valid) throw new OperatorReadError("invalid_contract", "Response identity could not be verified for this selection.");
+}
 
 export type SliceStatus = "active" | "done" | "blocked" | "draft";
 export type SliceFilter = "all" | "active" | "done" | "blocked";
@@ -52,7 +62,7 @@ export interface SliceListResponse {
     specVersion: string;
     matched: number;
     total: number;
-  };
+  } | null;
 }
 
 export interface SlicesUnavailable {
@@ -66,32 +76,32 @@ export interface BoundToWorkflowFilter {
   specVersion: string;
 }
 
-async function fetchSlicesList(
-  filter: SliceFilter,
-  boundToWorkflow: BoundToWorkflowFilter | null,
-  hostId: string,
+export async function readSlicesList(
+  filter: SliceFilter, boundToWorkflow: BoundToWorkflowFilter | null, hostId: string, signal?: AbortSignal,
 ): Promise<SliceListResponse | SlicesUnavailable> {
-  // Explorer auto-show needs a daemon-side cache bypass as well as a
-  // React Query refetch. Otherwise a focus refetch can still receive the
-  // indexer's stale in-memory listing immediately after a slice folder is
-  // created.
+  if (!["all", "active", "done", "blocked"].includes(filter)) throw new OperatorReadError("invalid_request", "Choose a supported slice filter before fetching.");
   const params = new URLSearchParams({ filter, refresh: "1" });
   if (boundToWorkflow) {
-    params.set("boundToWorkflow", `${boundToWorkflow.specName}:${boundToWorkflow.specVersion}`);
+    requireIdentity(boundToWorkflow.specName); requireIdentity(boundToWorkflow.specVersion);
+    params.set("boundToWorkflowName", boundToWorkflow.specName);
+    params.set("boundToWorkflowVersion", boundToWorkflow.specVersion);
+    // Older origins understand only the last-colon encoding. It is exact
+    // when the version has no colon; ambiguous versions require the new pair.
+    if (!boundToWorkflow.specVersion.includes(":")) params.set("boundToWorkflow", `${boundToWorkflow.specName}:${boundToWorkflow.specVersion}`);
   }
-  // OPR.0.4.6.MH2 FR-2 — selected-host envelope; origin shape verbatim;
-  // local path unchanged (withHostParam is identity for local).
-  const res = await fetch(withHostParam(`/api/slices?${params.toString()}`, hostId), { signal: AbortSignal.timeout(5_000) });
-  if (res.status === 503) {
-    const body = (await res.json().catch(() => ({}))) as Partial<SlicesUnavailable> & { error?: string; hint?: string };
-    return {
-      unavailable: true,
-      error: body.error ?? "slices_indexer_unavailable",
-      hint: body.hint,
-    };
-  }
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return (await res.json()) as SliceListResponse;
+  return boundedJsonRead(withHostParam(`/api/slices?${params.toString()}`, hostId), { signal, readResponse: async res => {
+    if (res.status === 503) {
+      const body: unknown = await res.json().catch(() => ({}));
+      return { unavailable: true, error: isObject(body) && isText(body.error) ? body.error : "slices_indexer_unavailable",
+        hint: isObject(body) && isText(body.hint) ? body.hint : undefined };
+    }
+    if (!res.ok) { throw new Error(`HTTP ${res.status}`); }
+    const value = await res.json() as SliceListResponse;
+    requireContract(isObject(value) && value.filter === filter && Array.isArray(value.slices) && value.slices.every(row => isObject(row) && exactIdentity(row.name)) && Number.isInteger(value.totalCount));
+    if (boundToWorkflow) requireContract(isObject(value.boundToWorkflow) && value.boundToWorkflow.specName === boundToWorkflow.specName && value.boundToWorkflow.specVersion === boundToWorkflow.specVersion);
+    else requireContract(value.boundToWorkflow === undefined || value.boundToWorkflow === null);
+    return value;
+  } });
 }
 
 export function useSlices(filter: SliceFilter, boundToWorkflow: BoundToWorkflowFilter | null = null) {
@@ -101,13 +111,14 @@ export function useSlices(filter: SliceFilter, boundToWorkflow: BoundToWorkflowF
       "slices",
       "list",
       filter,
-      boundToWorkflow ? `${boundToWorkflow.specName}:${boundToWorkflow.specVersion}` : "all",
+      boundToWorkflow ? ["workflow", boundToWorkflow.specName, boundToWorkflow.specVersion] : "all",
       hostId,
     ],
-    queryFn: () => fetchSlicesList(filter, boundToWorkflow, hostId),
+    queryFn: ({ signal }) => readSlicesList(filter, boundToWorkflow, hostId, signal),
     staleTime: 30_000,
     refetchInterval: 30_000,
-    placeholderData: keepPreviousData,
+    placeholderData: undefined,
+    retry: false,
     // V0.3.1 slice 17 walk-item 8 (Explorer auto-show): refetch on
     // window focus so an operator who switches away to `mkdir slices/...`
     // and comes back sees the new folder without manually clicking
@@ -296,23 +307,25 @@ export interface SliceDetail {
   };
 }
 
-async function fetchSliceDetail(name: string, hostId: string): Promise<SliceDetail> {
-  // OPR.0.4.6.MH2 FR-2 — selected-host envelope; origin shape verbatim.
-  const res = await fetch(withHostParam(`/api/slices/${encodeURIComponent(name)}`, hostId), { signal: AbortSignal.timeout(5_000) });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return (await res.json()) as SliceDetail;
+export async function readSliceDetail(name: string | null, hostId: string, signal?: AbortSignal): Promise<SliceDetail> {
+  requireIdentity(name);
+  const value = await boundedJsonRead<SliceDetail>(withHostParam(`/api/slices/${encodeURIComponent(name!)}`, hostId), { signal });
+  requireContract(isObject(value) && value.name === name && isText(value.slicePath));
+  return value;
 }
 
 export function useSliceDetail(name: string | null) {
   const hostId = useSelectedHostId();
-  return useQuery({
+  const query = useQuery({
     queryKey: ["slices", "detail", name, hostId],
-    queryFn: () => fetchSliceDetail(name!, hostId),
-    enabled: !!name,
+    queryFn: ({ signal }) => readSliceDetail(name, hostId, signal),
+    enabled: exactIdentity(name),
     staleTime: 30_000,
     refetchInterval: 30_000,
-    placeholderData: keepPreviousData,
+    placeholderData: undefined,
+    retry: false,
   });
+  return { ...query, data: exactIdentity(name) ? query.data : undefined };
 }
 
 export interface SliceDetailsMapResult {
@@ -330,7 +343,9 @@ export function useSliceDetails(names: string[]): SliceDetailsMapResult {
   const queries = useQueries({
     queries: uniqueNames.map((name) => ({
       queryKey: ["slices", "detail", name, hostId],
-      queryFn: () => fetchSliceDetail(name, hostId),
+      queryFn: ({ signal }: { signal: AbortSignal }) => readSliceDetail(name, hostId, signal),
+      placeholderData: undefined,
+      retry: false,
       staleTime: 30_000,
       refetchInterval: 30_000,
     })),
@@ -362,22 +377,25 @@ export interface SliceDocResponse {
   content: string;
 }
 
-async function fetchSliceDoc(name: string, relPath: string, hostId: string): Promise<SliceDocResponse> {
-  // OPR.0.4.6.MH2 FR-2 — selected-host envelope; origin shape verbatim.
-  const res = await fetch(withHostParam(`/api/slices/${encodeURIComponent(name)}/doc/${encodeURI(relPath)}`, hostId));
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return (await res.json()) as SliceDocResponse;
+export async function readSliceDoc(name: string | null, relPath: string | null, hostId: string, signal?: AbortSignal): Promise<SliceDocResponse> {
+  requireIdentity(name); requireIdentity(relPath);
+  const encodedPath = relPath!.split("/").map(segment => encodeURIComponent(segment)).join("/");
+  const value = await boundedJsonRead<SliceDocResponse>(withHostParam(`/api/slices/${encodeURIComponent(name!)}/doc/${encodedPath}`, hostId), { signal });
+  requireContract(isObject(value) && value.relPath === relPath && isText(value.content));
+  return value;
 }
 
 export function useSliceDoc(name: string | null, relPath: string | null) {
   const hostId = useSelectedHostId();
-  return useQuery({
+  const query = useQuery({
     queryKey: ["slices", "doc", name, relPath, hostId],
-    queryFn: () => fetchSliceDoc(name!, relPath!, hostId),
-    enabled: !!name && !!relPath,
+    queryFn: ({ signal }) => readSliceDoc(name, relPath, hostId, signal),
+    enabled: exactIdentity(name) && exactIdentity(relPath),
     staleTime: 60_000,
-    placeholderData: keepPreviousData,
+    placeholderData: undefined,
+    retry: false,
   });
+  return { ...query, data: exactIdentity(name) && exactIdentity(relPath) ? query.data : undefined };
 }
 
 export function proofAssetUrl(sliceName: string, relPath: string): string {
@@ -425,24 +443,33 @@ export interface QueueItemMapResult {
   itemsById: Map<string, QueueItemDetail>;
   isFetching: boolean;
   missingIds: string[];
+  scopeSupported?: boolean;
+  scopeError?: OperatorReadError | null;
+  errorsById?: Map<string, Error>;
 }
 
-async function fetchQueueItem(qitemId: string): Promise<QueueItemDetail | null> {
-  const res = await fetch(`/api/queue/${encodeURIComponent(qitemId)}`);
-  if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return (await res.json()) as QueueItemDetail;
+export async function readQueueMapItem(qitemId: string, scope: OperatorInstanceScope = LOCAL_OPERATOR_INSTANCE, signal?: AbortSignal): Promise<QueueItemDetail | null> {
+  const scopeError = operatorScopeState(scope).scopeError; if (scopeError) throw scopeError;
+  requireIdentity(qitemId);
+  return boundedJsonRead(`/api/queue/${encodeURIComponent(qitemId)}`, { signal, readResponse: async res => {
+    if (res.status === 404) { return null; }
+    if (!res.ok) { throw new Error(`HTTP ${res.status}`); }
+    const value = await res.json() as QueueItemDetail;
+    requireContract(isObject(value) && value.qitemId === qitemId && isText(value.body)); return value;
+  } });
 }
 
-export function useQueueItemMap(qitemIds: string[]): QueueItemMapResult {
+export function useQueueItemMap(qitemIds: string[], scope: OperatorInstanceScope = LOCAL_OPERATOR_INSTANCE): QueueItemMapResult {
+  const { scopeSupported, scopeError } = operatorScopeState(scope);
   const uniqueIds = useMemo(
     () => Array.from(new Set(qitemIds.filter((id) => id.length > 0))).sort(),
     [qitemIds],
   );
   const queries = useQueries({
     queries: uniqueIds.map((qitemId) => ({
-      queryKey: ["queue", "item", qitemId],
-      queryFn: () => fetchQueueItem(qitemId),
+      queryKey: scopeSupported ? ["queue", "item", qitemId] : ["queue", "item", qitemId, "unsupported-remote", scope.kind === "remote-instance" ? scope.hostId : ""],
+      queryFn: ({ signal }: { signal: AbortSignal }) => readQueueMapItem(qitemId, scope, signal),
+      enabled: scopeSupported, placeholderData: undefined, retry: false,
       staleTime: 30_000,
     })),
   });
@@ -450,18 +477,20 @@ export function useQueueItemMap(qitemIds: string[]): QueueItemMapResult {
   return useMemo(() => {
     const itemsById = new Map<string, QueueItemDetail>();
     const missingIds: string[] = [];
+    const errorsById = new Map<string, Error>();
     uniqueIds.forEach((qitemId, idx) => {
-      const item = queries[idx]?.data;
+      const item = scopeSupported ? queries[idx]?.data : undefined;
+      if (queries[idx]?.error) errorsById.set(qitemId, queries[idx]!.error!);
       if (item) {
         itemsById.set(qitemId, item);
-      } else if (queries[idx]?.status === "success") {
+      } else if (scopeSupported && queries[idx]?.status === "success") {
         missingIds.push(qitemId);
       }
     });
     return {
       itemsById,
       isFetching: queries.some((query) => query.isFetching),
-      missingIds,
+      missingIds, scopeSupported, scopeError, errorsById,
     };
-  }, [queries, uniqueIds]);
+  }, [queries, uniqueIds, scopeSupported, scopeError]);
 }

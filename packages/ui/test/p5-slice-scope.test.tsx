@@ -20,6 +20,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { DrawerSelectionContext } from "../src/components/AppShell.js";
 import { SliceScopePage } from "../src/components/project/ScopePages.js";
 import type { SliceDetail } from "../src/hooks/useSlices.js";
+import type { HostsResponse } from "../src/hooks/useHosts.js";
 
 const mockFetch = vi.fn();
 globalThis.fetch = mockFetch;
@@ -64,6 +65,7 @@ function renderSliceScope(opts: {
     return new Response("[]");
   });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(["hosts"], { ownName: "fixture", selected: "local", hosts: [] } satisfies HostsResponse);
   const rootRoute = createRootRoute({ component: () => <Outlet /> });
   const sliceRoute = createRoute({
     getParentRoute: () => rootRoute,
@@ -111,6 +113,8 @@ function makeQueueItem(qitemId: string, body: string) {
 function makeDetail(overrides: Partial<SliceDetail> = {}): SliceDetail {
   return {
     name: "idea-ledger",
+    missionId: null,
+    slicePath: "/workspace/slices/idea-ledger",
     displayName: "Idea Ledger",
     railItem: null,
     status: "active",

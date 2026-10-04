@@ -65,17 +65,24 @@ export function slicesRoutes(): Hono {
       // Workflows in Spec Library v0: optional lens filter — narrow to
       // slices bound to a workflow_instance of <name>:<version>.
       const boundToWorkflow = c.req.query("boundToWorkflow");
+      const explicitName = c.req.query("boundToWorkflowName");
+      const explicitVersion = c.req.query("boundToWorkflowVersion");
+      const hasExplicitPair = explicitName !== undefined || explicitVersion !== undefined;
+      const invalidBinding = () => c.json({ error: "boundToWorkflow_invalid",
+        hint: "Use a complete nonempty boundToWorkflowName + boundToWorkflowVersion pair, or legacy boundToWorkflow=<specName>:<specVersion>. Coexisting forms must identify the same workflow." }, 400);
+      if (hasExplicitPair && (!explicitName?.trim() || !explicitVersion?.trim())) return invalidBinding();
+      let selectedBinding: { specName: string; specVersion: string } | null = hasExplicitPair
+        ? { specName: explicitName!, specVersion: explicitVersion! } : null;
+      if (boundToWorkflow || (hasExplicitPair && boundToWorkflow !== undefined)) {
+        const colonIdx = boundToWorkflow!.lastIndexOf(":");
+        if (colonIdx === -1) return invalidBinding();
+        const legacy = { specName: boundToWorkflow!.slice(0, colonIdx), specVersion: boundToWorkflow!.slice(colonIdx + 1) };
+        if (selectedBinding && (selectedBinding.specName !== legacy.specName || selectedBinding.specVersion !== legacy.specVersion)) return invalidBinding();
+        selectedBinding ??= legacy;
+      }
       let boundDiagnostic: { specName: string; specVersion: string; matched: number; total: number } | null = null;
-      if (boundToWorkflow) {
-        const colonIdx = boundToWorkflow.lastIndexOf(":");
-        if (colonIdx === -1) {
-          return c.json({
-            error: "boundToWorkflow_invalid",
-            hint: "Format is boundToWorkflow=<specName>:<specVersion>",
-          }, 400);
-        }
-        const specName = boundToWorkflow.slice(0, colonIdx);
-        const specVersion = boundToWorkflow.slice(colonIdx + 1);
+      if (selectedBinding) {
+        const { specName, specVersion } = selectedBinding;
         const db = deps.indexer.db;
         const before = filtered.length;
         filtered = filtered.filter((slice) => {
