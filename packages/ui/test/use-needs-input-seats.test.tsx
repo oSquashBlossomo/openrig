@@ -19,14 +19,16 @@ afterEach(() => {
 
 describe("useNeedsInputSeats", () => {
   it("keeps later needs-input seats when one rig nodes request rejects", async () => {
+    const rejected = vi.fn();
     mockFetch.mockImplementation(async (url: string) => {
       if (url === "/api/ps") {
         return new Response(JSON.stringify([
-          { rigId: "rig-stale" },
-          { rigId: "product-team" },
+          { rigId: "rig-stale", name: "rig-stale", nodeCount: 1, runningCount: 1, status: "running", uptime: null, latestSnapshot: null },
+          { rigId: "product-team", name: "product-team", nodeCount: 1, runningCount: 1, status: "running", uptime: null, latestSnapshot: null },
         ]));
       }
-      if (url === "/api/rigs/rig-stale/nodes") {
+      if (url === "/api/rigs/rig-stale/nodes?full=true") {
+        rejected();
         throw new Error("resource exhausted");
       }
       if (url === "/api/rigs/product-team/nodes?full=true") {
@@ -37,6 +39,8 @@ describe("useNeedsInputSeats", () => {
             logicalId: "orch1.lead",
             canonicalSessionName: "orch1-lead@product-team",
             terminalActive: false,
+            podId: null, nodeKind: "agent", runtime: null, sessionStatus: null, startupStatus: null,
+            restoreOutcome: "unknown", tmuxAttachCommand: null, resumeCommand: null, latestError: null,
             agentActivity: {
               state: "needs_input",
               reason: "selection_prompt",
@@ -54,6 +58,7 @@ describe("useNeedsInputSeats", () => {
     const { result } = renderHook(() => useNeedsInputSeats(), { wrapper: wrapper(client) });
 
     await waitFor(() => expect(result.current.data).toHaveLength(1));
+    expect(rejected).toHaveBeenCalledTimes(1);
     expect(result.current.data![0]).toMatchObject({
       logicalId: "orch1.lead",
       sessionName: "orch1-lead@product-team",
