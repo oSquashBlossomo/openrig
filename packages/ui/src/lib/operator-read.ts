@@ -7,7 +7,7 @@ export class OperatorReadError extends Error {
     super(message); this.name = "OperatorReadError";
   }
 }
-export interface OperatorReadOptions { signal?: AbortSignal }
+export interface OperatorReadOptions { signal?: AbortSignal; headers?: Readonly<Record<string, string>> }
 export interface OperatorHookOptions { enabled?: boolean }
 
 export function operatorScopeState(scope: OperatorInstanceScope) {
@@ -47,7 +47,7 @@ export async function operatorRead<T>(scope: OperatorInstanceScope, route: strin
   const timer = setTimeout(() => abort("timeout"), 5_000);
   const request = (async () => {
     try {
-      response = await fetch(route, { method: "GET", headers: { Accept: "application/json" }, signal: controller.signal });
+      response = await fetch(route, { method: "GET", headers: { ...options.headers, Accept: "application/json" }, signal: controller.signal });
       if (controller.signal.aborted) { void response.body?.cancel().catch(() => {}); throw abortError; }
       let data: unknown;
       try { data = await response.json(); }
