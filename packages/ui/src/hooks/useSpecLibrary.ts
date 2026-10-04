@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { boundedJsonRead } from "../lib/bounded-json-read.js";
 import { readLibraryEntries, readLibraryReview } from "../lib/node-library-reads.js";
 import { OperatorReadError } from "../lib/operator-read.js";
 import { useSelectedHostId } from "./useHosts.js";
@@ -137,17 +138,15 @@ export interface ActiveLensPayload {
   activatedAt: string;
 }
 
-async function fetchActiveLens(): Promise<ActiveLensPayload | null> {
-  const res = await fetch("/api/specs/library/active-lens");
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const body = (await res.json()) as { activeLens: ActiveLensPayload | null };
+async function fetchActiveLens(signal?: AbortSignal): Promise<ActiveLensPayload | null> {
+  const body = await boundedJsonRead<{ activeLens: ActiveLensPayload | null }>("/api/specs/library/active-lens", { signal });
   return body.activeLens ?? null;
 }
 
 export function useActiveLens() {
   return useQuery({
     queryKey: ["spec-library", "active-lens"],
-    queryFn: fetchActiveLens,
+    queryFn: ({ signal }) => fetchActiveLens(signal),
     staleTime: 0,
   });
 }
