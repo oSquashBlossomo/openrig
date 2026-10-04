@@ -11,6 +11,45 @@ The inventory follows the eight entries in `packages/tui/src/sections.ts`, the c
 The findings below preserve the audited baseline. This section records subsequent
 verified changes without implying that the rest of the matrix is complete.
 
+- **Exact daemon route targets:** Node, native-session, seat, agent-image,
+  terminal WebSocket and pod handlers now use Hono's already-decoded parameters.
+  Thirty redundant decoding calls previously turned literal percent sequences
+  into a different resource name or a server error. Maintained regressions and
+  independent private Hono, SQLite, file, cache and WebSocket checks preserve
+  exact targets through reads, writes, lifecycle admission and shared terminal
+  pipes. Authentication, action guards, native identity checks and pod-name
+  validation remain in force. A percent-containing pod reaching the route does
+  not imply that native launch accepts that name.
+- **Spec source identity:** Rig and agent file IDs now use the full SHA-256 of
+  their canonical file address in a versioned `specfile:v2:` identifier. Names,
+  contents, scan order and overlapping roots cannot silently redirect an ID to
+  a different file. Built-in read-only provenance wins for overlapping aliases.
+  Reads and mutations recheck the authored path's canonical binding; a changed
+  binding returns `409 source_changed`. All legacy 16-hex file IDs return
+  `409 legacy_spec_id` and require reselection. Physical moves change the ID;
+  content edits retain it. CLI add resolves the installed canonical target and
+  reserved file IDs never fall back to display-name lookup. Workflow IDs retain
+  their existing contract. These checks do not provide an atomic filesystem
+  lease against concurrent external replacement.
+- **Agent-image version protection:** Pin/delete/prune protection now keeps a
+  separate record for each image ID. A later version can no longer overwrite
+  the protection of an earlier pinned version. Existing conservative name-based
+  spec and lineage references still protect all relevant versions, and explicit
+  force behavior remains intact. Fourteen maintained regressions, adjacent
+  suites and an independent original deletion reproduction pass. A separately
+  reproduced ambiguity between colon-bearing name/version tuples remains open;
+  this checkpoint does not yet change the agent-image ID format.
+- **Backend checkpoint verification:** The immutable `fcb77d69` source archive
+  passes the full workspace build and typecheck, 161 exact-route/source/protection
+  regressions and 29 CLI spec/release checks. At `de6567f0`, the full UI suite
+  passes 2,671 tests with one existing skip; repository checks pass 255 tests
+  with one skip, and TUI passes 839. The broader local daemon/CLI run did not
+  pass: this Mac cannot satisfy the CI process-observation preflight, and the
+  first archive lacked historical release tags. The tag-dependent CLI tests
+  pass after supplying those refs. Native process/scenario coverage must be
+  established by the new GitHub CI run; the previous published `30d22afd`
+  already passes all eight required checks. Uncommitted frontend work is
+  excluded from these immutable-source results.
 - **Plugin and skill documentation reads:** All four directory/file readers now
   bound headers and decoding to five seconds, cancel abandoned reads and verify
   the exact catalog owner and original requested path. Empty content, nullable
