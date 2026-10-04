@@ -12,6 +12,7 @@ import { useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { missionControlAuthHeaders } from "../components/mission-control/missionControlAuth.js";
 import { LOCAL_HOST_ID } from "../lib/host-param.js";
+import { readHosts } from "../lib/hosts-read.js";
 
 export interface HostRow {
   id: string;
@@ -31,20 +32,13 @@ export interface HostsResponse {
   hosts: HostRow[];
 }
 
-async function fetchHosts(): Promise<HostsResponse> {
-  const res = await fetch("/api/hosts");
-  if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error ?? `HTTP ${res.status}`);
-  }
-  return (await res.json()) as HostsResponse;
-}
-
 export function useHosts() {
   return useQuery<HostsResponse>({
     queryKey: ["hosts"],
-    queryFn: fetchHosts,
+    queryFn: ({ signal }) => readHosts({ signal }),
     refetchInterval: 5_000,
+    retry: false,
+    placeholderData: undefined,
   });
 }
 
@@ -64,8 +58,10 @@ export function useHosts() {
 export function useSelectedHostId(): string {
   const { data } = useQuery<HostsResponse>({
     queryKey: ["hosts"],
-    queryFn: fetchHosts,
+    queryFn: ({ signal }) => readHosts({ signal }),
     enabled: false,
+    retry: false,
+    placeholderData: undefined,
   });
   return data?.selected ?? LOCAL_HOST_ID;
 }

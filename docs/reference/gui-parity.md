@@ -111,6 +111,12 @@ verified changes without implying that the rest of the matrix is complete.
   nullable, diagnostic and source-provenance fields remain intact. One hundred
   thirteen focused tests and an independent actual-source check pass. Consumers
   still need consistent stale/error presentation and correct source destinations.
+- **Host selection read boundary:** Host reads now validate the actual selection
+  and transport-specific endpoint fields, use one cancellable five-second budget,
+  and retain removed aliases without substituting local authority. Fifty-eight
+  hook/downstream tests and one actual daemon-route test pass; independent review
+  also verifies the missing-endpoint refusals. Existing cached selection semantics
+  remain unchanged, so consumers must disclose failed refreshes separately.
 - **Spatial browser checkpoint:** The actual application, with fictional API data,
   now fits a 526×448 canvas inside an unchanged 1280×720 browser viewport. Seat
   selection, focus, evidence, relationships, search and List mode were exercised.
