@@ -40,10 +40,38 @@ verified changes without implying that the rest of the matrix is complete.
   Clients must reload across this protocol change; older raw-stream clients get
   explicit update/reload guidance. Actual native Claude/Codex rendering remains
   part of browser integration verification.
-- **Integrated UI checkpoint:** 209 files passed (1,860 tests, one existing skip)
-  after the read-contract and terminal changes. The spatial feature was included
-  in this local run, but still needs visual and refresh-state corrections before
-  its feature commit; this is not a full parity or browser acceptance verdict.
+- **Exact project reads:** Catalog, scopes, execution and slice readers now retain
+  project ID and canonical root in requests and cache keys. Selected-project
+  document routes reuse the same catalog/mission resolver and reject symlink
+  escapes. A selected project without a proof-packet source returns unavailable
+  instead of serving a same-named packet from the default workspace. Twenty-seven
+  UI contract tests and 41 daemon route tests pass; actual daemon responses also
+  pass the browser guards. Project pages still require frontend integration.
+- **Workflow recovery contracts:** Reads now retain aborted status, packets,
+  failure occurrences, source reconciliation and receipt facts. New mutations
+  retain exact failure identity and immutable recovery attempts without automatic
+  retries. An unknown explicit failure ID cannot resume a different failure.
+  HTTP 500 after a committed resume remains an unknown outcome requiring observed
+  readback. Independent real-route reproductions verify both corrections; focused
+  suites pass 45 daemon and 62 UI tests. The existing page's Resume control still
+  requires migration to the occurrence chooser and new mutation helper.
+- **Topology data reliability:** Shared 2D/3D summary and graph requests have
+  cancellable five-second deadlines. Invalid payload containers fail visibly;
+  nullable names retain the existing partial-inventory fallback. The spatial
+  model tracks actual cache data, so two updates in one millisecond do not leave
+  it stale. Sample age uses the sample timestamp, with unknown age for terminal
+  output fallback. Renderer presentation and interaction acceptance remain open.
+- **Real browser terminal checkpoint:** Actual xterm, WebSocket broker and a
+  private tmux session were exercised with two viewers, Unicode output, input,
+  native resize, independent history scrolling and disconnect cleanup. Browser
+  resize preserved native pane size, process identity and sizing policy. This
+  used a harmless scripted writer, not native Claude/Codex. Fitted interactive
+  text is still too small at phone width and needs a readable presentation.
+- **Current integrated UI checkpoint:** 214 files passed (1,963 tests, one
+  existing skip) after the contract/data changes and compatible dependency
+  refresh. Workspace build and typechecks pass. This local run includes the
+  unfinished spatial renderer; its known visual/interaction corrections remain
+  required before feature acceptance.
 - **Initial local baseline:** 198 UI test files passed (1,729 tests, one existing
   skip). Build passed. The first full package run exposed 14 daemon and one CLI
   test-fixture failures involving macOS path aliases and an ambient daemon state
