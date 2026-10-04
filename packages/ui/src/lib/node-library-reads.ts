@@ -16,7 +16,7 @@ const nodeEdges = arrayOf(v => hasShape(v, { kind: isText, from: optional(endpoi
  * readable; their eligibility for actions is a separate contract. */
 export function isNodeDetail(v: unknown): v is NodeDetailData {
   return hasShape(v, {
-    rigId: exactText, rigName: isText, logicalId: exactText, podId: textOrNull, podNamespace: optional(textOrNull),
+    nodeId: optional(isText), rigId: exactText, rigName: isText, logicalId: exactText, podId: textOrNull, podNamespace: optional(textOrNull),
     canonicalSessionName: textOrNull, nodeKind: oneOf("agent", "infrastructure"), runtime: textOrNull,
     sessionStatus: textOrNull, startupStatus: nullable(oneOf("pending", "ready", "attention_required", "failed")),
     restoreOutcome: isText, tmuxAttachCommand: textOrNull, resumeCommand: textOrNull,

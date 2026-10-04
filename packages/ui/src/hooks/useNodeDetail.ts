@@ -30,6 +30,9 @@ export interface NodeDetailCompactSpec {
 }
 
 export interface NodeDetailData {
+  /** Canonical daemon seat ID when served. Omitted/empty remains unknown;
+   * never derive it from logicalId or a native session address. */
+  nodeId?: string;
   rigId: string;
   rigName: string;
   logicalId: string;
