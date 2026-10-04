@@ -102,6 +102,9 @@ export interface FilesReadResponse {
   mtime: string;
   contentHash: string;
   size: number;
+  /** True when the full file bytes contain NUL or are not valid UTF-8, so
+   *  `content` is a lossy text decode (daemon `readAllowedFile`). */
+  binary?: boolean;
   /** Operator Surface Reconciliation v0 item 5: present when the
    *  daemon truncated the returned content (file > 1 MB cap). */
   truncated?: boolean;

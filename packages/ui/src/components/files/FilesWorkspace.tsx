@@ -10,6 +10,13 @@
 // daemon's atomic-write contract; 409 conflicts surface a refresh
 // affordance per the PRD's recommendation. Per item 4's recommended
 // landing posture: lightweight `<textarea>` (no CodeMirror).
+//
+// Save replaces the WHOLE file with the draft, guarded by the full-file
+// mtime + contentHash CAS. The CAS proves the disk has not changed since
+// the read; it cannot prove the read was the whole file. So the editor is
+// only offered for reads that are complete, valid UTF-8 and round-trip
+// through a textarea unchanged (see assessFileEditability). Truncated,
+// binary, CR-line-ending or unverified reads stay view-only.
 
 import { useEffect, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -104,7 +111,7 @@ export function FilesWorkspace() {
               root={selectedRoot}
               path={selectedFile}
               editMode={editMode}
-              onToggleEditMode={() => setEditMode((v) => !v)}
+              onEditModeChange={setEditMode}
             />
           )}
         </main>
@@ -257,14 +264,23 @@ function FileContentPanel({
   root,
   path,
   editMode,
-  onToggleEditMode,
+  onEditModeChange,
 }: {
   root: string;
   path: string;
   editMode: boolean;
-  onToggleEditMode: () => void;
+  onEditModeChange: (editMode: boolean) => void;
 }) {
   const read = useFilesRead(root, path);
+  const editability = useMemo(() => (read.data ? assessFileEditability(read.data) : null), [read.data]);
+  const canEdit = editability?.editable === true;
+  const editing = editMode && canEdit;
+  // A refetch can turn an editable read into an unsafe one (file grew past
+  // the cap, became binary). Leave edit mode instead of re-opening the editor
+  // later on whatever read arrives next.
+  useEffect(() => {
+    if (editMode && editability && !editability.editable) onEditModeChange(false);
+  }, [editMode, editability, onEditModeChange]);
   return (
     <div data-testid="files-content-panel" className="flex h-full flex-col">
       <header className="flex items-center justify-between border-b border-outline-variant bg-background px-3 py-2 font-mono text-[10px]">
@@ -279,15 +295,18 @@ function FileContentPanel({
           <button
             type="button"
             data-testid="files-edit-toggle"
-            data-active={editMode}
-            onClick={onToggleEditMode}
-            className={`border px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.10em] ${
-              editMode
+            data-active={editing}
+            data-editable={canEdit}
+            disabled={!canEdit}
+            title={editability && !editability.editable ? `Read-only: ${editability.detail}` : undefined}
+            onClick={() => onEditModeChange(!editing)}
+            className={`border px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.10em] disabled:cursor-not-allowed disabled:opacity-50 ${
+              editing
                 ? "border-amber-400 bg-amber-50 text-amber-900"
                 : "border-outline-variant text-on-surface hover:bg-surface-low"
             }`}
           >
-            {editMode ? "editing" : "edit"}
+            {editing ? "editing" : "edit"}
           </button>
         </div>
       </header>
@@ -295,11 +314,80 @@ function FileContentPanel({
         {read.isLoading && <div className="p-4 font-mono text-[10px] text-on-surface-variant">Loading…</div>}
         {read.isError && <div data-testid="files-read-error" className="p-4 font-mono text-[10px] text-red-600">{(read.error as Error)?.message ?? "Error loading file."}</div>}
         {read.data && (
-          editMode
+          editing
             ? <FileEditor root={root} path={path} read={read.data} />
-            : <FileViewer root={root} path={path} read={read.data} />
+            : (
+              <>
+                {editability && !editability.editable && <EditUnavailableNotice editability={editability} />}
+                <FileViewer root={root} path={path} read={read.data} />
+              </>
+            )
         )}
       </div>
+    </div>
+  );
+}
+
+export type FileEditability =
+  | { editable: true }
+  | { editable: false; reason: "truncated" | "binary" | "line-endings" | "unverified"; detail: string };
+
+const utf8Encoder = new TextEncoder();
+
+/** Whether a read is the complete, exact text of the file, so that a
+ *  whole-file save of an edited copy loses nothing it did not change.
+ *  Unknown metadata counts as unverified rather than complete. */
+export function assessFileEditability(read: FilesReadResponse): FileEditability {
+  if (read.truncated === true) {
+    const shownKb = Math.round((read.truncatedAtBytes ?? 0) / 1024);
+    const totalKb = Math.round((read.totalBytes ?? read.size) / 1024);
+    return {
+      editable: false,
+      reason: "truncated",
+      detail: `this view is a truncated ${shownKb} KB preview of a ${totalKb} KB file. Saving it would replace the whole file and drop everything after the preview. Edit the full file in an external editor.`,
+    };
+  }
+  if (read.binary === true) {
+    return {
+      editable: false,
+      reason: "binary",
+      detail: "this file is binary or not valid UTF-8. The text editor would re-encode its bytes on save. Edit it with an external tool.",
+    };
+  }
+  const unverified = (why: string): FileEditability => ({
+    editable: false,
+    reason: "unverified",
+    detail: `${why} Reload the file or edit it in an external editor.`,
+  });
+  if (read.truncated !== false || read.binary !== false) {
+    return unverified("the daemon did not confirm this read is the complete UTF-8 text of the file.");
+  }
+  if (typeof read.content !== "string" || !read.mtime || !read.contentHash) {
+    return unverified("the read is missing its content or change-detection fields.");
+  }
+  const returnedBytes = utf8Encoder.encode(read.content).length;
+  if (returnedBytes !== read.totalBytes || returnedBytes !== read.size) {
+    return unverified(`the returned text is ${returnedBytes} bytes but the file reports ${read.totalBytes ?? "unknown"} bytes read and ${read.size} bytes on disk.`);
+  }
+  if (read.content.includes("\r")) {
+    return {
+      editable: false,
+      reason: "line-endings",
+      detail: "this file has CR or CRLF line endings, which the browser text editor converts to LF, rewriting every line ending on save. Edit it in an external editor.",
+    };
+  }
+  return { editable: true };
+}
+
+function EditUnavailableNotice({ editability }: { editability: Extract<FileEditability, { editable: false }> }) {
+  return (
+    <div
+      data-testid="files-edit-unavailable"
+      data-reason={editability.reason}
+      role="status"
+      className="mx-4 mt-4 border border-outline-variant bg-background px-3 py-2 font-mono text-[10px] text-on-surface"
+    >
+      Read-only: {editability.detail}
     </div>
   );
 }
@@ -438,7 +526,13 @@ function SpecValidationPanel({ kind, yaml }: { kind: "rig" | "agent"; yaml: stri
   );
 }
 
-function FileEditor({ root, path, read }: { root: string; path: string; read: FilesReadResponse }) {
+type EditorBase = Pick<FilesReadResponse, "content" | "mtime" | "contentHash">;
+
+export function FileEditor({ root, path, read }: { root: string; path: string; read: FilesReadResponse }) {
+  const editability = useMemo(() => assessFileEditability(read), [read]);
+  // The snapshot the draft was seeded from. Save sends ITS CAS tokens, so
+  // the draft and the expected mtime/hash always describe the same bytes.
+  const [base, setBase] = useState<EditorBase>(() => ({ content: read.content, mtime: read.mtime, contentHash: read.contentHash }));
   const [draft, setDraft] = useState(read.content);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<{ currentMtime: string; currentContentHash: string } | null>(null);
@@ -452,11 +546,64 @@ function FileEditor({ root, path, read }: { root: string; path: string; read: Fi
   // so a conflict-state read stays stable until the operator clicks
   // Refresh (which triggers the invalidation explicitly).
   useEffect(() => {
+    setBase({ content: read.content, mtime: read.mtime, contentHash: read.contentHash });
     setDraft(read.content);
     setConflict(null);
   }, [read.contentHash, read.mtime, read.content]);
 
-  const dirty = useMemo(() => draft !== read.content, [draft, read.content]);
+  const dirty = useMemo(() => draft !== base.content, [draft, base.content]);
+
+  // Defend the editor itself, not only the toolbar gate: a direct render or
+  // a refetch onto an unsafe read never exposes a draft or a save.
+  if (!editability.editable) {
+    return (
+      <div data-testid="files-editor" data-readonly="true">
+        <EditUnavailableNotice editability={editability} />
+      </div>
+    );
+  }
+
+  const save = () => {
+    setSaveError(null);
+    setConflict(null);
+    setSavedIndicator(false);
+    // Re-check the newest cached read at click time: it must still be the
+    // complete snapshot the draft came from. The daemon CAS then checks the
+    // disk bytes against those same tokens.
+    const latest = qc.getQueryData<FilesReadResponse>(["files", "read", root, path]) ?? read;
+    const latestEditability = assessFileEditability(latest);
+    if (!latestEditability.editable) {
+      setSaveError(`not saved. Read-only: ${latestEditability.detail}`);
+      return;
+    }
+    if (latest.mtime !== base.mtime || latest.contentHash !== base.contentHash || latest.content !== base.content) {
+      setSaveError("not saved. The file was re-read after this draft was started; review the current content before saving.");
+      return;
+    }
+    write.mutate(
+      {
+        root,
+        path,
+        content: draft,
+        expectedMtime: base.mtime,
+        expectedContentHash: base.contentHash,
+        actor: "ui-files-edit-mode",
+      },
+      {
+        onSuccess: (result: FileWriteResult) => {
+          if ("conflict" in result) {
+            setConflict({ currentMtime: result.currentMtime, currentContentHash: result.currentContentHash });
+          } else {
+            setSavedIndicator(true);
+            setTimeout(() => setSavedIndicator(false), 2000);
+          }
+        },
+        onError: (err) => {
+          setSaveError(err instanceof Error ? err.message : String(err));
+        },
+      },
+    );
+  };
 
   return (
     <div data-testid="files-editor" className="flex h-full flex-col">
@@ -468,34 +615,7 @@ function FileEditor({ root, path, read }: { root: string; path: string; read: Fi
           type="button"
           data-testid="files-editor-save"
           disabled={!dirty || write.isPending}
-          onClick={() => {
-            setSaveError(null);
-            setConflict(null);
-            setSavedIndicator(false);
-            write.mutate(
-              {
-                root,
-                path,
-                content: draft,
-                expectedMtime: read.mtime,
-                expectedContentHash: read.contentHash,
-                actor: "ui-files-edit-mode",
-              },
-              {
-                onSuccess: (result: FileWriteResult) => {
-                  if ("conflict" in result) {
-                    setConflict({ currentMtime: result.currentMtime, currentContentHash: result.currentContentHash });
-                  } else {
-                    setSavedIndicator(true);
-                    setTimeout(() => setSavedIndicator(false), 2000);
-                  }
-                },
-                onError: (err) => {
-                  setSaveError(err instanceof Error ? err.message : String(err));
-                },
-              },
-            );
-          }}
+          onClick={save}
           className="border border-emerald-500 bg-emerald-50 px-2 py-0.5 uppercase tracking-[0.10em] text-emerald-900 disabled:cursor-not-allowed disabled:opacity-50"
         >
           save
@@ -503,7 +623,7 @@ function FileEditor({ root, path, read }: { root: string; path: string; read: Fi
         <button
           type="button"
           data-testid="files-editor-cancel"
-          onClick={() => { setDraft(read.content); setSaveError(null); setConflict(null); }}
+          onClick={() => { setDraft(base.content); setSaveError(null); setConflict(null); }}
           className="border border-outline bg-surface-lowest px-2 py-0.5 uppercase tracking-[0.10em] text-on-surface"
         >
           cancel
@@ -515,7 +635,7 @@ function FileEditor({ root, path, read }: { root: string; path: string; read: Fi
       {conflict && (
         <div data-testid="files-editor-conflict" className="flex items-center gap-2 border-b border-red-200 bg-red-50 px-3 py-2 font-mono text-[10px] text-red-900">
           <span className="flex-1">
-            File changed externally. Local mtime <code>{read.mtime}</code> ≠ server <code>{conflict.currentMtime}</code>. Click Refresh to re-read the file (your draft will be replaced with the new server content; copy it elsewhere first if you need to re-apply).
+            File changed externally. Local mtime <code>{base.mtime}</code> ≠ server <code>{conflict.currentMtime}</code>. Click Refresh to re-read the file (your draft will be replaced with the new server content; copy it elsewhere first if you need to re-apply).
           </span>
           <button
             type="button"

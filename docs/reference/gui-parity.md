@@ -89,6 +89,14 @@ verified changes without implying that the rest of the matrix is complete.
   transitions. One hundred focused tests pass, including the unchanged launcher;
   independent actual daemon-route and cancellation cases also pass. A standalone
   terminal catalog destination remains a frontend gap.
+- **File replacement safety:** The editor cannot save truncated or binary
+  previews as whole-file replacements. It checks complete text metadata, retains
+  the draft's original change-detection tokens and rechecks the latest cached
+  snapshot before Save. Thirty-one focused tests and seven independent private
+  cases pass, including actual Files UI/Hono write behavior. Complete LF UTF-8
+  editing remains supported. CR/CRLF editing is currently read-only until its
+  line endings can be preserved; source/host identity and richer file navigation
+  remain open requirements.
 - **Spatial browser checkpoint:** The actual application, with fictional API data,
   now fits a 526×448 canvas inside an unchanged 1280×720 browser viewport. Seat
   selection, focus, evidence, relationships, search and List mode were exercised.
