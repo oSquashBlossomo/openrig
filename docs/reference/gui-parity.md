@@ -67,6 +67,37 @@ verified changes without implying that the rest of the matrix is complete.
   resize preserved native pane size, process identity and sizing policy. This
   used a harmless scripted writer, not native Claude/Codex. Fitted interactive
   text is still too small at phone width and needs a readable presentation.
+- **Startup and fleet restore contracts:** Exact seat/runtime/revision selections
+  and fresh-start consent remain bound to the inspected state. One mutation lane
+  preserves the first attempt across duplicate clicks; uncertain replies retain
+  identity for inspection rather than automatically replaying effects. Accepted
+  fleet handles survive view unmount and reload, with storage failure reported
+  separately. Detaching observation does not cancel accepted work. Forty-six
+  focused tests pass, with independent duplicate-click and actual daemon-route
+  checks. Startup and fleet receipt screens still require frontend integration.
+- **Durable Recent and Pulse reads:** Served transition windows and exact selected
+  rows no longer depend on the ephemeral event feed. Pulse preserves independently
+  available queue and pane sources, unknown totals, bounded enrichment and partial
+  failures. Unresolved blocker ownership cannot become an exact count; active pane
+  evidence remains visible when queue sources fail. Fifty-nine focused checks and
+  two independent reproductions pass. User-facing consumers and event invalidation
+  remain to be integrated.
+- **Terminal catalog read boundaries:** Catalog and preview reads now have total
+  five-second deadlines, cancellation and payload guards. Unknown host selection
+  waits for actual authority; unsupported remote selection and manual refetch
+  cannot fall back to local data. Exact view/provider/plan identity survives cache
+  transitions. One hundred focused tests pass, including the unchanged launcher;
+  independent actual daemon-route and cancellation cases also pass. A standalone
+  terminal catalog destination remains a frontend gap.
+- **Spatial browser checkpoint:** The actual application, with fictional API data,
+  now fits a 526×448 canvas inside an unchanged 1280×720 browser viewport. Seat
+  selection, focus, evidence, relationships, search and List mode were exercised.
+  A 412-seat fixture retains the final seat in searchable list/detail fallback;
+  an unavailable rig leaves an explicit partial-source warning and usable sibling
+  rigs. Empty and malformed inventories show distinct states. Independent camera
+  tests verify that a Reset animation cannot overwrite newer automatic framing.
+  Renderer chunk retry, additional viewport sizes and complete integration remain
+  open; this checkpoint does not establish full spatial acceptance.
 - **Current integrated UI checkpoint:** 214 files passed (1,963 tests, one
   existing skip) after the contract/data changes and compatible dependency
   refresh. Workspace build and typechecks pass. This local run includes the
