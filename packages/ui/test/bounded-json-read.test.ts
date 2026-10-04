@@ -2,6 +2,11 @@ import { afterEach, expect, it, vi } from "vitest";
 import { boundedJsonRead } from "../src/lib/bounded-json-read.js";
 import { OperatorReadError } from "../src/lib/operator-read.js";
 afterEach(()=>{vi.useRealTimers();vi.unstubAllGlobals();});
+it.each([new Headers({Authorization:"Bearer private-test"}), {Authorization:"Bearer private-test"}, [["Authorization","Bearer private-test"]] as [string,string][]])("passes caller-owned headers unchanged and adds none to ordinary reads (%#)",async headers=>{
+  const fetch=vi.fn(async(_url:string,_init?:RequestInit)=>Response.json({ok:true}));vi.stubGlobal("fetch",fetch);
+  await boundedJsonRead("/protected",{headers});await boundedJsonRead("/ordinary");
+  expect(fetch.mock.calls[0]?.[1]?.headers).toBe(headers);expect(fetch.mock.calls[1]?.[1]).not.toHaveProperty("headers");
+});
 it("owns one total deadline across slow headers and a callback body which ignores abort",async()=>{
   vi.useFakeTimers(); let headers!:(v:unknown)=>void; const cancel=vi.fn(async()=>{}); const fetch=vi.fn(()=>new Promise(done=>{headers=done;}));vi.stubGlobal("fetch",fetch);
   const pending=boundedJsonRead("/legacy",{readResponse:async response=>({unavailable:true,body:await response.json()})}).catch(e=>e);

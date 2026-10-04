@@ -15,7 +15,10 @@ function stubFetch(): { calls: Array<{ url: string; init?: RequestInit }> } {
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
     calls.push({ url, init });
-    return new Response(JSON.stringify({ content: "test", lines: 1, ok: true }), {
+    const body = url.includes("/preview") ? { content: "test", lines: 1,
+      sessionName: url.startsWith("/api/sessions/") ? decodeURIComponent(url.split("/")[3]!) : "private-bound-session",
+      capturedAt: "2026-10-04T10:00:00Z" } : { content: "test", lines: 1, ok: true };
+    return new Response(JSON.stringify(body), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });
