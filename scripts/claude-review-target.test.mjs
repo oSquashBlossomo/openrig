@@ -97,7 +97,8 @@ test("rejects an invalid dispatch PR number without exporting a checkout SHA", (
 
 test("review tools cannot execute shell commands or read credential files", () => {
   const review = workflow.jobs["claude-review"].steps.find(step => step.name === "Review pull request");
-  assert.ok(review.with.claude_args.includes('--tools ""'));
+  // The action treats a separate empty value as a missing argument.
+  assert.match(review.with.claude_args, /(?:^|\s)--tools=(?:\s|$)/);
   assert.ok(review.with.claude_args.includes("mcp__github__pull_request_read"));
   assert.ok(review.with.claude_args.includes("mcp__github__add_issue_comment"));
   assert.ok(!review.with.claude_args.includes("Bash("));
