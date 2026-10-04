@@ -15,6 +15,15 @@ verified changes without implying that the rest of the matrix is complete.
   health query and shows event-loop-unhealthy evidence. Five regression cases in
   `packages/ui/test/settings-system-status-health.test.tsx` pass, including offset
   polling after navigation and preservation of the shared terminal health signal.
+- **Canonical read contracts:** Health, Attention, delivered human updates,
+  Configuration, Connections and Slack manifest hooks now preserve their complete
+  served projections and exact instance/entity query keys. Remote forwarding is
+  explicitly unsupported for these APIs. Five-second deadlines cover headers and
+  body parsing; cancellation and malformed responses are distinct errors. The
+  common daemon-health poll also uses this deadline, so a hung read replaces a
+  previous healthy verdict with an unavailable signal. Four focused suites pass
+  (51 tests), and UI typecheck passes. These are transport and contract checks;
+  user-facing pages and their browser verification are still in progress.
 - **Terminal preview and Open:** `TerminalLauncher` uses `useTerminalPreview` for
   readiness, provider availability, pages, geometry and unavailable-seat reasons.
   Open submits the exact preview plan. Twenty-seven launcher tests pass, including
