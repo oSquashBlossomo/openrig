@@ -22,7 +22,7 @@ export function isNodeDetail(v: unknown): v is NodeDetailData {
     restoreOutcome: isText, tmuxAttachCommand: textOrNull, resumeCommand: textOrNull,
     recoveryGuidance: optional(nullable(g => hasShape(g, { summary: isText, commands: arrayOf(isText), notes: arrayOf(isText) }))),
     latestError: textOrNull, model: textOrNull, agentRef: textOrNull, profile: textOrNull,
-    resolvedSpecName: textOrNull, resolvedSpecVersion: textOrNull, cwd: textOrNull,
+    resolvedSpecName: textOrNull, resolvedSpecVersion: textOrNull, resolvedSpecHash: optional(textOrNull), cwd: textOrNull,
     startupFiles: arrayOf(f => hasShape(f, { path: isText, deliveryHint: isText, required: isBoolean,
       absolutePath: optional(textOrNull), ownerRoot: optional(textOrNull) })),
     startupActions: actions, recentEvents: arrayOf(e => hasShape(e, { type: isText, createdAt: isText })),

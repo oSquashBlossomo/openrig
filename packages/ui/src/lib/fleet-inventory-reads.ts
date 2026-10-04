@@ -28,7 +28,9 @@ export function isNodeInventoryEntry(v: unknown): v is NodeInventoryEntry {
     contextUsage: optional(nullable(contextUsage)), agentActivity: optional(nullable(activity)),
     currentQitems: optional(arrayOf(q => hasShape(q, { qitemId: identity, bodyExcerpt: isText, tier: textOrNull }))),
     terminalActive: optional(nullable(isBoolean)), hasAssignedWork: optional(isBoolean), pendingWorkCount: optional(isInteger),
-    identityVerdict: optional(nullable(verdict)), agentRef: optional(textOrNull), profile: optional(textOrNull), codexConfigProfile: optional(textOrNull) });
+    identityVerdict: optional(nullable(verdict)), agentRef: optional(textOrNull), profile: optional(textOrNull), codexConfigProfile: optional(textOrNull),
+    resolvedSpecName: optional(textOrNull), resolvedSpecVersion: optional(textOrNull), resolvedSpecHash: optional(textOrNull),
+    lifecycleState: optional(oneOf("running", "detached", "recoverable", "attention_required")) });
 }
 export function isPsEntry(v: unknown): v is PsEntry {
   return hasShape(v, { rigId: identity, name: isText, nodeCount: isInteger, runningCount: isInteger,
@@ -45,8 +47,36 @@ export async function readPsEntries(hostId: string, options: OperatorReadOptions
   return operatorRead(LOCAL_OPERATOR_INSTANCE, withHostParam("/api/ps", hostId),
     (v): v is PsEntry[] => Array.isArray(v) && v.every(isPsEntry), options);
 }
+
+export interface NodeInventoryPartialEvidence {
+  hostId: string;
+  rigId: string;
+  /** Validated same-rig original rows from this failed read, never merged with
+   * an older successful cache entry. Empty means no rows could be verified. */
+  rows: NodeInventoryEntry[];
+  rejectedCount: number;
+  /** Receipt time of this decoded array, in epoch milliseconds. */
+  receivedAt: number;
+}
+
+/** The read remains an error; consumers can disclose its dated healthy rows
+ * separately from any older successful array retained by TanStack Query. */
+export class NodeInventoryPartialReadError extends OperatorReadError {
+  constructor(readonly partial: NodeInventoryPartialEvidence) {
+    super("invalid_contract", `Node inventory rejected ${partial.rejectedCount} invalid or foreign rows; its verified rows are partial evidence.`);
+    this.name = "NodeInventoryPartialReadError";
+  }
+}
+
 export async function readNodeInventory(rigId: string | null, hostId: string, options: OperatorReadOptions = {}) {
   requireIdentity(rigId, hostId);
   return operatorRead(LOCAL_OPERATOR_INSTANCE, withHostParam(`/api/rigs/${encodeURIComponent(rigId!)}/nodes`, hostId),
-    (v): v is NodeInventoryEntry[] => Array.isArray(v) && v.every(row => isNodeInventoryEntry(row) && row.rigId === rigId), options);
+    (v): v is NodeInventoryEntry[] => {
+      if (!Array.isArray(v)) return false;
+      const rows = v.filter((row): row is NodeInventoryEntry => isNodeInventoryEntry(row) && row.rigId === rigId);
+      if (rows.length !== v.length) throw new NodeInventoryPartialReadError({
+        hostId, rigId: rigId!, rows, rejectedCount: v.length - rows.length, receivedAt: Date.now(),
+      });
+      return true;
+    }, options);
 }

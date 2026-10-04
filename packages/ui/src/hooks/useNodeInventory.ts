@@ -80,6 +80,11 @@ export interface NodeInventoryEntry {
   agentRef?: string | null;
   profile?: string | null;
   codexConfigProfile?: string | null;
+  // Effective binding facts served by the daemon; absent legacy fields remain unknown.
+  resolvedSpecName?: string | null;
+  resolvedSpecVersion?: string | null;
+  resolvedSpecHash?: string | null;
+  lifecycleState?: "running" | "detached" | "recoverable" | "attention_required";
 }
 
 export function useNodeInventory(rigId: string | null) {

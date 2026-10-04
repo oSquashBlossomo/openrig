@@ -54,6 +54,7 @@ export interface NodeDetailData {
   profile: string | null;
   resolvedSpecName: string | null;
   resolvedSpecVersion: string | null;
+  resolvedSpecHash?: string | null;
   cwd: string | null;
   startupFiles: Array<{
     path: string;
