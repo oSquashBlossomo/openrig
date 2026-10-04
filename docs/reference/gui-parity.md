@@ -36,9 +36,30 @@ verified changes without implying that the rest of the matrix is complete.
   the protection of an earlier pinned version. Existing conservative name-based
   spec and lineage references still protect all relevant versions, and explicit
   force behavior remains intact. Fourteen maintained regressions, adjacent
-  suites and an independent original deletion reproduction pass. A separately
-  reproduced ambiguity between colon-bearing name/version tuples remains open;
-  this checkpoint does not yet change the agent-image ID format.
+  suites and an independent original deletion reproduction pass.
+- **Agent-image tuple identity:** Colon-bearing names and versions now use an
+  opaque canonical tuple ID instead of ambiguous delimiter concatenation.
+  Colon-free tuples retain their existing `agent-image:name:version` IDs.
+  Snapshot capture uses the scanner's shared ID builder, including exact empty
+  and numeric-coerced version strings. Ambiguous old multi-colon IDs return
+  not-found and require reselection; no alias guesses or disk migration occur.
+  Exact-tuple root precedence remains intentional. The original 15-case
+  reproduction, 15 independent route/producer cases and 150 maintained daemon
+  plus three CLI checks pass. Native image launch was not exercised.
+- **Agent-image catalog reads:** List and preview reads now have a total
+  five-second deadline and cancellation. Server failures and malformed payloads
+  remain errors rather than successful empty libraries. Preview IDs must match
+  exactly, absent IDs cannot fetch through manual refresh, and another image's
+  cache cannot become placeholder content. Nullable, empty, zero and additive
+  metadata remain intact; an absent legacy cwd stays unknown. Thirty-four new
+  hook checks, unchanged consumer tests and eight independent actual-route/file
+  cases pass. Connected-daemon catalog scope and pin mutations are unchanged.
+  Consumers still need consistent preview-error and stale-data presentation.
+- **Integrated image checkpoint:** Immutable `16fbbbb3` passes the full workspace
+  build and typecheck and all 262 UI test files (2,705 passing tests, one existing
+  skip). This includes the earlier backend identity fixes and the two image
+  cohorts above. Existing large-bundle warnings and uncommitted frontend gaps
+  remain; these source checks do not establish full browser or native acceptance.
 - **Backend checkpoint verification:** The immutable `fcb77d69` source archive
   passes the full workspace build and typecheck, 161 exact-route/source/protection
   regressions and 29 CLI spec/release checks. At `de6567f0`, the full UI suite
@@ -46,10 +67,10 @@ verified changes without implying that the rest of the matrix is complete.
   with one skip, and TUI passes 839. The broader local daemon/CLI run did not
   pass: this Mac cannot satisfy the CI process-observation preflight, and the
   first archive lacked historical release tags. The tag-dependent CLI tests
-  pass after supplying those refs. Native process/scenario coverage must be
-  established by the new GitHub CI run; the previous published `30d22afd`
-  already passes all eight required checks. Uncommitted frontend work is
-  excluded from these immutable-source results.
+  pass after supplying those refs. GitHub CI subsequently passed all eight
+  required checks on `4d592287` (run 37202929516), including the daemon and CLI
+  suites under the repository's process/network isolation. Uncommitted frontend
+  work is excluded from these immutable-source results.
 - **Plugin and skill documentation reads:** All four directory/file readers now
   bound headers and decoding to five seconds, cancel abandoned reads and verify
   the exact catalog owner and original requested path. Empty content, nullable
