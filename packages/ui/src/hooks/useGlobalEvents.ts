@@ -8,11 +8,11 @@ const OPERATOR_FAMILY = ["operator", "local-instance"] as const;
  * of activity collapses into at most one invalidation per window. */
 export const OPERATOR_INVALIDATION_WINDOW_MS = 1_000;
 
-/** Canonical families an activity event can change. Gateway, configuration
- * and project catalog reads have no activity events; they refresh on their
- * own poll and on reconnect. */
-export function operatorFamiliesForEvent(type: string): Array<"attention" | "health"> {
-  if (type.startsWith("queue.") || type.startsWith("proof.") || type.startsWith("workflow.")) return ["attention", "health"];
+/** Canonical families an activity event can change. Project scopes and
+ * execution consume queue/proof/workflow facts. Gateway and configuration
+ * refresh on their own poll and on reconnect. */
+export function operatorFamiliesForEvent(type: string): Array<"attention" | "health" | "projects"> {
+  if (type.startsWith("queue.") || type.startsWith("proof.") || type.startsWith("workflow.")) return ["attention", "health", "projects"];
   if (type.startsWith("node.") || type.startsWith("session.") || type.startsWith("rig.") || type.startsWith("pod.")
     || type.startsWith("restore.") || type.startsWith("bootstrap.")) return ["attention", "health"];
   return [];
@@ -39,10 +39,10 @@ export function useGlobalEvents(): { connected: boolean } {
     };
     // "all" = the whole connected-instance family (after a reconnect, any
     // canonical read may have missed events).
-    const pendingOperator = new Set<"attention" | "health" | "all">();
+    const pendingOperator = new Set<"attention" | "health" | "projects" | "all">();
     const operatorReceipts = new Set<object>();
     let operatorTimer: ReturnType<typeof setTimeout> | null = null;
-    const scheduleOperator = (families: Array<"attention" | "health" | "all">, receipt: object) => {
+    const scheduleOperator = (families: Array<"attention" | "health" | "projects" | "all">, receipt: object) => {
       if (!families.length) return;
       for (const family of families) pendingOperator.add(family);
       operatorReceipts.add(receipt);

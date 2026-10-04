@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useSseQueryRefresh } from "../lib/sse-query-refresh.js";
 import {
   subscribeTopologyEvents,
@@ -28,6 +28,7 @@ export function useActivityFeed(): UseActivityFeedResult {
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [connected, setConnected] = useState(false);
   const [feedOpen, setFeedOpen] = useState(false);
+  const received = useRef(new WeakSet<TopologyEvent>());
 
   const addEvent = useCallback((parsed: TopologyEvent) => {
     const event: ActivityEvent = {
@@ -37,8 +38,15 @@ export function useActivityFeed(): UseActivityFeedResult {
       createdAt: (parsed["createdAt"] as string) ?? new Date().toISOString(),
       receivedAt: Date.now(),
     };
-    setEvents((prev) => [event, ...prev].slice(0, MAX_ACTIVITY_EVENTS));
+    // The hub replays the same receipt objects when an effect reattaches.
+    // Keep one row per receipt, without collapsing distinct wire events whose
+    // sequence/time happen to match (for example after a daemon restart).
+    if (!received.current.has(parsed)) {
+      received.current.add(parsed);
+      setEvents((prev) => [event, ...prev].slice(0, MAX_ACTIVITY_EVENTS));
+    }
 
+    // A replacement QueryClient still needs this replay's invalidation intent.
     // Invalidate package queries on package mutation events.
     if (event.type === "package.installed" || event.type === "package.rolledback") {
       refresh(["packages"], [parsed]);
