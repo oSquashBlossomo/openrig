@@ -11,6 +11,38 @@ The inventory follows the eight entries in `packages/tui/src/sections.ts`, the c
 The findings below preserve the audited baseline. This section records subsequent
 verified changes without implying that the rest of the matrix is complete.
 
+- **Composed Review and Fleet reads:** One five-second deadline now covers
+  headers and decoding, including ignored cancellation. Exact review identities
+  are checked against the daemon's echoes; nullable and partial Fleet evidence
+  is retained. Unread callback/error bodies are released. Sixty-seven focused
+  root checks and three independent native-stream cases pass.
+- **Slice, mission and workflow-filter reads:** Selection changes no longer
+  borrow another entity's placeholder. Authored document filenames retain reserved
+  characters. Workflow names and versions use separate query fields and cache
+  identities, while representable pairs retain compatibility with older daemons.
+  Fifty-five root UI checks, 42 existing daemon tests and three independent route
+  probes pass. Queue maps expose explicit unsupported remote scope; their existing
+  ScopePages consumers still require frontend wiring to that scope.
+- **Legacy Attention transport:** Legacy and aggregate requests are cancellable
+  and bounded. Malformed payloads produce errors instead of successful empty data;
+  nullable queue facts, origin stamps and remote failure statuses remain intact.
+  Forty-four root checks and an independent two-origin daemon probe pass. Consumer
+  loading, stale and error presentation remains separate frontend acceptance.
+- **Malformed 3D graph identities:** Lone UTF-16 surrogate node and edge IDs now
+  produce partial-graph issues while valid siblings and distinct Unicode IDs
+  survive. All 135 spatial tests and the unchanged five-case crash reproduction
+  pass. This verifies graph-entry handling, not every possible scope or metadata
+  identity or the remaining 2D renderer gaps.
+- **Integrated bounded-read checkpoint:** All 249 UI test files pass, with 2,397
+  passing tests and one existing skip. Two host-level fixtures were corrected to
+  include actual mission/list response fields; their behavior assertions remain
+  unchanged. An isolated archive of `69ddef95` passes UI typecheck/production build
+  and daemon typecheck. These checks do not complete unfinished frontend rows.
+  In particular, six private actual-Feed regressions confirm that initial
+  Attention errors still show reassuring empty copy and failed refreshes retain
+  cached rows/host status without stale disclosure; the successful-empty control
+  passes. The legacy feed must consume read state before freshness UX is complete.
+
 - **Shared daemon health:** `SettingsSystemStatusPanel` now uses the common typed
   health query and shows event-loop-unhealthy evidence. Five regression cases in
   `packages/ui/test/settings-system-status-health.test.tsx` pass, including offset
