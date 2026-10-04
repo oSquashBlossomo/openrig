@@ -55,6 +55,13 @@ verified changes without implying that the rest of the matrix is complete.
   readback. Independent real-route reproductions verify both corrections; focused
   suites pass 45 daemon and 62 UI tests. The existing page's Resume control still
   requires migration to the occurrence chooser and new mutation helper.
+- **Workflow abort contract:** The new helper retains exact actor/reason bytes,
+  performs one submission and preserves uncertain outcomes for readback. A known
+  missing frontier packet is reported as rejected only for the documented abort
+  HTTP 404 response; its transaction rolls back earlier packet closures. Actual
+  Hono/SQLite checks verify success, rollback and post-commit notification failure.
+  Thirty-eight focused abort/resume/revision/scope tests pass. Frontend controls
+  remain unfinished and are not covered by this transport checkpoint.
 - **Topology data reliability:** Shared 2D/3D summary and graph requests have
   cancellable five-second deadlines. Invalid payload containers fail visibly;
   nullable names retain the existing partial-inventory fallback. The spatial

@@ -8,7 +8,9 @@ export interface WorkflowResumeResult extends Record<string, unknown> {
   instanceId: string; stepId: string; newPacketId: string; ownerSession: string; resumeCount: number; exceptionItemsClosed: number; absorbedReplay?: boolean;
 }
 export interface WorkflowRevisionInput { operationKey: string; expectedVersion: number; expectedDigest: string; actorSession: string; reason: string }
-export interface WorkflowMutationAttempt { readonly instanceId: string; readonly kind: "resume" | "revision"; readonly payload: Readonly<WorkflowResumeInput | WorkflowRevisionInput> }
+export interface WorkflowAbortInput { reason: string; actorSession: string }
+export interface WorkflowAbortResult extends Record<string, unknown> { instanceId: string; closedPacketIds: string[]; status: "aborted" }
+export interface WorkflowMutationAttempt { readonly instanceId: string; readonly kind: "resume" | "revision" | "abort"; readonly payload: Readonly<WorkflowResumeInput | WorkflowRevisionInput | WorkflowAbortInput> }
 export type WorkflowMutationErrorCode = "unsupported_scope" | "invalid_request" | "cancelled" | "rejected" | "outcome_unknown";
 export class WorkflowMutationError extends Error {
   constructor(readonly code: WorkflowMutationErrorCode, message: string, readonly attempt?: WorkflowMutationAttempt,
@@ -34,6 +36,12 @@ const knownRejectionStatus: Readonly<Record<string, number>> = {
   next_owner_unresolved: 400, harness_pin_unsatisfied: 409, bound_rig_not_found: 409,
   "actorSession is required": 400,
 };
+// These abort errors are raised before withNotifyEnvelope commits. In
+// particular, a missing later frontier packet rolls back earlier closures.
+const abortRejectionStatus: Readonly<Record<string, number>> = {
+  instance_not_abortable: 409, abort_reason_required: 400, "reason is required": 400, frontier_binding_indeterminate: 409,
+  packet_not_found: 404,
+};
 
 /** Exactly one POST. A lost/invalid success has unknown outcome, with immutable
  * submitted bytes retained. Resume has no operation-key API: inspect its exact
@@ -44,7 +52,7 @@ async function postWorkflow<T>(attempt: WorkflowMutationAttempt, validate: (v: u
   const controller = new AbortController();
   let response: Response | undefined;
   const unknown = (reason: string, serverCode?: string, details?: unknown) => new WorkflowMutationError("outcome_unknown",
-    `${reason} The mutation may have committed. Inspect ${attempt.kind === "revision" ? "the retained operation key" : "the exact failure occurrence and redrive receipt"} before deciding another action.`, attempt, response?.status, serverCode, details);
+    `${reason} The mutation may have committed. Inspect ${attempt.kind === "revision" ? "the retained operation key" : attempt.kind === "abort" ? "the instance status" : "the exact failure occurrence and redrive receipt"} before deciding another action.`, attempt, response?.status, serverCode, details);
   let rejectAbort!: (error: WorkflowMutationError) => void;
   const aborted = new Promise<never>((_, reject) => { rejectAbort = reject; });
   const abort = (reason: string) => { rejectAbort(unknown(reason)); controller.abort(); void response?.body?.cancel().catch(() => {}); };
@@ -63,7 +71,11 @@ async function postWorkflow<T>(attempt: WorkflowMutationAttempt, validate: (v: u
       if (!response.ok) {
         const serverCode = isObject(value) && isText(value.error) ? value.error : undefined;
         const message = isObject(value) && isText(value.message) ? value.message : serverCode ?? `HTTP ${response.status}`;
-        if (serverCode && Object.hasOwn(knownRejectionStatus, serverCode) && knownRejectionStatus[serverCode] === response.status)
+        const rejected = serverCode && (
+          (Object.hasOwn(knownRejectionStatus, serverCode) && knownRejectionStatus[serverCode] === response.status)
+          || (attempt.kind === "abort" && Object.hasOwn(abortRejectionStatus, serverCode) && abortRejectionStatus[serverCode] === response.status)
+        );
+        if (rejected)
           throw new WorkflowMutationError("rejected", message, attempt, response.status, serverCode, value);
         // A wake/notification can fail after the transaction commits. HTTP 500
         // (or a proxy's error) alone says nothing about the durable outcome.
@@ -101,6 +113,18 @@ export async function reviseWorkflow(scope: OperatorInstanceScope, instanceId: s
     && v.receipt.compiledInputDigest === payload.expectedDigest && v.receipt.actorSession === payload.actorSession && v.receipt.reason === payload.reason, options);
 }
 
+/** Abort has no operation key: after an unknown outcome, read the instance's
+ * status (aborted with this actor/reason in lastContinuationDecision) first. */
+export async function abortWorkflow(scope: OperatorInstanceScope, instanceId: string, input: WorkflowAbortInput, options: OperatorReadOptions = {}): Promise<WorkflowAbortResult> {
+  validateTarget(scope, instanceId);
+  if (!input || !nonempty(input.reason) || !nonempty(input.actorSession))
+    throw new WorkflowMutationError("invalid_request", "Abort requires an explicit reason and actor.");
+  const payload = Object.freeze({ reason: input.reason, actorSession: input.actorSession });
+  const attempt = Object.freeze({ instanceId, kind: "abort" as const, payload });
+  return postWorkflow(attempt, (v): v is WorkflowAbortResult => hasShape(v, { instanceId: x => x === instanceId, status: x => x === "aborted",
+    closedPacketIds: x => Array.isArray(x) && x.every(isText) }), options);
+}
+
 export function useWorkflowResume(instanceId: string | null, scope: OperatorInstanceScope = LOCAL_OPERATOR_INSTANCE) {
   const queryClient = useQueryClient();
   const mutation = useMutation<WorkflowResumeResult, WorkflowMutationError, WorkflowResumeInput>({
@@ -115,6 +139,15 @@ export function useWorkflowRevise(instanceId: string | null, scope: OperatorInst
   const mutation = useMutation<WorkflowOperation, WorkflowMutationError, WorkflowRevisionInput>({
     mutationKey: ["workflow", ...operatorScopeKey(scope), "revision", instanceId], retry: false,
     mutationFn: input => reviseWorkflow(scope, instanceId ?? "", input),
+    onSettled: () => { void queryClient.invalidateQueries({ queryKey: ["workflow", ...operatorScopeKey(scope)] }); },
+  });
+  return { ...mutation, ...operatorScopeState(scope) };
+}
+export function useWorkflowAbort(instanceId: string | null, scope: OperatorInstanceScope = LOCAL_OPERATOR_INSTANCE) {
+  const queryClient = useQueryClient();
+  const mutation = useMutation<WorkflowAbortResult, WorkflowMutationError, WorkflowAbortInput>({
+    mutationKey: ["workflow", ...operatorScopeKey(scope), "abort", instanceId], retry: false,
+    mutationFn: input => abortWorkflow(scope, instanceId ?? "", input),
     onSettled: () => { void queryClient.invalidateQueries({ queryKey: ["workflow", ...operatorScopeKey(scope)] }); },
   });
   return { ...mutation, ...operatorScopeState(scope) };
