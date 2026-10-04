@@ -60,6 +60,10 @@ export async function fetchNodePreview(
   return readPreview(`/api/rigs/${encodeURIComponent(rigId)}/nodes/${encodeURIComponent(logicalId)}/preview?lines=${lines}`, signal);
 }
 
+function finiteSettingNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
 export interface UseNodePreviewOpts {
   rigId: string | null;
   logicalId: string | null;
@@ -71,10 +75,10 @@ export interface UseNodePreviewOpts {
 
 export function useNodePreview(opts: UseNodePreviewOpts) {
   const { data: settings } = useSettings();
-  const intervalSeconds = settings?.settings?.["ui.preview.refresh_interval_seconds"]?.value as number | undefined;
-  const defaultLines = settings?.settings?.["ui.preview.default_lines"]?.value as number | undefined;
-  const lines = opts.lines ?? defaultLines ?? 50;
-  const refetchInterval = opts.paused ? false : ((intervalSeconds ?? 3) * 1000);
+  const intervalSeconds = finiteSettingNumber(settings?.settings?.["ui.preview.refresh_interval_seconds"]?.value, 3);
+  const defaultLines = finiteSettingNumber(settings?.settings?.["ui.preview.default_lines"]?.value, 50);
+  const lines = opts.lines ?? defaultLines;
+  const refetchInterval = opts.paused ? false : (intervalSeconds * 1000);
 
   const query = useQuery({
     queryKey: ["node-preview", opts.rigId, opts.logicalId, lines],
@@ -112,10 +116,10 @@ export function useSessionPreview(opts: {
   paused?: boolean;
 }) {
   const { data: settings } = useSettings();
-  const intervalSeconds = settings?.settings?.["ui.preview.refresh_interval_seconds"]?.value as number | undefined;
-  const defaultLines = settings?.settings?.["ui.preview.default_lines"]?.value as number | undefined;
-  const lines = opts.lines ?? defaultLines ?? 50;
-  const refetchInterval = opts.paused ? false : ((intervalSeconds ?? 3) * 1000);
+  const intervalSeconds = finiteSettingNumber(settings?.settings?.["ui.preview.refresh_interval_seconds"]?.value, 3);
+  const defaultLines = finiteSettingNumber(settings?.settings?.["ui.preview.default_lines"]?.value, 50);
+  const lines = opts.lines ?? defaultLines;
+  const refetchInterval = opts.paused ? false : (intervalSeconds * 1000);
 
   const query = useQuery({
     queryKey: ["session-preview", opts.sessionName, lines],
