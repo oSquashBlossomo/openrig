@@ -176,6 +176,21 @@ function str(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+/** JSON strings may contain lone UTF-16 surrogates, which URI key encoding
+ * rejects. Check identity bytes without repairing or aliasing the input. */
+function hasWellFormedUnicode(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(++i);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function finiteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
@@ -268,6 +283,10 @@ export function parseSpatialRig(hostId: string, input: SpatialRigInput): Spatial
     const id = str(raw.id);
     if (!id) {
       issues.push({ rigId, kind: "malformed-node", detail: "node entry has no id" });
+      continue;
+    }
+    if (!hasWellFormedUnicode(id)) {
+      issues.push({ rigId, kind: "malformed-node", detail: "node id contains malformed UTF-16" });
       continue;
     }
     if (seenIds.has(id)) {
@@ -371,6 +390,11 @@ export function parseSpatialRig(hostId: string, input: SpatialRigInput): Spatial
       issues.push({ rigId, kind: "malformed-edge", detail: "edge entry is missing an endpoint" });
       return;
     }
+    const id = str(raw.id) ?? `${source}->${target}#${index}`;
+    if (![source, target, id].every(hasWellFormedUnicode)) {
+      issues.push({ rigId, kind: "malformed-edge", detail: "edge identity contains malformed UTF-16" });
+      return;
+    }
     const from = agentByNodeId.get(source);
     const to = agentByNodeId.get(target);
     if (!from || !to) {
@@ -381,7 +405,6 @@ export function parseSpatialRig(hostId: string, input: SpatialRigInput): Spatial
       issues.push({ rigId, kind: "self-edge", detail: `edge on ${source} points at itself` });
       return;
     }
-    const id = str(raw.id) ?? `${source}->${target}#${index}`;
     const key = spatialKey(hostId, rigId, "edge", id);
     if (seenEdgeKeys.has(key)) {
       issues.push({ rigId, kind: "duplicate-edge", detail: `duplicate edge id ${id}` });
