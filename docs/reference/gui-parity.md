@@ -117,6 +117,12 @@ verified changes without implying that the rest of the matrix is complete.
   hook/downstream tests and one actual daemon-route test pass; independent review
   also verifies the missing-endpoint refusals. Existing cached selection semantics
   remain unchanged, so consumers must disclose failed refreshes separately.
+- **Canonical live refreshes:** Health and Attention event bursts no longer
+  restart an in-flight bounded read. Reconnect and narrower event families
+  coalesce into one follow-up per affected query after it settles. Startup and
+  related health events also refresh Health-derived Attention. Fifty focused
+  tests and the original independent slow-read reproduction pass. Legacy
+  topology/process/project event families are still being investigated separately.
 - **Spatial browser checkpoint:** The actual application, with fictional API data,
   now fits a 526×448 canvas inside an unchanged 1280×720 browser viewport. Seat
   selection, focus, evidence, relationships, search and List mode were exercised.
