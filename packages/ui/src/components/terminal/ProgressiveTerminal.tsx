@@ -82,11 +82,13 @@ export function ProgressiveTerminal({
 
   // Static is a bounded polling excerpt. Live mirrors actual pane geometry;
   // its font fitting keeps xterm selection correct without CSS transforms.
+  // min-w-0 keeps a readable-floor pane panning inside its own wrapper instead
+  // of widening the grid cell/flex row that hosts it.
   if (mode === "live") {
     return (
       <div
         data-testid={`${testIdPrefix}-live`}
-        className={[fit === "contain" ? "h-full w-full" : "w-full", className].filter(Boolean).join(" ")}
+        className={[fit === "contain" ? "h-full w-full min-w-0" : "w-full min-w-0", className].filter(Boolean).join(" ")}
       >
         <FocusedTerminal sessionName={sessionName} fit={fit} initialText={initialText} />
       </div>

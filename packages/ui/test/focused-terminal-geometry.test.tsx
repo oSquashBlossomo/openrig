@@ -41,18 +41,40 @@ it("negotiates geometry framing and resizes the browser before writing a snapsho
 it("refits actual native dimensions and preserves the browser viewport when native geometry changes", async () => {
   const mounted = render(<FocusedTerminal sessionName="fixture" fit="width" />);
   const wrapper = mounted.getByTestId("focused-terminal-fit-fixture");
-  Object.defineProperty(wrapper, "clientWidth", { value: 300 });
+  // Wide enough that both native grids fit above the readable font floor.
+  Object.defineProperty(wrapper, "clientWidth", { value: 1200 });
   await act(async () => { await vi.advanceTimersByTimeAsync(50); });
   await frame({ type: "geometry", cols: 137, rows: 43 });
   await act(async () => { await vi.advanceTimersByTimeAsync(30); });
-  expect(state.terms[0].options.fontSize).toBeCloseTo(12 * 300 / 1370);
+  expect(state.terms[0].options.fontSize).toBeCloseTo(12 * 1200 / 1370);
   const viewport = mounted.getByTestId("focused-terminal-fixture");
   viewport.scrollTop = 31; viewport.scrollLeft = 17;
+  wrapper.scrollTop = 23; wrapper.scrollLeft = 41;
   await frame({ type: "geometry", cols: 155, rows: 37 });
   await frame({ type: "output", data: "resized snapshot" });
   await act(async () => { await vi.advanceTimersByTimeAsync(30); });
-  expect(state.terms[0].options.fontSize).toBeCloseTo(12 * 300 / 1550);
+  expect(state.terms[0].options.fontSize).toBeCloseTo(12 * 1200 / 1550);
   expect([viewport.scrollTop, viewport.scrollLeft]).toEqual([31, 17]);
+  // The fit wrapper is the actual scroll owner; its offsets survive too.
+  expect([wrapper.scrollTop, wrapper.scrollLeft]).toEqual([23, 41]);
+  expect(wrapper.getAttribute("data-terminal-overflow")).toBe("fit");
+  expect(state.sockets[0].sent).toEqual([]);
+});
+
+it("keeps a readable font floor and pans the native grid instead of fitting it to 2px", async () => {
+  const mounted = render(<FocusedTerminal sessionName="fixture" fit="width" />);
+  const wrapper = mounted.getByTestId("focused-terminal-fit-fixture");
+  Object.defineProperty(wrapper, "clientWidth", { value: 300 });
+  await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+  await frame({ type: "geometry", cols: 155, rows: 37 });
+  await act(async () => { await vi.advanceTimersByTimeAsync(30); });
+  // 12 * 300 / 1550 would be 2.3px; the desktop floor holds instead.
+  expect(state.terms[0].options.fontSize).toBe(8);
+  expect(state.terms[0].cols).toBe(155);
+  expect(state.terms[0].rows).toBe(37);
+  expect(wrapper.getAttribute("data-terminal-overflow")).toBe("pan");
+  expect(wrapper.getAttribute("aria-label")).toBe("Terminal fixture, native 155 by 37; scroll to pan the full pane");
+  expect(wrapper.className).toContain("overflow-auto");
   expect(state.sockets[0].sent).toEqual([]);
 });
 
