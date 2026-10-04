@@ -96,8 +96,10 @@ verified changes without implying that the rest of the matrix is complete.
   an unavailable rig leaves an explicit partial-source warning and usable sibling
   rigs. Empty and malformed inventories show distinct states. Independent camera
   tests verify that a Reset animation cannot overwrite newer automatic framing.
-  Renderer chunk retry, additional viewport sizes and complete integration remain
-  open; this checkpoint does not establish full spatial acceptance.
+  Rejected renderer imports now receive a fresh loader on Retry; constructor
+  retries reuse downloaded code. Sixty-two focused tests and independent
+  concurrent-mount checks pass. Additional viewport sizes and complete integration
+  remain open; this checkpoint does not establish full spatial acceptance.
 - **Current integrated UI checkpoint:** 214 files passed (1,963 tests, one
   existing skip) after the contract/data changes and compatible dependency
   refresh. Workspace build and typechecks pass. This local run includes the

@@ -5,7 +5,7 @@
 // page renders its tab nav + the active view-mode panel.
 // (Attempt-2 violated this by using separate routes per view-mode.)
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, lazy, Suspense } from "react";
 import { useParams } from "@tanstack/react-router";
 import {
   TopologyViewModeTabs,
@@ -42,6 +42,48 @@ import { useTopologyOverlay } from "./topology-overlay-context.js";
 import { useShellViewport } from "../../hooks/useShellViewport.js";
 import { useNodeInventory } from "../../hooks/useNodeInventory.js";
 import { computeActivityRollup, formatRollupLabel } from "../../lib/activity-visuals.js";
+import type { SpatialScope } from "../../lib/spatial-topology.js";
+
+// 3D view-mode: lazy so the spatial module (and, one level deeper, three.js)
+// stays out of the initial payload and only mounts on the 3D tab.
+const SpatialTopologyView = lazy(() => import("./spatial/SpatialTopologyView.js"));
+
+function SpatialPanel({ scope }: { scope: SpatialScope }) {
+  return (
+    <ErrorBoundary label="3D view">
+      <Suspense
+        fallback={
+          <div
+            data-testid="topology-spatial-loading"
+            role="status"
+            className="px-6 py-10 font-mono text-[10px] text-on-surface-variant"
+          >
+            Loading 3D view…
+          </div>
+        }
+      >
+        <SpatialTopologyView scope={scope} />
+      </Suspense>
+    </ErrorBoundary>
+  );
+}
+
+/** Graph canvas frame. In graph-overlay mode the Explorer floats over the
+ *  left of <main>; --header-anchor-offset is the Explorer's right edge
+ *  (21rem expanded, 3rem collapsed, 0 on narrow/opaque layouts), so the
+ *  frame starts past it and React Flow measures — and fits to — only the
+ *  visible canvas instead of drawing nodes underneath the Explorer. */
+function GraphFrame({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      data-testid="topology-graph-frame"
+      className="flex-1 min-h-0 relative"
+      style={{ marginLeft: "var(--header-anchor-offset, 0px)" }}
+    >
+      {children}
+    </div>
+  );
+}
 
 function ActivityRollupBar({ rigId }: { rigId: string }) {
   const { data: nodes } = useNodeInventory(rigId);
@@ -53,6 +95,8 @@ function ActivityRollupBar({ rigId }: { rigId: string }) {
     <div
       data-testid="activity-rollup-bar"
       className="px-6 py-2 font-mono text-[10px] text-on-surface-variant border-b border-outline-variant bg-surface-lowest/30"
+      // Same anchoring as the tabs: legible past the Explorer overlay.
+      style={{ marginLeft: "var(--header-anchor-offset, 0px)" }}
     >
       {formatRollupLabel(rollup)}
     </div>
@@ -208,10 +252,11 @@ export function HostScopePage() {
         </div>
       ) : null}
       {!remoteUnreachable && effectiveActive === "graph" ? (
-        <div className="flex-1 min-h-0 relative">
+        <GraphFrame>
           <HostMultiRigGraph />
-        </div>
+        </GraphFrame>
       ) : null}
+      {!remoteUnreachable && effectiveActive === "spatial" ? <SpatialPanel scope={{ kind: "host" }} /> : null}
       {effectiveActive === "table" ? (
         <div className="px-6 pb-6">
           {!isWideLayout && active === "graph" ? (
@@ -318,10 +363,11 @@ export function RigScopePage() {
       )}
       <ActivityRollupBar rigId={rigId} />
       {effectiveActive === "graph" ? (
-        <div className="flex-1 min-h-0 relative">
+        <GraphFrame>
           <RigGraph rigId={rigId} rigName={rig?.name ?? null} showDiscovered={false} />
-        </div>
+        </GraphFrame>
       ) : null}
+      {effectiveActive === "spatial" ? <SpatialPanel scope={{ kind: "rig", rigId }} /> : null}
       {effectiveActive === "table" ? (
         <div className="px-6 pb-6">
           {!isWideLayout && active === "graph" ? (
@@ -433,10 +479,11 @@ export function PodScopePage() {
       tabsNav={<TopologyViewModeTabs tabs={RIG_POD_SCOPE_TABS} active={active} onSelect={setActive} testIdPrefix="topology-pod" />}
     >
       {effectiveActive === "graph" ? (
-        <div className="flex-1 min-h-0 relative">
+        <GraphFrame>
           <RigGraph rigId={rigId} rigName={null} showDiscovered={false} podScope={podName} />
-        </div>
+        </GraphFrame>
       ) : null}
+      {effectiveActive === "spatial" ? <SpatialPanel scope={{ kind: "pod", rigId, podName }} /> : null}
       {effectiveActive === "table" ? (
         <div className="px-6 pb-6">
           {!isWideLayout && active === "graph" ? (

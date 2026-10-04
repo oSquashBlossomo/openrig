@@ -10,8 +10,10 @@
 import type { ReactNode } from "react";
 import { cn } from "../../lib/utils.js";
 
-export type TopologyHostScopeTab = "graph" | "table" | "terminal";
-export type TopologyRigPodScopeTab = "graph" | "table" | "terminal" | "overview";
+// "spatial" is the 3D view-mode (label "3D"). It stays an in-place tab like
+// the others — never a route segment (SC-10).
+export type TopologyHostScopeTab = "graph" | "spatial" | "table" | "terminal";
+export type TopologyRigPodScopeTab = "graph" | "spatial" | "table" | "terminal" | "overview";
 export type TopologySeatScopeTab = "detail" | "transcript" | "terminal";
 export type AnyTopologyTab =
   | TopologyHostScopeTab
@@ -92,12 +94,14 @@ export function TopologyViewModeTabs<T extends string>({
 
 export const HOST_SCOPE_TABS: { id: TopologyHostScopeTab; label: string }[] = [
   { id: "graph", label: "Graph" },
+  { id: "spatial", label: "3D" },
   { id: "table", label: "Table" },
   { id: "terminal", label: "Terminal" },
 ];
 
 export const RIG_POD_SCOPE_TABS: { id: TopologyRigPodScopeTab; label: string }[] = [
   { id: "graph", label: "Graph" },
+  { id: "spatial", label: "3D" },
   { id: "table", label: "Table" },
   { id: "terminal", label: "Terminal" },
   { id: "overview", label: "Overview" },
