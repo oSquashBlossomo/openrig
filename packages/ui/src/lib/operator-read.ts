@@ -56,8 +56,12 @@ export async function operatorRead<T>(scope: OperatorInstanceScope, route: strin
         throw new OperatorReadError("invalid_json", `GET ${route} did not serve valid JSON.`);
       }
       if (!response.ok) {
-        const code = isObject(data) && isText(data.error) ? data.error : undefined;
-        const detail = isObject(data) && isText(data.message) ? data.message : code;
+        const legacyCode = isObject(data) && isText(data.error) ? data.error : undefined;
+        // Some canonical routes serve a machine `code` beside a human `error`.
+        // Preserve that identity while retaining legacy error-only servers and
+        // the existing message precedence; never parse prose into a code.
+        const code = isObject(data) && isText(data.code) ? data.code : legacyCode;
+        const detail = isObject(data) && isText(data.message) ? data.message : legacyCode;
         throw new OperatorReadError("http", `GET ${route} returned HTTP ${response.status}${detail ? `: ${detail}` : "."}`, response.status, code);
       }
       if (!validate(data)) throw new OperatorReadError("invalid_contract", `GET ${route} did not serve the canonical operator contract.`);

@@ -75,18 +75,31 @@ export function useContextPackLibrary() {
 }
 
 // Slice-03 Atom 5: preview addresses by the pack's path-like ref.
-async function fetchContextPackPreview(ref: string): Promise<ContextPackPreview> {
-  const res = await fetch(`/api/context-packs/library/by-ref/preview?ref=${encodeURIComponent(ref)}`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+async function fetchContextPackPreview(ref: string | null, signal?: AbortSignal): Promise<ContextPackPreview> {
+  if (typeof ref !== "string" || ref.length === 0) {
+    throw new OperatorReadError("invalid_request", "Choose an exact context pack ref before reading its preview.");
+  }
+  const body = await boundedJsonRead<unknown>(`/api/context-packs/library/by-ref/preview?ref=${encodeURIComponent(ref)}`, { signal });
+  // The by-ref producer echoes context-pack:<ref>, not a name/version ID.
+  // Keep the raw ref exact; path safety remains the daemon's existing policy.
+  if (!hasShape(body, {
+    id: isText, name: isText, version: isText, bundleText: isText, bundleBytes: isNumber, estimatedTokens: isNumber,
+    files: arrayOf(file => hasShape(file, { path: isText, role: isText, bytes: isNumber, estimatedTokens: isNumber })),
+    missingFiles: arrayOf(file => hasShape(file, { path: isText, role: isText })),
+  }) || body.id !== `context-pack:${ref}`) {
+    throw new OperatorReadError("invalid_contract", "Context pack preview did not match the requested ref or its served contract.");
+  }
+  return body as unknown as ContextPackPreview;
 }
 
 export function useContextPackPreview(ref: string | null) {
   return useQuery({
     queryKey: ["context-packs", "preview", ref],
-    queryFn: () => fetchContextPackPreview(ref!),
+    queryFn: ({ signal }) => fetchContextPackPreview(ref, signal),
     enabled: !!ref,
     staleTime: 30_000,
+    retry: false,
+    placeholderData: undefined,
   });
 }
 
