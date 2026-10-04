@@ -1,5 +1,5 @@
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { withHostParam } from "../lib/host-param.js";
+import { useQuery } from "@tanstack/react-query";
+import { readNodeInventory } from "../lib/fleet-inventory-reads.js";
 import { useSelectedHostId } from "./useHosts.js";
 
 export interface AgentActivitySummary {
@@ -66,7 +66,7 @@ export interface NodeInventoryEntry {
     fresh: boolean;
     totalInputTokens?: number | null;
     totalOutputTokens?: number | null;
-  };
+  } | null;
   // PL-019: agent activity attached daemon-side via attachAgentActivity.
   agentActivity?: AgentActivitySummary | null;
   // PL-019: in-progress qitems joined daemon-side on node-detail responses.
@@ -82,21 +82,14 @@ export interface NodeInventoryEntry {
   codexConfigProfile?: string | null;
 }
 
-async function fetchNodeInventory(rigId: string, hostId: string): Promise<NodeInventoryEntry[]> {
-  // OPR.0.4.6.MH2 FR-2 — selected-host envelope; origin shape verbatim;
-  // local path unchanged (withHostParam is identity for local).
-  const res = await fetch(withHostParam(`/api/rigs/${encodeURIComponent(rigId)}/nodes`, hostId));
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
 export function useNodeInventory(rigId: string | null) {
   const hostId = useSelectedHostId();
   return useQuery({
     queryKey: ["rig", rigId, "nodes", hostId],
-    queryFn: () => fetchNodeInventory(rigId!, hostId),
-    enabled: !!rigId,
+    queryFn: ({ signal }) => readNodeInventory(rigId, hostId, { signal }),
+    enabled: !!rigId?.trim(),
+    retry: false,
     refetchInterval: 30_000,
-    placeholderData: keepPreviousData,
+    placeholderData: undefined,
   });
 }

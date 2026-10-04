@@ -1,5 +1,5 @@
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { withHostParam } from "../lib/host-param.js";
+import { useQuery } from "@tanstack/react-query";
+import { readPsEntries } from "../lib/fleet-inventory-reads.js";
 import { useSelectedHostId } from "./useHosts.js";
 
 export interface PsEntry {
@@ -30,22 +30,13 @@ export interface PsEntry {
   latestSnapshot: string | null;
 }
 
-async function fetchPsEntries(hostId: string, signal?: AbortSignal): Promise<PsEntry[]> {
-  // OPR.0.4.6.MH2 FR-2 — selected-host envelope; origin shape verbatim;
-  // local path unchanged (withHostParam is identity for local).
-  // slice-04: forward the TanStack query AbortSignal so superseded/cancelled
-  // fetches actually abort instead of piling up.
-  const res = await fetch(withHostParam("/api/ps", hostId), { signal });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
 export function usePsEntries() {
   const hostId = useSelectedHostId();
   return useQuery({
     queryKey: ["ps", hostId],
-    queryFn: ({ signal }) => fetchPsEntries(hostId, signal),
+    queryFn: ({ signal }) => readPsEntries(hostId, { signal }),
+    retry: false,
     refetchInterval: 3_000,
-    placeholderData: keepPreviousData,
+    placeholderData: undefined,
   });
 }

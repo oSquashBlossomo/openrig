@@ -1,4 +1,4 @@
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { isTopologyRigSummary, topologyRead } from "../lib/topology-read.js";
 import { useSelectedHostId } from "./useHosts.js";
 
@@ -24,8 +24,6 @@ export function useRigSummary() {
     // Shared with spatial observers: a hung read becomes an error after one
     // five-second attempt, including when this observer starts it first.
     retry: false,
-    // FR-6: keep the previous host's view (truthfully labeled by the
-    // indicator) while the newly selected host's data crosses the network.
-    placeholderData: keepPreviousData,
+    placeholderData: undefined,
   });
 }
