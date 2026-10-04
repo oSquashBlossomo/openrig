@@ -572,7 +572,7 @@ describe("RigGraph", () => {
     render(<QueryWrapper><RigGraph showDiscovered={false} rigId="abc" /></QueryWrapper>);
 
     await waitFor(() => {
-      expect(mockFetch).toHaveBeenCalledWith("/api/rigs/abc/graph");
+      expect(mockFetch).toHaveBeenCalledWith("/api/rigs/abc/graph", expect.objectContaining({ signal: expect.any(AbortSignal) }));
     });
   });
 

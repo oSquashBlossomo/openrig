@@ -45,7 +45,7 @@ import { useTopologyOverlay } from "./topology-overlay-context.js";
 import { useTopologyActivity } from "../../hooks/useTopologyActivity.js";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion.js";
 import { useSelectedHostId } from "../../hooks/useHosts.js";
-import { withHostParam } from "../../lib/host-param.js";
+import { isTopologyGraph, topologyRead } from "../../lib/topology-read.js";
 import {
   HYBRID_COLLAPSED_RIG_HEIGHT,
   HYBRID_COLLAPSED_RIG_WIDTH,
@@ -61,12 +61,6 @@ import {
 interface GraphData {
   nodes: unknown[];
   edges: unknown[];
-}
-
-async function fetchGraph(rigId: string, hostId: string): Promise<GraphData> {
-  const res = await fetch(withHostParam(`/api/rigs/${encodeURIComponent(rigId)}/graph`, hostId));
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
 }
 
 const nodeTypes: NodeTypes = {
@@ -114,7 +108,8 @@ export function HostMultiRigGraph() {
   const graphQueries = useQueries({
     queries: rigList.map((rig) => ({
       queryKey: ["rig", rig.rigId, "graph", hostId] as const,
-      queryFn: () => fetchGraph(rig.rigId, hostId),
+      queryFn: ({ signal }: { signal: AbortSignal }) => topologyRead<GraphData>(`/api/rigs/${encodeURIComponent(rig.rigId)}/graph`, hostId, signal, isTopologyGraph),
+      retry: false,
       enabled: isRigExpanded(rig.rigId),
       refetchInterval: 30_000,
     })),
