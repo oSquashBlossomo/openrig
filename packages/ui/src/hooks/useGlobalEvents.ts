@@ -4,6 +4,8 @@ import { subscribeTopologyEventStatus, subscribeTopologyEvents } from "../lib/to
 
 /** Connected-instance canonical query family (see lib/operator-read.ts). */
 const OPERATOR_FAMILY = ["operator", "local-instance"] as const;
+const RECENT_PULSE_FAMILY = ["recent-pulse", ...OPERATOR_FAMILY] as const;
+type RecentPulseFamily = "recent" | "pulse" | "stream";
 /** Canonical operator reads are heavier than the 150ms chrome keys: a burst
  * of activity collapses into at most one invalidation per window. */
 export const OPERATOR_INVALIDATION_WINDOW_MS = 1_000;
@@ -15,6 +17,15 @@ export function operatorFamiliesForEvent(type: string): Array<"attention" | "hea
   if (type.startsWith("queue.") || type.startsWith("proof.") || type.startsWith("workflow.")) return ["attention", "health", "projects"];
   if (type.startsWith("node.") || type.startsWith("session.") || type.startsWith("rig.") || type.startsWith("pod.")
     || type.startsWith("restore.") || type.startsWith("bootstrap.")) return ["attention", "health"];
+  return [];
+}
+
+function recentPulseFamiliesForEvent(type: string): RecentPulseFamily[] {
+  if (type.startsWith("queue.") || type.startsWith("qitem.") || type.startsWith("inbox.")) return ["recent", "pulse"];
+  if (type === "stream.emitted") return ["stream"];
+  if (type === "seat.activity_changed" || type === "seat.rung_health"
+    || type.startsWith("node.") || type.startsWith("session.") || type.startsWith("rig.") || type.startsWith("pod.")
+    || type.startsWith("restore.") || type.startsWith("bootstrap.")) return ["pulse"];
   return [];
 }
 
@@ -40,19 +51,25 @@ export function useGlobalEvents(): { connected: boolean } {
     // "all" = the whole connected-instance family (after a reconnect, any
     // canonical read may have missed events).
     const pendingOperator = new Set<"attention" | "health" | "projects" | "all">();
+    const pendingRecentPulse = new Set<RecentPulseFamily | "all">();
     const operatorReceipts = new Set<object>();
     let operatorTimer: ReturnType<typeof setTimeout> | null = null;
-    const scheduleOperator = (families: Array<"attention" | "health" | "projects" | "all">, receipt: object) => {
-      if (!families.length) return;
+    const scheduleOperator = (families: Array<"attention" | "health" | "projects" | "all">, receipt: object,
+      recentPulseFamilies: Array<RecentPulseFamily | "all"> = []) => {
+      if (!families.length && !recentPulseFamilies.length) return;
       for (const family of families) pendingOperator.add(family);
+      for (const family of recentPulseFamilies) pendingRecentPulse.add(family);
       operatorReceipts.add(receipt);
       if (operatorTimer) return;
       operatorTimer = setTimeout(() => {
         operatorTimer = null;
         if (pendingOperator.has("all")) refresh([...OPERATOR_FAMILY], operatorReceipts);
         else for (const family of pendingOperator) refresh([...OPERATOR_FAMILY, family], operatorReceipts);
+        if (pendingRecentPulse.has("all")) refresh([...RECENT_PULSE_FAMILY], operatorReceipts);
+        else for (const family of pendingRecentPulse) refresh([...RECENT_PULSE_FAMILY, family], operatorReceipts);
         operatorReceipts.clear();
         pendingOperator.clear();
+        pendingRecentPulse.clear();
       }, OPERATOR_INVALIDATION_WINDOW_MS);
     };
     let everConnected = false;
@@ -64,7 +81,7 @@ export function useGlobalEvents(): { connected: boolean } {
       // Refresh canonical reads only on a RE-connect: the first connection
       // follows the pages' own initial reads.
       if (status.connected) {
-        if (everConnected && lostConnection) scheduleOperator(["all"], status);
+        if (everConnected && lostConnection) scheduleOperator(["all"], status, ["all"]);
         everConnected = true;
         lostConnection = false;
       } else if (everConnected) {
@@ -76,7 +93,7 @@ export function useGlobalEvents(): { connected: boolean } {
       if (!type) return;
 
       if (type.startsWith("proof.")) for (const key of ["review", "slices", "mission"]) refresh([key], [parsed]);
-      scheduleOperator(operatorFamiliesForEvent(type), parsed);
+      scheduleOperator(operatorFamiliesForEvent(type), parsed, recentPulseFamiliesForEvent(type));
 
       // Collect affected query keys
       if (type.startsWith("node.startup_") && rigId) {
