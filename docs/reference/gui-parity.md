@@ -11,6 +11,16 @@ The inventory follows the eight entries in `packages/tui/src/sections.ts`, the c
 The findings below preserve the audited baseline. This section records subsequent
 verified changes without implying that the rest of the matrix is complete.
 
+- **Needs Input source coverage:** One five-second budget now spans inventory
+  and a four-request fanout. Healthy rig results survive peer failures; exact
+  omissions, rejected rows and unknown activity remain explicit. Fair rotation
+  prevents a slow prefix from permanently hiding later rigs. Identity warnings,
+  served attention taxonomy and legacy pane prompts retain their evidence.
+  Forty-eight root and independent maintained checks, plus three independent
+  transport/provenance probes, pass. An immutable archive of `7fd9a1a3` passes
+  typecheck, production build and all 253 UI files (2,458 tests, one existing
+  skip). Feed still must consume the additive read state and coverage before an
+  empty list can be presented as reassuring.
 - **Node/session capture reads:** Preview requests now bound headers and decoding,
   cancel abandoned reads and reject cross-session responses. A node's native
   binding remains daemon-authoritative; no session name is inferred from its
