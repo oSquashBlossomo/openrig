@@ -62,6 +62,12 @@ Do not start a development daemon against production state or provider settings.
 
 ## Reviews
 
+Activation was verified on 2026-10-04 and [setup issue #1 is
+closed](https://github.com/oSquashBlossomo/openrig/issues/1). All eight required CI
+checks passed on the final setup PR. Both Codex and Claude produced actual review
+output, including an automatic Claude review. The token and enablement variable
+below are already configured; the instructions also cover future rotation.
+
 Codex's GitHub connector must cover this fork, and automatic review must be
 enabled in [Codex's repository review settings](https://chatgpt.com/codex/cloud/settings/code-review).
 This fork is set to review all PRs and every push. An installed connector alone
@@ -107,8 +113,8 @@ loading Claude credentials. It can review the merged setup PR as an activation
 check. This workflow responds to automatic PR events and manual dispatch, not
 to `@claude` mentions.
 
-Review activation is complete only after a PR receives actual reviewer output.
-Keep setup issue #1 open until both integrations and required checks are verified.
+After changing review credentials or workflows, verify actual reviewer output
+again. A successful configuration save alone does not prove review execution.
 
 ## Upstream sync
 
