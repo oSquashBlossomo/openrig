@@ -245,15 +245,29 @@ describe("AppShell — Phase 2 chrome", () => {
     });
 
     it("right-slot carries the MH-2 host indicator (quiet local register, defaults to 'localhost')", async () => {
-      // OPR.0.4.6.MH2 FR-3 — the reserved V2 slot now renders HostIndicator;
-      // with no hosts payload the truthful default is the local state.
+      // OPR.0.4.6.MH2 FR-3 — the reserved V2 slot now renders HostIndicator.
+      // Source truth (spatial navigation slice): this fixture serves no valid
+      // hosts payload, so the indicator must NOT claim local — it resolves,
+      // then reports the host as unknown. A served local payload still shows
+      // the quiet "localhost · local" register (asserted below).
       const { container } = await renderAt("/");
-      const indicator = container.querySelector(
-        "[data-testid='host-indicator']",
-      ) as HTMLElement;
-      expect(indicator).toBeTruthy();
-      expect(indicator.getAttribute("data-state")).toBe("local");
-      expect(indicator.textContent?.toLowerCase()).toContain("localhost");
+      const indicator = () => container.querySelector("[data-testid='host-indicator']") as HTMLElement;
+      expect(indicator()).toBeTruthy();
+      expect(["resolving", "unknown"]).toContain(indicator().getAttribute("data-state"));
+      expect(indicator().textContent?.toLowerCase()).not.toContain("local");
+      await waitFor(() => expect(indicator().getAttribute("data-state")).toBe("unknown"));
+
+      cleanup();
+      mockFetch.mockImplementation(async (url: string) =>
+        url === "/api/hosts"
+          ? new Response(JSON.stringify({ ownName: "", selected: "local", hosts: [] }))
+          : new Response("[]"));
+      const { queryClient } = await import("../src/lib/query-client.js");
+      queryClient.clear();
+      const second = await renderAt("/");
+      const local = () => second.container.querySelector("[data-testid='host-indicator']") as HTMLElement;
+      await waitFor(() => expect(local().getAttribute("data-state")).toBe("local"));
+      expect(local().textContent?.toLowerCase()).toContain("localhost");
     });
 
     it("hamburger button is mobile-only (lg:hidden) — preserved Phase 2 behavior", async () => {

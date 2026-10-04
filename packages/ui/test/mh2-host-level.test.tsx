@@ -186,7 +186,9 @@ describe("HostIndicator (FR-3 — truthful states)", () => {
   it("defaults to the quiet local state with no hosts payload", async () => {
     wireFetch();
     renderWithRouter(() => <HostIndicator />);
-    await waitFor(() => expect(screen.getByTestId("host-indicator")).toBeTruthy());
+    // Source truth: "local" only once the default local payload is read
+    // (before that the indicator says it is resolving, never presumed local).
+    await waitFor(() => expect(screen.getByTestId("host-indicator").getAttribute("data-state")).toBe("local"));
     const el = screen.getByTestId("host-indicator");
     expect(el.getAttribute("data-state")).toBe("local");
     expect(el.textContent?.toLowerCase()).toContain("localhost");
