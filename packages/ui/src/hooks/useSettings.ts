@@ -5,6 +5,8 @@
 // and writes settings through the daemon HTTP route directly.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { boundedJsonRead } from "../lib/bounded-json-read.js";
+import { OperatorReadError } from "../lib/operator-read.js";
 
 export type SettingSource = "env" | "file" | "default";
 
@@ -58,19 +60,45 @@ export interface SettingsResponse {
   feedHostSubscriptions?: Array<{ hostId: string; enabled: boolean }>;
 }
 
-async function fetchSettings(): Promise<SettingsResponse> {
-  const res = await fetch("/api/config");
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({})) as { error?: string };
-    throw new Error(body.error ?? `HTTP ${res.status}`);
-  }
-  return res.json();
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isSettingValue(value: unknown): value is ResolvedSetting["value"] {
+  return typeof value === "string" || typeof value === "boolean"
+    || (typeof value === "number" && Number.isFinite(value));
+}
+
+function isSettingsResponse(value: unknown): value is SettingsResponse {
+  if (!isObject(value) || !isObject(value.settings)) return false;
+  if (!Object.values(value.settings).every(setting => isObject(setting)
+    && isSettingValue(setting.value) && isSettingValue(setting.defaultValue)
+    && (setting.source === "env" || setting.source === "file" || setting.source === "default"))) return false;
+  return value.feedHostSubscriptions === undefined || (Array.isArray(value.feedHostSubscriptions)
+    && value.feedHostSubscriptions.every(host => isObject(host)
+      && typeof host.hostId === "string" && typeof host.enabled === "boolean"));
+}
+
+async function fetchSettings(signal?: AbortSignal): Promise<SettingsResponse> {
+  return boundedJsonRead("/api/config", {
+    signal,
+    readResponse: async res => {
+      if (!res.ok) {
+        const body: unknown = await res.json().catch(() => ({}));
+        throw new Error(isObject(body) && typeof body.error === "string" ? body.error : `HTTP ${res.status}`);
+      }
+      const body: unknown = await res.json();
+      if (!isSettingsResponse(body)) throw new OperatorReadError("invalid_contract", "Invalid settings response.");
+      return body;
+    },
+  });
 }
 
 export function useSettings() {
   return useQuery({
     queryKey: ["settings", "all"],
-    queryFn: fetchSettings,
+    queryFn: ({ signal }) => fetchSettings(signal),
+    retry: false,
     staleTime: 0,
   });
 }
