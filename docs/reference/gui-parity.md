@@ -11,6 +11,34 @@ The inventory follows the eight entries in `packages/tui/src/sections.ts`, the c
 The findings below preserve the audited baseline. This section records subsequent
 verified changes without implying that the rest of the matrix is complete.
 
+- **Topology URL dependency:** Paired search adapters retain exact opaque source,
+  rig and graph-node identities through the installed router's parsing and
+  reserialization, including numeric-looking strings and reserved characters.
+  Duplicate/malformed source assertions remain invalid after reload; optional
+  presentation errors retain a usable default with an explicit issue. New links
+  use raw route parameters and once-encoded hrefs with bounded sizes. Sixty-nine
+  root checks and 21 independent router probes pass, including real navigation,
+  node-reader paths and malformed-source retention across replace/Back/reload.
+  The combined immutable `b94bbd71` archive, including the file-text dependency,
+  passes UI typecheck, production build and all 260 UI files (2,625 tests, one
+  existing skip). Large production bundles remain a build warning.
+  Components still need coordinated route encoding, source admission and
+  semantic state integration before this fixes the browser Back defect.
+- **File text serialization dependency:** A pure helper preserves uniform LF,
+  CRLF or CR separators and returns exact original bytes for an unchanged mixed
+  file. A changed mixed draft requires an explicit choice before whole-draft
+  normalization; it never guesses which repeated line survived an edit.
+  Seventy-nine root checks pass, including real private-file writes, original
+  compare-and-swap tokens, external-edit conflict rejection and unchanged editor
+  safety tests. The current CR read-only guard remains until frontend integration
+  and actual typing, paste, undo, composition and conflict acceptance are complete.
+- **Spatial browser navigation checkpoint:** At 1280×720, the actual application
+  with private fictional data supports top/isometric camera shortcuts, exact
+  search/selection, Scene/List switching and cross-pod relationship inspection.
+  A known-source seat drill fully loads the exact detail page. Back still resets
+  to Graph and loses the spatial query/selection. A separate cold host-read HTTP
+  503 still leaves the header labeled local. These are reproduced frontend gaps;
+  semantic navigation and truthful source presentation remain open.
 - **Settings reads and preview defaults:** Connected-instance configuration
   reads now bound headers and decoding to five seconds, cancel abandoned reads
   and validate resolved scalar values without rejecting compatible partial or
