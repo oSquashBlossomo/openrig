@@ -87,7 +87,7 @@ describe("useRigEvents hook", () => {
 
     // Wait for debounce (100ms)
     await waitFor(() => {
-      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rig", "rig-1", "graph"] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rig", "rig-1", "graph"], refetchType: "none" });
     });
   });
 
@@ -113,7 +113,7 @@ describe("useRigEvents hook", () => {
 
     await waitFor(() => {
       const graphCalls = invalidateSpy.mock.calls.filter(
-        (c) => JSON.stringify(c[0]) === JSON.stringify({ queryKey: ["rig", "rig-1", "graph"] })
+        (c) => JSON.stringify(c[0]) === JSON.stringify({ queryKey: ["rig", "rig-1", "graph"], refetchType: "none" })
       );
       expect(graphCalls).toHaveLength(1);
     });
@@ -190,7 +190,7 @@ describe("useRigEvents hook", () => {
 
     // Reconnect should trigger graph invalidation
     await waitFor(() => {
-      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rig", "rig-1", "graph"] });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rig", "rig-1", "graph"], refetchType: "none" });
     });
   });
 

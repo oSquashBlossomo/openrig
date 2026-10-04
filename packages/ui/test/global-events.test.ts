@@ -59,7 +59,7 @@ describe("useGlobalEvents", () => {
     // Wait for debounce
     await new Promise((r) => setTimeout(r, 200));
 
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rig", "rig-1", "nodes"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rig", "rig-1", "nodes"], refetchType: "none" });
   });
 
   it("invalidates rigs summary and ps on rig lifecycle events", async () => {
@@ -79,8 +79,8 @@ describe("useGlobalEvents", () => {
 
     await new Promise((r) => setTimeout(r, 200));
 
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rigs", "summary"] });
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["ps"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rigs", "summary"], refetchType: "none" });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["ps"], refetchType: "none" });
   });
 
   it("invalidates rigs summary, ps, AND rig node inventory on restore.completed", async () => {
@@ -100,9 +100,9 @@ describe("useGlobalEvents", () => {
 
     await new Promise((r) => setTimeout(r, 200));
 
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rigs", "summary"] });
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["ps"] });
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rig", "rig-2", "nodes"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rigs", "summary"], refetchType: "none" });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["ps"], refetchType: "none" });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rig", "rig-2", "nodes"], refetchType: "none" });
   });
 
   // OPR.0.3.3.19 (AC-7): archive/unarchive events must refetch BOTH the default
@@ -125,10 +125,10 @@ describe("useGlobalEvents", () => {
 
     await new Promise((r) => setTimeout(r, 200));
 
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rigs", "summary"] });
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rigs", "summary", "archived"] });
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["ps"] });
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rig", "rig-3", "nodes"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rigs", "summary"], refetchType: "none" });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rigs", "summary", "archived"], refetchType: "none" });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["ps"], refetchType: "none" });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rig", "rig-3", "nodes"], refetchType: "none" });
   });
 
   it("invalidates rigs summary, archived summary, and ps on rig.unarchived", async () => {
@@ -148,8 +148,8 @@ describe("useGlobalEvents", () => {
 
     await new Promise((r) => setTimeout(r, 200));
 
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rigs", "summary"] });
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rigs", "summary", "archived"] });
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["ps"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rigs", "summary"], refetchType: "none" });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["rigs", "summary", "archived"], refetchType: "none" });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["ps"], refetchType: "none" });
   });
 });

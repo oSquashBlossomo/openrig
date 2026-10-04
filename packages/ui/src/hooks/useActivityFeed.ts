@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useSseQueryRefresh } from "../lib/sse-query-refresh.js";
 import {
   subscribeTopologyEvents,
   subscribeTopologyEventStatus,
@@ -24,7 +24,7 @@ export interface UseActivityFeedResult {
 }
 
 export function useActivityFeed(): UseActivityFeedResult {
-  const queryClient = useQueryClient();
+  const refresh = useSseQueryRefresh();
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [connected, setConnected] = useState(false);
   const [feedOpen, setFeedOpen] = useState(false);
@@ -41,34 +41,34 @@ export function useActivityFeed(): UseActivityFeedResult {
 
     // Invalidate package queries on package mutation events.
     if (event.type === "package.installed" || event.type === "package.rolledback") {
-      queryClient.invalidateQueries({ queryKey: ["packages"] });
+      refresh(["packages"], [parsed]);
     }
     // slice-04: ps + default-summary invalidations for bootstrap.completed/partial
     // are now owned (150ms-coalesced) by useGlobalEvents; ActivityFeed no longer fires them.
     if (event.type === "session.discovered" || event.type === "session.vanished") {
-      queryClient.invalidateQueries({ queryKey: ["discovery"] });
+      refresh(["discovery"], [parsed]);
     }
     if (event.type === "mission_control.action_executed") {
-      queryClient.invalidateQueries({ queryKey: ["mission-control", "audit"] });
-      queryClient.invalidateQueries({ queryKey: ["slices"] });
+      refresh(["mission-control", "audit"], [parsed]);
+      refresh(["slices"], [parsed]);
       const qitemId = event.payload["qitemId"] as string | undefined;
       if (qitemId) {
-        queryClient.invalidateQueries({ queryKey: ["queue", "item", qitemId] });
+        refresh(["queue", "item", qitemId], [parsed]);
       }
     }
     if (event.type === "node.claimed") {
-      queryClient.invalidateQueries({ queryKey: ["discovery"] });
+      refresh(["discovery"], [parsed]);
       const rigId = event.payload["rigId"] as string | undefined;
       if (rigId) {
-        queryClient.invalidateQueries({ queryKey: ["rig", rigId, "graph"] });
-        queryClient.invalidateQueries({ queryKey: ["rig", rigId, "nodes"] });
-        queryClient.invalidateQueries({ queryKey: ["rig", rigId, "sessions"] });
+        refresh(["rig", rigId, "graph"], [parsed]);
+        refresh(["rig", rigId, "nodes"], [parsed]);
+        refresh(["rig", rigId, "sessions"], [parsed]);
         // slice-04: ps + default-summary now owned by useGlobalEvents (coalesced).
       }
     }
 
     if (event.type === "session.detached") {
-      queryClient.invalidateQueries({ queryKey: ["discovery"] });
+      refresh(["discovery"], [parsed]);
     }
 
     if (
@@ -81,9 +81,9 @@ export function useActivityFeed(): UseActivityFeedResult {
     ) {
       const rigId = event.payload["rigId"] as string | undefined;
       if (rigId) {
-        queryClient.invalidateQueries({ queryKey: ["rig", rigId, "graph"] });
-        queryClient.invalidateQueries({ queryKey: ["rig", rigId, "nodes"] });
-        queryClient.invalidateQueries({ queryKey: ["rig", rigId, "sessions"] });
+        refresh(["rig", rigId, "graph"], [parsed]);
+        refresh(["rig", rigId, "nodes"], [parsed]);
+        refresh(["rig", rigId, "sessions"], [parsed]);
       }
       // slice-04: ps + default-summary now owned (coalesced) by useGlobalEvents.
     }
@@ -110,16 +110,16 @@ export function useActivityFeed(): UseActivityFeedResult {
       || event.type.startsWith("qitem.")
       || event.type.startsWith("inbox.")
     ) {
-      queryClient.invalidateQueries({ queryKey: ["attention-items"] });
+      refresh(["attention-items"], [parsed]);
       const qitemId = (event.payload["qitemId"] as string | undefined)
         ?? (event.payload["qitem_id"] as string | undefined);
       if (qitemId) {
         // Already-fetched detail (useQueueItem*); invalidate so the
         // hydrated FeedCard picks up the new state too.
-        queryClient.invalidateQueries({ queryKey: ["queue", "item", qitemId] });
+        refresh(["queue", "item", qitemId], [parsed]);
       }
     }
-  }, [queryClient]);
+  }, [refresh]);
 
   useEffect(() => {
     const unsubscribeEvents = subscribeTopologyEvents((event) => addEvent(event));
