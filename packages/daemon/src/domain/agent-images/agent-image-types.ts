@@ -81,7 +81,7 @@ export interface AgentImageStats {
 export type AgentImageSourceType = "user_file" | "workspace" | "builtin";
 
 export interface AgentImageEntry {
-  /** Stable id `agent-image:<name>:<version>` parallel to context-pack:. */
+  /** Opaque library identity from agentImageId; legacy spelling only for colon-free tuples. */
   id: string;
   kind: "agent-image";
   name: string;

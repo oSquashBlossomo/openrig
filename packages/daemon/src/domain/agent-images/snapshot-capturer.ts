@@ -19,7 +19,7 @@ import {
   AgentImageError,
   type AgentImageManifest,
 } from "./agent-image-types.js";
-import { AgentImageLibraryService } from "./agent-image-library-service.js";
+import { AgentImageLibraryService, agentImageId } from "./agent-image-library-service.js";
 import { discoverResumeToken } from "./resume-token-discovery.js";
 
 export interface CaptureSnapshotOpts {
@@ -60,7 +60,7 @@ export class SnapshotCapturer {
 
   capture(opts: CaptureSnapshotOpts): CaptureSnapshotResult {
     const { sourceSession, name } = opts;
-    const version = opts.version ?? "1";
+    const version = String(opts.version ?? "1");
 
     const discovery = discoverResumeToken(this.deps.db, sourceSession);
     if (!discovery.ok) {
@@ -101,6 +101,6 @@ export class SnapshotCapturer {
     const fileContents = opts.files ?? new Map<string, string>();
     const imagePath = this.deps.agentImageLibrary.install(this.deps.targetRoot, manifest, fileContents);
     this.deps.agentImageLibrary.scan();
-    return { imageId: `agent-image:${name}:${version}`, imagePath, manifest };
+    return { imageId: agentImageId(name, version), imagePath, manifest };
   }
 }

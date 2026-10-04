@@ -88,7 +88,7 @@ async function resolveImage(client: DaemonClient, nameOrId: string): Promise<Age
   }
   if (matches.length > 1) {
     const versions = matches.map((m) => m.version).join(", ");
-    throw new Error(`Agent image '${nameOrId}' is ambiguous (versions: ${versions}). Use 'agent-image:${nameOrId}:<version>'.`);
+    throw new Error(`Agent image '${nameOrId}' is ambiguous (versions: ${versions}). Run 'rig agent-image list --json' and use the exact listed id.`);
   }
   return matches[0]!;
 }

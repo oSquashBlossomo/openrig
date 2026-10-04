@@ -2,7 +2,7 @@ import { afterEach, expect, it } from "vitest";
 import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { AgentImageLibraryService } from "../src/domain/agent-images/agent-image-library-service.js";
+import { AgentImageLibraryService, agentImageId } from "../src/domain/agent-images/agent-image-library-service.js";
 import { parseAgentImageManifest } from "../src/domain/agent-images/manifest-parser.js";
 import type { AgentImageManifest } from "../src/domain/agent-images/agent-image-types.js";
 let root: string | undefined;
@@ -19,7 +19,7 @@ it.each(["true", "123", "null", "model: fast", "#notes", "normal-name"])("round-
   const restored = parseAgentImageManifest(readFileSync(join(dir, "manifest.yaml"), "utf-8"), dir);
   expect(restored).toEqual(manifest);
   library.scan(); expect(library.list()).toHaveLength(1);
-  expect(library.list()[0]!.id).toBe(`agent-image:${name}:01`);
+  expect(library.list()[0]!.id).toBe(agentImageId(name, "01"));
 });
 it("preserves YAML-like strings in captured metadata and supplementary descriptors", () => {
   root = mkdtempSync(join(tmpdir(), "openrig-image-roundtrip-"));

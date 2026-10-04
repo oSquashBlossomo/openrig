@@ -251,7 +251,7 @@ describe("agentImageId / parseAgentImageId", () => {
     expect(parseAgentImageId("agent-image:foo:1")).toEqual({ name: "foo", version: "1" });
   });
 
-  it("splits on the LAST colon so names with colons round-trip", () => {
+  it("encodes colon-bearing names as unambiguous tuples", () => {
     const id = agentImageId("project:alpha", "3");
     expect(parseAgentImageId(id)).toEqual({ name: "project:alpha", version: "3" });
   });
