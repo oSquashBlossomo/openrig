@@ -201,6 +201,10 @@ describe("SlowOpRecorder locked instrumentation contract", () => {
       import fs from "node:fs";
       import { syncBuiltinESMExports } from "node:module";
       import { isMainThread, threadId } from "node:worker_threads";
+      // Load source before poisoning recorder I/O. The tsx/Node module loader
+      // legitimately reads code synchronously; construction and recording below
+      // must still perform no synchronous filesystem work on the main thread.
+      const mod = await import(process.env.RECORDER_MODULE_URL);
       for (const name of [
         "appendFileSync", "chmodSync", "fchmodSync", "fdatasyncSync", "fsyncSync",
         "ftruncateSync", "mkdirSync", "openSync", "renameSync", "rmSync", "rmdirSync",
@@ -209,7 +213,6 @@ describe("SlowOpRecorder locked instrumentation contract", () => {
         fs[name] = () => { throw new Error("main-thread synchronous recorder I/O: " + name); };
       }
       syncBuiltinESMExports();
-      const mod = await import(process.env.RECORDER_MODULE_URL);
       const recorder = new mod.SlowOpRecorder({ logPath: process.env.RECORDER_LOG_PATH });
       recorder.runSync("test.sync.crash", () => {
         process.stdout.write(JSON.stringify({ isMainThread, threadId }) + "\\n");
