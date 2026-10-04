@@ -26,6 +26,8 @@ import { TopologyTerminalView } from "../src/components/topology/TopologyTermina
 import { RigScopePage } from "../src/components/topology/ScopePages.js";
 import { DiscoveryPanel } from "../src/components/DiscoveryPanel.js";
 import { useClearPlacementOnHostSwitch } from "../src/hooks/useHosts.js";
+import type { MissionDataResponse } from "../src/hooks/useMission.js";
+import type { SliceListEntry, SliceListResponse } from "../src/hooks/useSlices.js";
 
 // DiscoveryPanel's discovery hooks are mocked file-wide (no other test here
 // consumes them) — the regressions assert AFFORDANCE state, and the adopt
@@ -391,9 +393,12 @@ describe("guard-B1 files gate — a remote selection issues ZERO /api/files/* re
 
 describe("guard-B1 files gate round 2 — mission landing + portfolio glance (remote never touches /api/files)", () => {
   const MISSION_PAYLOAD = {
+    missionId: "m1",
     missionPath: "/remote/workspace/missions/m1",
     slices: [],
-  };
+    workflow_spec: null,
+    topology: null,
+  } satisfies MissionDataResponse;
 
   function wireMissionFetch(selected: string) {
     mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
@@ -404,7 +409,7 @@ describe("guard-B1 files gate round 2 — mission landing + portfolio glance (re
       if (u.startsWith("/api/files/roots")) return { ok: true, json: async () => ({ roots: [{ name: "ws", path: "/local/ws" }] }) };
       if (u.startsWith("/api/files/read")) return { ok: true, json: async () => ({ root: "ws", path: "x", absolutePath: "/local/ws/x", content: "## Building\nstuff", mtime: "now", contentHash: "h", size: 1 }) };
       if (u.startsWith("/api/missions/")) return { ok: true, json: async () => MISSION_PAYLOAD };
-      if (u.startsWith("/api/slices")) return { ok: true, json: async () => ({ slices: [] }) };
+      if (u.startsWith("/api/slices")) return { ok: true, json: async () => ({ slices: [], totalCount: 0, filter: "all", boundToWorkflow: null } satisfies SliceListResponse) };
       if (u.startsWith("/api/scope/audit")) return { ok: true, json: async () => ({ slices: [] }) };
       return { ok: true, json: async () => [] };
     });
@@ -448,15 +453,18 @@ describe("guard-B1 files gate round 2 — mission landing + portfolio glance (re
       name: "s1",
       displayName: "S1",
       missionId: "m1",
+      railItem: null,
       status: "active",
+      rawStatus: null,
       qitemCount: 0,
       hasProofPacket: false,
-    };
+      lastActivityAt: null,
+    } satisfies SliceListEntry;
     const wire = (selected: string) => {
       wireMissionFetch(selected);
       const base = mockFetch.getMockImplementation()!;
       mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
-        if (String(url).startsWith("/api/slices")) return { ok: true, json: async () => ({ slices: [SLICE_ROW] }) };
+        if (String(url).startsWith("/api/slices")) return { ok: true, json: async () => ({ slices: [SLICE_ROW], totalCount: 1, filter: "all", boundToWorkflow: null } satisfies SliceListResponse) };
         return base(url, init);
       });
     };
