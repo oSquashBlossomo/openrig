@@ -11,6 +11,19 @@ The inventory follows the eight entries in `packages/tui/src/sections.ts`, the c
 The findings below preserve the audited baseline. This section records subsequent
 verified changes without implying that the rest of the matrix is complete.
 
+- **Settings reads and preview defaults:** Connected-instance configuration
+  reads now bound headers and decoding to five seconds, cancel abandoned reads
+  and validate resolved scalar values without rejecting compatible partial or
+  additive settings maps. Write paths are unchanged. Node/session previews use
+  their existing three-second/50-line defaults when setting types are invalid;
+  explicit overrides, paused captures and finite numeric settings retain their
+  behavior. Sixty-six root Settings checks and 55 preview checks pass. Four
+  existing response fixtures now include the source/default metadata always
+  served by the daemon; all original behavior assertions remain unchanged.
+  An immutable archive of `73cb3f3a` passes all 256 UI files (2,499 tests, one
+  existing skip). The same product source at `dca85507` passes UI typecheck and
+  production build. Settings consumers still need stale-state presentation and
+  handling for setting names absent from an older daemon's inventory.
 - **Needs Input source coverage:** One five-second budget now spans inventory
   and a four-request fanout. Healthy rig results survive peer failures; exact
   omissions, rejected rows and unknown activity remain explicit. Fair rotation
