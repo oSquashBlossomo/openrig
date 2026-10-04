@@ -1,4 +1,4 @@
-import { selectedProject, projectMission, workSource, projectReadResponse } from "../domain/workspace/project-read.js";
+import { selectedProject, projectMission, workSource, projectReadResponse, insideProject } from "../domain/workspace/project-read.js";
 // Slice Story View v0 — HTTP routes.
 //
 // Endpoints:
@@ -129,9 +129,10 @@ export function slicesRoutes(): Hono {
   //    relative paths like "screenshots/foo.png" or
   //    "headed-browser/screenshots/bar.png".
   app.get("/:name/proof-asset/*", (c) => {
-    const deps = getDeps(c);
-    if (!deps) return c.json({ error: "slices_indexer_unavailable" }, 503);
     const name = c.req.param("name");
+    const resolved = scopedSliceDeps(c, name);
+    if ("error" in resolved) return resolved.error;
+    const { deps } = resolved;
     const slice = deps.indexer.get(name);
     if (!slice || !slice.proofPacket) {
       return c.json({ error: "proof_packet_not_found" }, 404);
@@ -156,9 +157,10 @@ export function slicesRoutes(): Hono {
   // 3) Doc serving for the Docs tab — markdown content of a single file
   //    inside the slice folder. Path-traversal guarded by the projector.
   app.get("/:name/doc/*", (c) => {
-    const deps = getDeps(c);
-    if (!deps) return c.json({ error: "slices_indexer_unavailable" }, 503);
     const name = c.req.param("name");
+    const resolved = scopedSliceDeps(c, name);
+    if ("error" in resolved) return resolved.error;
+    const { deps, project } = resolved;
     const fullPath = c.req.path;
     const marker = `/doc/`;
     const idx = fullPath.indexOf(marker);
@@ -167,6 +169,16 @@ export function slicesRoutes(): Hono {
     if (!relPath || relPath.includes("..")) {
       return c.json({ error: "doc_path_invalid" }, 400);
     }
+    // Selected reads reuse the exact slice's source boundary, including real
+    // symlink containment. The legacy indexer remains a separate source mode.
+    if (project) {
+      const slice = deps.indexer.get(name);
+      const target = slice ? path.resolve(slice.slicePath, relPath) : null;
+      if (slice && target && fs.existsSync(target)) {
+        try { insideProject(fs.realpathSync(slice.slicePath), target); }
+        catch (err) { return projectReadResponse(err); }
+      }
+    }
     const content = deps.projector.readDoc(name, relPath);
     if (content === null) return c.json({ error: "doc_not_found" }, 404);
     return c.json({ relPath, content });
@@ -174,20 +186,10 @@ export function slicesRoutes(): Hono {
 
   // 4) Dynamic `/:name` LAST so the literal routes above are not shadowed.
   app.get("/:name", (c) => {
-    let deps = getDeps(c);
-    if (!deps) return c.json({ error: "slices_indexer_unavailable" }, 503);
     const name = c.req.param("name");
-    try {
-      const project = selectedProject(c);
-      if (project) {
-        const mission = c.req.query("mission");
-        if (!mission || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(name)) return c.json({ error: "exact_mission_and_slice_required" }, 400);
-        const dir = projectMission(project, mission);
-        workSource(project.root, path.join(dir, "slices", name));
-        const indexer = new SliceIndexer({ db: deps.indexer.db, slicesRoot: project.missionsRoot, dogfoodEvidenceRoot: null, projectId: project.id, missionId: mission });
-        deps = { indexer, projector: deps.projector.withIndexer(indexer) };
-      }
-    } catch (err) { return projectReadResponse(err); }
+    const resolved = scopedSliceDeps(c, name);
+    if ("error" in resolved) return resolved.error;
+    const { deps } = resolved;
     const slice = deps.indexer.get(name);
     if (!slice) return c.json({ error: "slice_not_found", name }, 404);
     const payload = deps.projector.project(slice);
@@ -197,7 +199,28 @@ export function slicesRoutes(): Hono {
   return app;
 }
 
-function getDeps(c: { get: (key: string) => unknown }): SlicesRoutesDeps | null {
+/** All selected slice read routes share the catalog/root/mission boundary.
+ * The selected indexer has no global dogfood evidence source: a same-name
+ * default-workspace packet is never evidence for a catalog project. */
+function scopedSliceDeps(c: Parameters<typeof selectedProject>[0], name: string):
+  { deps: SlicesRoutesDeps; project: ReturnType<typeof selectedProject> } | { error: Response } {
+  const deps = getDeps(c);
+  if (!deps) return { error: Response.json({ error: "slices_indexer_unavailable" }, { status: 503 }) };
+  try {
+    const project = selectedProject(c);
+    if (!project) return { deps, project };
+    const mission = c.req.query("mission");
+    if (!mission || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(name)) {
+      return { error: Response.json({ error: "exact_mission_and_slice_required" }, { status: 400 }) };
+    }
+    const dir = projectMission(project, mission);
+    workSource(project.root, path.join(dir, "slices", name));
+    const indexer = new SliceIndexer({ db: deps.indexer.db, slicesRoot: project.missionsRoot, dogfoodEvidenceRoot: null, projectId: project.id, missionId: mission });
+    return { deps: { indexer, projector: deps.projector.withIndexer(indexer) }, project };
+  } catch (err) { return { error: projectReadResponse(err) }; }
+}
+
+function getDeps(c: { get: (key: never) => unknown }): SlicesRoutesDeps | null {
   const indexer = c.get("sliceIndexer" as never) as SliceIndexer | undefined;
   const projector = c.get("sliceDetailProjector" as never) as SliceDetailProjector | undefined;
   if (!indexer || !projector) return null;
