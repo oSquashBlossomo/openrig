@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,6 +33,7 @@ describe("S06 lifecycle HTTP surface", () => {
   let db: Database.Database;
   let app: Hono;
   let runtime: WorkflowRuntime;
+  let queue: QueueRepository;
   let root: string;
   let missionDir: string;
 
@@ -41,7 +42,7 @@ describe("S06 lifecycle HTTP surface", () => {
     migrate(db, ALL_MIGRATIONS);
     const bus = new EventBus(db);
     db.prepare(`INSERT INTO rigs (id, name) VALUES ('r-1', 'rig')`).run();
-    const queue = new QueueRepository(db, bus, { validateRig: () => true });
+    queue = new QueueRepository(db, bus, { validateRig: () => true });
     queue.attachOutbox(new OutboxHandler(db));
     runtime = new WorkflowRuntime({ db, eventBus: bus, queueRepo: queue });
     app = new Hono();
@@ -71,6 +72,67 @@ describe("S06 lifecycle HTTP surface", () => {
       (db.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n,
     ]));
   }
+
+  async function failedParallel() {
+    const specPath = join(root, "parallel.yaml");
+    writeFileSync(specPath, PARALLEL_SPEC);
+    const created = await runtime.instantiate({ specPath, rootObjective: "isolated failures", createdBySession: "orch@rig" });
+    const instanceId = created.instance.instanceId;
+    await runtime.project({ instanceId, currentPacketId: created.entryQitemId, exit: "done", actorSession: "root@rig" });
+    for (const packet of runtime.inspect(instanceId).frontier) {
+      await runtime.project({ instanceId, currentPacketId: packet.packetId, exit: "failed", actorSession: `${packet.stepId}@rig` });
+    }
+    expect(runtime.inspect(instanceId).failures).toHaveLength(2);
+    return instanceId;
+  }
+
+  it.each(["does-not-exist", "", " "])("rejects explicit unknown occurrence %j without mutating another failure", async (occurrenceId) => {
+    const instanceId = await failedParallel();
+    const before = runtime.inspect(instanceId);
+    const beforeCounts = counts();
+    const wake = vi.spyOn(queue, "deliverWakeForSuccessor");
+    const response = await app.request(`/api/workflow/${instanceId}/resume`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ occurrenceId, actorSession: "human@host", decision: " exact bytes " }),
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: "failure_occurrence_not_unresolved", instanceId, occurrenceId });
+    expect(runtime.inspect(instanceId)).toEqual(before);
+    expect(counts()).toEqual(beforeCounts);
+    expect(wake).not.toHaveBeenCalled();
+  });
+
+  it("does not substitute a failure when the exact occurrence belongs to another instance", async () => {
+    const instanceId = await failedParallel();
+    const foreignInstanceId = await failedParallel();
+    const occurrenceId = runtime.inspect(foreignInstanceId).failures[0]!.occurrenceId;
+    const before = [runtime.inspect(instanceId), runtime.inspect(foreignInstanceId)];
+    const beforeCounts = counts();
+    const response = await app.request(`/api/workflow/${instanceId}/resume`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ occurrenceId, actorSession: "human@host" }),
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: "failure_occurrence_not_unresolved", instanceId, occurrenceId });
+    expect([runtime.inspect(instanceId), runtime.inspect(foreignInstanceId)]).toEqual(before);
+    expect(counts()).toEqual(beforeCounts);
+  });
+
+  it("exposes an internal wake failure after the selected resume has committed", async () => {
+    const instanceId = await failedParallel();
+    const occurrenceId = runtime.inspect(instanceId).failures[0]!.occurrenceId;
+    const wake = vi.spyOn(queue, "deliverWakeForSuccessor").mockRejectedValue(new Error("injected post-commit wake failure"));
+    const response = await app.request(`/api/workflow/${instanceId}/resume`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ occurrenceId, actorSession: "human@host", decision: " keep exact bytes " }),
+    });
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({ error: "internal_error", message: "injected post-commit wake failure" });
+    const failure = runtime.inspect(instanceId).failures.find(item => item.occurrenceId === occurrenceId)!;
+    expect(failure).toMatchObject({ status: "resolved", resumeDecision: " keep exact bytes ", redrivePacketId: expect.any(String) });
+    expect(queue.getById(failure.redrivePacketId!)?.chainOfRecord).toEqual([failure.failedPacketId]);
+    expect(wake).toHaveBeenCalledTimes(1);
+  });
 
   it("compiles read-only, instantiates once, replays once, and rejects changed source bytes", async () => {
     const beforeCompile = counts();

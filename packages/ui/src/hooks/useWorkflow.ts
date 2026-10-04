@@ -1,131 +1,78 @@
-// OPR.0.4.6.WF4 (C3) — workflow instance READ hooks.
-//
-// FR-4 parity rail: these hooks read the SAME daemon endpoints the WF-3 CLI
-// reads (routes/workflow.ts — list / specs / :id / :id/trace), verbatim shapes,
-// with ZERO UI-side recomputation of status/deadline/branch (BR-4). The type
-// mirrors below restate the daemon read contracts field-for-field, verified
-// firsthand at 56556dcf (untouched by C1/C2):
-//   WorkflowInstance             domain/workflow-types.ts:177
-//   withDeadline enrichment      domain/workflow-runtime.ts (deadline verdict)
-//   WorkflowStepTrailEntry       domain/workflow-types.ts:224
-//   WorkflowDeadlineVerdict      domain/workflow-deadline.ts
-//   /api/workflow/specs rows     routes/workflow.ts:201-212 (HEADERS ONLY — the
-//   workflow SHAPE rides the Library review payload, useSpecLibrary.ts)
-
 import { useQuery } from "@tanstack/react-query";
+import { arrayOf, hasShape, isBoolean, isText, nullable, operatorRead, operatorScopeKey, operatorScopeState, OperatorReadError,
+  LOCAL_OPERATOR_INSTANCE, type OperatorInstanceScope, type OperatorReadOptions } from "../lib/operator-read.js";
+import { isWorkflowInstance, isWorkflowOperation, isWorkflowReconciliation, isWorkflowTrace,
+  type WorkflowInstanceStatus, type WorkflowInstanceWithDeadline, type WorkflowOperation, type WorkflowReconciliation, type WorkflowSpecSummary, type WorkflowTrace } from "../lib/workflow-contracts.js";
+export * from "../lib/workflow-contracts.js";
 
-export type WorkflowInstanceStatus = "active" | "waiting" | "completed" | "failed";
-export type WorkflowExitKind = "handoff" | "waiting" | "done" | "failed";
-
-export interface WorkflowStepDeadlineEvidence {
-  instanceId: string;
-  stepId: string | null;
-  packetId: string;
-  ownerSession: string;
-  packetState: string;
-  anchor: "closure_required_at" | "claimed_at" | "created_at";
-  anchorAt: string;
-  overdueBySeconds: number;
-  ageSeconds: number;
-  claimedAt: string | null;
+const QUERY_OPTIONS = { retry: false, staleTime: 15_000, placeholderData: undefined } as const;
+export const workflowQueryKey = (scope: OperatorInstanceScope, family: string, ...ids: unknown[]) => ["workflow", ...operatorScopeKey(scope), family, ...ids] as const;
+function exactId(id: string) {
+  if (!isText(id) || !id.trim()) throw new OperatorReadError("invalid_request", "Workflow reads require an exact non-empty ID.");
+  return encodeURIComponent(id);
+}
+export function readWorkflowInstances(scope: OperatorInstanceScope, status?: WorkflowInstanceStatus, options: OperatorReadOptions = {}) {
+  if (status !== undefined && !["active", "waiting", "completed", "failed", "aborted"].includes(status)) throw new OperatorReadError("invalid_request", "Unknown workflow status filter.");
+  return operatorRead(scope, `/api/workflow/list${status ? `?status=${status}` : ""}`,
+    (v): v is WorkflowInstanceWithDeadline[] => arrayOf(x => isWorkflowInstance(x))(v), options);
+}
+export function readWorkflowInstance(scope: OperatorInstanceScope, instanceId: string, options: OperatorReadOptions = {}) {
+  return operatorRead(scope, `/api/workflow/${exactId(instanceId)}`,
+    (v): v is WorkflowInstanceWithDeadline => isWorkflowInstance(v) && v.instanceId === instanceId, options);
+}
+export function readWorkflowTrace(scope: OperatorInstanceScope, instanceId: string, options: OperatorReadOptions = {}) {
+  return operatorRead(scope, `/api/workflow/${exactId(instanceId)}/trace`,
+    (v): v is WorkflowTrace => isWorkflowTrace(v) && v.instance.instanceId === instanceId, options);
+}
+export function readWorkflowSpecs(scope: OperatorInstanceScope, options: OperatorReadOptions = {}) {
+  return operatorRead(scope, "/api/workflow/specs", (v): v is { specs: WorkflowSpecSummary[] } => hasShape(v, {
+    specs: arrayOf(x => hasShape(x, { name: isText, version: isText, purpose: nullable(isText), targetRig: nullable(isText),
+      coordinationTerminalTurnRule: isText, sourcePath: isText, cachedAt: isText, isBuiltIn: isBoolean })),
+  }), options);
+}
+export function readWorkflowRevision(scope: OperatorInstanceScope, instanceId: string, options: OperatorReadOptions = {}) {
+  return operatorRead(scope, `/api/workflow/${exactId(instanceId)}/revision`, isWorkflowReconciliation, options);
+}
+export function readWorkflowOperation(scope: OperatorInstanceScope, operationKey: string, options: OperatorReadOptions = {}) {
+  return operatorRead(scope, `/api/workflow/operations/${exactId(operationKey)}`,
+    (v): v is WorkflowOperation => isWorkflowOperation(v) && v.receipt.operationKey === operationKey, options);
 }
 
-export interface WorkflowDeadlineVerdict {
-  state: "healthy" | "overdue-claimed" | "overdue-unclaimed";
-  evidence: WorkflowStepDeadlineEvidence | null;
+/** Existing signatures remain valid. Explicit remote scope is unavailable; no
+ * host forwarding exists for these connected-instance workflow endpoints. */
+export function useWorkflowInstances(status?: WorkflowInstanceStatus, scope: OperatorInstanceScope = LOCAL_OPERATOR_INSTANCE) {
+  const scopeState = operatorScopeState(scope);
+  const query = useQuery({ ...QUERY_OPTIONS, queryKey: workflowQueryKey(scope, "instances", status ?? "all"),
+    queryFn: ({ signal }) => readWorkflowInstances(scope, status, { signal }), enabled: scopeState.scopeSupported });
+  return { ...query, ...scopeState };
 }
-
-export interface WorkflowInstanceWithDeadline {
-  instanceId: string;
-  workflowName: string;
-  workflowVersion: string;
-  createdBySession: string;
-  createdAt: string;
-  status: WorkflowInstanceStatus;
-  currentFrontier: string[];
-  currentStepId: string | null;
-  hopCount: number;
-  fallbackSynthesis: string | null;
-  lastContinuationDecision: Record<string, unknown> | null;
-  completedAt: string | null;
-  version: number;
-  resumeCount: number;
-  hopsBaseline: number;
-  deadline: WorkflowDeadlineVerdict;
+export function useWorkflowInstance(instanceId: string | null, scope: OperatorInstanceScope = LOCAL_OPERATOR_INSTANCE) {
+  const scopeState = operatorScopeState(scope);
+  const query = useQuery({ ...QUERY_OPTIONS, queryKey: workflowQueryKey(scope, "instance", instanceId),
+    queryFn: ({ signal }) => readWorkflowInstance(scope, instanceId ?? "", { signal }), enabled: scopeState.scopeSupported && !!instanceId });
+  return { ...query, ...scopeState };
 }
-
-export interface WorkflowStepTrailEntry {
-  trailId: string;
-  instanceId: string;
-  stepId: string;
-  stepRole: string;
-  closedAt: string;
-  closureReason: WorkflowExitKind;
-  closureEvidence: Record<string, unknown> | null;
-  actorSession: string;
-  nextQitemId: string | null;
-  priorQitemId: string;
+export function useWorkflowSpecs(scope: OperatorInstanceScope = LOCAL_OPERATOR_INSTANCE) {
+  const scopeState = operatorScopeState(scope);
+  const query = useQuery({ ...QUERY_OPTIONS, queryKey: workflowQueryKey(scope, "specs"),
+    queryFn: ({ signal }) => readWorkflowSpecs(scope, { signal }), enabled: scopeState.scopeSupported });
+  return { ...query, ...scopeState };
 }
-
-export interface WorkflowSpecSummary {
-  name: string;
-  version: string;
-  purpose: string | null;
-  targetRig: string | null;
-  coordinationTerminalTurnRule: string;
-  sourcePath: string;
-  cachedAt: string;
-  isBuiltIn: boolean;
+export function useWorkflowTrace(instanceId: string | null, scope: OperatorInstanceScope = LOCAL_OPERATOR_INSTANCE) {
+  const scopeState = operatorScopeState(scope);
+  const query = useQuery({ ...QUERY_OPTIONS, queryKey: workflowQueryKey(scope, "trace", instanceId),
+    queryFn: ({ signal }) => readWorkflowTrace(scope, instanceId ?? "", { signal }), enabled: scopeState.scopeSupported && !!instanceId });
+  return { ...query, ...scopeState };
 }
-
-export interface WorkflowTrace {
-  instance: WorkflowInstanceWithDeadline;
-  trail: WorkflowStepTrailEntry[];
+export function useWorkflowRevision(instanceId: string | null, scope: OperatorInstanceScope = LOCAL_OPERATOR_INSTANCE) {
+  const scopeState = operatorScopeState(scope);
+  const query = useQuery<WorkflowReconciliation, OperatorReadError>({ ...QUERY_OPTIONS, queryKey: workflowQueryKey(scope, "revision", instanceId),
+    queryFn: ({ signal }) => readWorkflowRevision(scope, instanceId ?? "", { signal }), enabled: scopeState.scopeSupported && !!instanceId });
+  return { ...query, ...scopeState };
 }
-
-async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return (await res.json()) as T;
-}
-
-/** GET /api/workflow/list[?status=] — every instance carries the derived WF-1
- *  FR-2 deadline verdict (recomputed per read, never stored). */
-export function useWorkflowInstances(status?: WorkflowInstanceStatus) {
-  const qs = status ? `?status=${status}` : "";
-  return useQuery({
-    queryKey: ["workflow", "instances", status ?? "all"],
-    queryFn: () => fetchJson<WorkflowInstanceWithDeadline[]>(`/api/workflow/list${qs}`),
-    staleTime: 15_000,
-  });
-}
-
-/** GET /api/workflow/:id — a single instance (show), deadline-enriched. */
-export function useWorkflowInstance(instanceId: string | null) {
-  return useQuery({
-    queryKey: ["workflow", "instance", instanceId],
-    queryFn: () => fetchJson<WorkflowInstanceWithDeadline>(`/api/workflow/${encodeURIComponent(instanceId!)}`),
-    enabled: !!instanceId,
-    staleTime: 15_000,
-  });
-}
-
-/** GET /api/workflow/specs — cached-spec HEADERS (never the shape). */
-export function useWorkflowSpecs() {
-  return useQuery({
-    queryKey: ["workflow", "specs"],
-    queryFn: () => fetchJson<{ specs: WorkflowSpecSummary[] }>("/api/workflow/specs"),
-    staleTime: 15_000,
-  });
-}
-
-/** GET /api/workflow/:id/trace — instance + full routing trail (the same read
- *  `rig workflow trace` projects; the daemon's read-only continue(), no write). */
-export function useWorkflowTrace(instanceId: string | null) {
-  return useQuery({
-    queryKey: ["workflow", "trace", instanceId],
-    queryFn: () => fetchJson<WorkflowTrace>(`/api/workflow/${encodeURIComponent(instanceId!)}/trace`),
-    enabled: !!instanceId,
-    staleTime: 15_000,
-  });
+export function useWorkflowOperation(operationKey: string | null, scope: OperatorInstanceScope = LOCAL_OPERATOR_INSTANCE) {
+  const scopeState = operatorScopeState(scope);
+  const query = useQuery<WorkflowOperation, OperatorReadError>({ ...QUERY_OPTIONS, queryKey: workflowQueryKey(scope, "operation", operationKey),
+    queryFn: ({ signal }) => readWorkflowOperation(scope, operationKey ?? "", { signal }), enabled: scopeState.scopeSupported && !!operationKey });
+  return { ...query, ...scopeState };
 }
