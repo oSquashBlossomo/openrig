@@ -1,3 +1,4 @@
+import type { ResolvedSetting } from "../src/hooks/useSettings.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { fireEvent, render, cleanup } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -102,7 +103,7 @@ function installFetchMock(opts: { psEntries?: PsEntry[] } = {}) {
     }
     if (url.includes("/api/config")) {
       return new Response(
-        JSON.stringify({ settings: { "workspace.root": { value: "/Users/admin/.openrig/workspace" } } }),
+        JSON.stringify({ settings: { "workspace.root": { value: "/Users/admin/.openrig/workspace", source: "file", defaultValue: "/default/.openrig/workspace" } } satisfies Record<string, ResolvedSetting> }),
         { status: 200 },
       );
     }

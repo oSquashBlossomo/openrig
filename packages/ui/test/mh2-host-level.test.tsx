@@ -1,3 +1,4 @@
+import type { ResolvedSetting } from "../src/hooks/useSettings.js";
 // OPR.0.4.6.MH2 — the UI host level: FR-2 plumbing (withHostParam identity
 // for local = the zero-regression negative), FR-1 tree host level (expand =
 // select, one write path), FR-3 indicator states, FR-5 HOSTS toggles over
@@ -65,7 +66,7 @@ const HOSTS_TWO: HostsPayload = {
   ],
 };
 
-function wireFetch(opts: { hosts?: HostsPayload; settings?: Record<string, unknown>; feedHostSubscriptions?: Array<{ hostId: string; enabled: boolean }> } = {}) {
+function wireFetch(opts: { hosts?: HostsPayload; settings?: Record<string, ResolvedSetting>; feedHostSubscriptions?: Array<{ hostId: string; enabled: boolean }> } = {}) {
   mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
     if (init?.method === "POST") return { ok: true, json: async () => ({ ok: true }) };
     if (url === "/api/hosts") {
@@ -142,7 +143,7 @@ describe("TopologyTreeView host level (FR-1)", () => {
   it("registry hosts render as collapsed nodes; local is expanded + viewing", async () => {
     // The tree's local label reads MH-1's canonical stored name — the
     // host.name SETTINGS key (the settings twins), not the hosts payload.
-    wireFetch({ hosts: HOSTS_TWO, settings: { "host.name": { value: "Linkpix Proof Host" } } });
+    wireFetch({ hosts: HOSTS_TWO, settings: { "host.name": { value: "Linkpix Proof Host", source: "file", defaultValue: "localhost" } } });
     renderWithRouter(() => <TopologyTreeView />);
     await waitFor(() => expect(screen.getByTestId("topology-host-vps-a")).toBeTruthy());
     const local = screen.getByTestId("topology-host-localhost");
@@ -237,7 +238,7 @@ describe("guard-B1 files gate — a remote selection issues ZERO /api/files/* re
       const u = String(url);
       if (init?.method === "POST") return { ok: true, json: async () => ({ ok: true }) };
       if (u === "/api/hosts") return { ok: true, json: async () => ({ ...HOSTS_TWO, selected }) };
-      if (u === "/api/config") return { ok: true, json: async () => ({ settings: { "workspace.root": { value: "/local/ws" } }, feedHostSubscriptions: [] }) };
+      if (u === "/api/config") return { ok: true, json: async () => ({ settings: { "workspace.root": { value: "/local/ws", source: "file", defaultValue: "/default/.openrig/workspace" } }, feedHostSubscriptions: [] }) };
       if (u.startsWith("/api/files/roots")) return { ok: true, json: async () => ({ roots: [{ name: "ws", path: "/local/ws" }] }) };
       if (u.startsWith("/api/files/list")) return { ok: true, json: async () => ({ root: "ws", path: "missions", entries: [] }) };
       if (u.startsWith("/api/slices/test-slice")) return { ok: true, json: async () => SLICE_DETAIL };
@@ -405,7 +406,7 @@ describe("guard-B1 files gate round 2 — mission landing + portfolio glance (re
       const u = String(url);
       if (init?.method === "POST") return { ok: true, json: async () => ({ ok: true }) };
       if (u === "/api/hosts") return { ok: true, json: async () => ({ ...HOSTS_TWO, selected }) };
-      if (u === "/api/config") return { ok: true, json: async () => ({ settings: { "workspace.root": { value: "/local/ws" } }, feedHostSubscriptions: [] }) };
+      if (u === "/api/config") return { ok: true, json: async () => ({ settings: { "workspace.root": { value: "/local/ws", source: "file", defaultValue: "/default/.openrig/workspace" } }, feedHostSubscriptions: [] }) };
       if (u.startsWith("/api/files/roots")) return { ok: true, json: async () => ({ roots: [{ name: "ws", path: "/local/ws" }] }) };
       if (u.startsWith("/api/files/read")) return { ok: true, json: async () => ({ root: "ws", path: "x", absolutePath: "/local/ws/x", content: "## Building\nstuff", mtime: "now", contentHash: "h", size: 1 }) };
       if (u.startsWith("/api/missions/")) return { ok: true, json: async () => MISSION_PAYLOAD };
