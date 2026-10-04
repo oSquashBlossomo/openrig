@@ -11,6 +11,8 @@
 // daemon install path; workspace skills via the daemon's filesAllowlist.
 
 import { useQuery } from "@tanstack/react-query";
+import { boundedJsonRead } from "../lib/bounded-json-read.js";
+import { arrayOf, hasShape, isNumber, isText, oneOf, optional, OperatorReadError } from "../lib/operator-read.js";
 
 export type LibrarySkillSource = "workspace" | "openrig-managed";
 
@@ -35,21 +37,33 @@ export interface LibrarySkillEntry {
   /** Slice 29 HG-4 — absolute filesystem path the daemon reads this skill
    *  from. Operators see this on the skill detail page to know where each
    *  shipped skill actually lives on disk (daemon bundle / plugin / user
-   *  workspace). */
-  absolutePath: string;
+   *  workspace). Older discovery APIs omitted this public display fact. */
+  absolutePath?: string;
 }
 
-async function fetchLibrarySkills(): Promise<LibrarySkillEntry[]> {
-  const res = await fetch("/api/skills/library");
-  if (res.status === 503) return [];
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return (await res.json()) as LibrarySkillEntry[];
+function isLibrarySkillEntry(value: unknown): value is LibrarySkillEntry {
+  return hasShape(value, {
+    id: value => isText(value) && value.length > 0, name: isText,
+    source: oneOf("workspace", "openrig-managed"), absolutePath: optional(isText),
+    files: arrayOf(file => hasShape(file, { name: isText, path: isText, size: isNumber, mtime: isText })),
+  });
+}
+
+async function fetchLibrarySkills(signal?: AbortSignal): Promise<LibrarySkillEntry[]> {
+  // Daemon-owned connected-instance discovery; no selected-host forwarding.
+  const body = await boundedJsonRead<unknown>("/api/skills/library", { signal });
+  if (!Array.isArray(body) || !body.every(isLibrarySkillEntry)) {
+    throw new OperatorReadError("invalid_contract", "Skill library returned an invalid catalog.");
+  }
+  return body;
 }
 
 export function useLibrarySkills() {
   return useQuery({
     queryKey: ["skills", "library"],
-    queryFn: fetchLibrarySkills,
+    queryFn: ({ signal }) => fetchLibrarySkills(signal),
     staleTime: 30_000,
+    retry: false,
+    placeholderData: undefined,
   });
 }
