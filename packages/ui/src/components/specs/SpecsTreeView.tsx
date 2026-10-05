@@ -2,6 +2,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useSpecLibrary, type SpecLibraryEntry } from "../../hooks/useSpecLibrary.js";
+import { LibraryEntryLink } from "./library-reads.js";
 import { useContextPackLibrary } from "../../hooks/useContextPackLibrary.js";
 import { useAgentImageLibrary } from "../../hooks/useAgentImageLibrary.js";
 import { useLibrarySkills } from "../../hooks/useLibrarySkills.js";
@@ -18,6 +19,8 @@ interface TreeEntry {
   entryId?: string;
   skillId?: string;
   pluginId?: string;
+  /** Origin of the list query that served `entryId` (raw `?source=`). */
+  sourceHostId?: string;
   meta?: string;
   metaNode?: ReactNode;
 }
@@ -27,10 +30,32 @@ interface SectionDef {
   label: string;
   entries: TreeEntry[];
   loading?: boolean;
+  /** List read failure; with entries present they are the last good read. */
+  error?: string | null;
 }
 
-function specEntry(entry: SpecLibraryEntry): TreeEntry {
-  return { id: entry.id, name: entry.name, entryId: entry.id, meta: entry.version };
+/** Read state for one library list: a failed read is never "none yet". */
+function listState(query: { data?: unknown; error: unknown; isLoading: boolean }): { loading: boolean; error: string | null } {
+  return {
+    loading: query.isLoading,
+    error: query.error ? (query.error instanceof Error ? query.error.message : String(query.error)) : null,
+  };
+}
+
+function SectionCount({ def }: { def: SectionDef }) {
+  if (def.loading) return <span className="font-mono text-[10px] text-on-surface-variant">...</span>;
+  if (def.error) {
+    return (
+      <span className="font-mono text-[10px] text-red-700" data-testid={`specs-section-state-${def.id}`} title={def.error}>
+        {def.entries.length > 0 ? `${def.entries.length} · stale` : "unavailable"}
+      </span>
+    );
+  }
+  return <span className="font-mono text-[10px] text-on-surface-variant">{def.entries.length}</span>;
+}
+
+function specEntry(entry: SpecLibraryEntry, sourceHostId: string | undefined): TreeEntry {
+  return { id: entry.id, name: entry.name, entryId: entry.id, sourceHostId, meta: entry.version };
 }
 
 function entryAccessibleLabel(entry: TreeEntry): string {
@@ -83,9 +108,7 @@ function Section({
           >
             {def.label}
           </Link>
-          <span className="font-mono text-[10px] text-on-surface-variant">
-            {def.loading ? "..." : def.entries.length}
-          </span>
+          <SectionCount def={def} />
         </div>
       ) : (
         <button
@@ -98,9 +121,7 @@ function Section({
           <span className="font-mono text-[11px] uppercase tracking-wide text-on-surface flex-1">
             {def.label}
           </span>
-          <span className="font-mono text-[10px] text-on-surface-variant">
-            {def.loading ? "..." : def.entries.length}
-          </span>
+          <SectionCount def={def} />
         </button>
       )}
       {expanded ? (
@@ -109,16 +130,16 @@ function Section({
             def.entries.map((entry) => (
               <li key={entry.id} className="px-2 py-0.5">
                 {entry.entryId ? (
-                  <Link
-                    to="/specs/library/$entryId"
-                    params={{ entryId: entry.entryId }}
-                    data-testid={`specs-leaf-${entry.id}`}
+                  <LibraryEntryLink
+                    entryId={entry.entryId}
+                    sourceHostId={entry.sourceHostId}
+                    testId={`specs-leaf-${entry.id}`}
                     title={entryAccessibleLabel(entry)}
                     aria-label={entryAccessibleLabel(entry)}
                     className="flex min-w-0 items-center justify-between gap-2 truncate font-mono text-xs text-on-surface hover:bg-surface-low hover:text-on-surface"
                   >
                     <LeafContent entry={entry} />
-                  </Link>
+                  </LibraryEntryLink>
                 ) : entry.skillId ? (
                   <Link
                     to="/specs/skills/$skillToken"
@@ -155,7 +176,7 @@ function Section({
             ))
           ) : (
             <li className="px-2 py-1 font-mono text-[10px] text-on-surface-variant italic">
-              {def.loading ? "Loading..." : `No ${def.label.toLowerCase()} yet.`}
+              {def.loading ? "Loading..." : def.error ? `Unavailable: ${def.error}` : `No ${def.label.toLowerCase()} yet.`}
             </li>
           )}
         </ul>
@@ -166,11 +187,24 @@ function Section({
 
 export function SpecsTreeView() {
   const routerState = useRouterState();
-  const { data: library = [], isLoading: specsLoading } = useSpecLibrary();
-  const { data: contextPacks = [], isLoading: contextPacksLoading } = useContextPackLibrary();
-  const { data: agentImages = [], isLoading: agentImagesLoading } = useAgentImageLibrary();
-  const { data: skills = [], isLoading: skillsLoading } = useLibrarySkills();
-  const { data: plugins = [], isLoading: pluginsLoading } = usePlugins();
+  const specsQuery = useSpecLibrary();
+  const contextPacksQuery = useContextPackLibrary();
+  const agentImagesQuery = useAgentImageLibrary();
+  const skillsQuery = useLibrarySkills();
+  const pluginsQuery = usePlugins();
+  const library = specsQuery.data ?? [];
+  // Spec IDs come from the selected-host list; context packs and images are
+  // connected-instance libraries.
+  const specsSource = specsQuery.sourceHostId ?? undefined;
+  const contextPacks = contextPacksQuery.data ?? [];
+  const agentImages = agentImagesQuery.data ?? [];
+  const skills = skillsQuery.data ?? [];
+  const plugins = pluginsQuery.data ?? [];
+  const specsRead = listState(specsQuery);
+  const contextPacksRead = listState(contextPacksQuery);
+  const agentImagesRead = listState(agentImagesQuery);
+  const skillsRead = listState(skillsQuery);
+  const pluginsRead = listState(pluginsQuery);
   const activeSkill = librarySkillSelectionFromPath(routerState.location.pathname);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
     "rig-specs": true,
@@ -190,14 +224,15 @@ export function SpecsTreeView() {
     setExpandedSkills((prev) => ({ ...prev, [id]: !prev[id] }));
 
   const sections = useMemo<SectionDef[]>(() => {
-    const rigSpecs = library.filter((entry) => entry.kind === "rig" && !entry.hasServices).map(specEntry);
-    const workflowSpecs = library.filter((entry) => entry.kind === "workflow").map(specEntry);
-    const agentSpecs = library.filter((entry) => entry.kind === "agent").map(specEntry);
-    const applications = library.filter((entry) => entry.kind === "rig" && entry.hasServices).map(specEntry);
+    const toEntry = (entry: SpecLibraryEntry) => specEntry(entry, specsSource);
+    const rigSpecs = library.filter((entry) => entry.kind === "rig" && !entry.hasServices).map(toEntry);
+    const workflowSpecs = library.filter((entry) => entry.kind === "workflow").map(toEntry);
+    const agentSpecs = library.filter((entry) => entry.kind === "agent").map(toEntry);
+    const applications = library.filter((entry) => entry.kind === "rig" && entry.hasServices).map(toEntry);
     return [
-      { id: "rig-specs", label: "Rig Specs", entries: rigSpecs, loading: specsLoading },
+      { id: "rig-specs", label: "Rig Specs", entries: rigSpecs, ...specsRead },
       { id: "workspace-specs", label: "Workspace Specs", entries: [] },
-      { id: "workflow-specs", label: "Workflow Specs", entries: workflowSpecs, loading: specsLoading },
+      { id: "workflow-specs", label: "Workflow Specs", entries: workflowSpecs, ...specsRead },
       {
         id: "context-packs",
         label: "Context Packs",
@@ -205,11 +240,12 @@ export function SpecsTreeView() {
           id: entry.id,
           name: entry.name,
           entryId: entry.id,
+          sourceHostId: "local",
           meta: `${entry.version} · ${entry.sourceType}`,
         })),
-        loading: contextPacksLoading,
+        ...contextPacksRead,
       },
-      { id: "agent-specs", label: "Agent Specs", entries: agentSpecs, loading: specsLoading },
+      { id: "agent-specs", label: "Agent Specs", entries: agentSpecs, ...specsRead },
       {
         id: "agent-images",
         label: "Agent Images",
@@ -217,12 +253,13 @@ export function SpecsTreeView() {
           id: entry.id,
           name: entry.name,
           entryId: entry.id,
+          sourceHostId: "local",
           meta: entry.version,
           metaNode: <RuntimeBadge runtime={entry.runtime} size="xs" compact variant="inline" />,
         })),
-        loading: agentImagesLoading,
+        ...agentImagesRead,
       },
-      { id: "applications", label: "Applications", entries: applications, loading: specsLoading },
+      { id: "applications", label: "Applications", entries: applications, ...specsRead },
       // Slice 28 — Plugins above Skills per founder direction (Skills
       // list will be larger; Plugins user-priority).
       {
@@ -234,7 +271,7 @@ export function SpecsTreeView() {
           pluginId: plugin.id,
           meta: plugin.version,
         })),
-        loading: pluginsLoading,
+        ...pluginsRead,
       },
       {
         id: "skills",
@@ -244,20 +281,15 @@ export function SpecsTreeView() {
           name: skill.name,
           skillId: skill.id,
         })),
-        loading: skillsLoading,
+        ...skillsRead,
       },
     ];
   }, [
-    agentImages,
-    agentImagesLoading,
-    contextPacks,
-    contextPacksLoading,
-    library,
-    plugins,
-    pluginsLoading,
-    skills,
-    skillsLoading,
-    specsLoading,
+    agentImages, agentImagesRead.loading, agentImagesRead.error,
+    contextPacks, contextPacksRead.loading, contextPacksRead.error,
+    library, specsRead.loading, specsRead.error, specsSource,
+    plugins, pluginsRead.loading, pluginsRead.error,
+    skills, skillsRead.loading, skillsRead.error,
   ]);
 
   return (
@@ -318,14 +350,12 @@ export function SpecsTreeView() {
                 >
                   Skills
                 </Link>
-                <span className="font-mono text-[10px] text-on-surface-variant">
-                  {skillsLoading ? "..." : skills.length}
-                </span>
+                <SectionCount def={def} />
               </div>
               {skillsExpanded ? (
                 <SkillsTree
                   skills={skills}
-                  loading={skillsLoading}
+                  loading={skillsRead.loading}
                   activeSkillId={activeSkill?.skillId ?? null}
                   expandedCategories={expandedSkills}
                   onToggleCategory={toggleSkill}

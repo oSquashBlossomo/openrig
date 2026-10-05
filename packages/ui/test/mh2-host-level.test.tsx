@@ -556,8 +556,17 @@ describe("rev1-r2 B1/B2 — remote action gates (topology table / terminal grid 
   });
 
   const RIG_SUMMARY = [{ id: "r1", name: "rig-one", nodeCount: 1 }];
+  // A complete inventory DTO row (the table reads through the validating
+  // inventory reader, which rejects rows missing the daemon's required facts).
   const NODES_R1 = [
     {
+      rigId: "r1",
+      rigName: "rig-one",
+      podId: null,
+      restoreOutcome: "n-a",
+      tmuxAttachCommand: null,
+      resumeCommand: null,
+      latestError: null,
       logicalId: "a1",
       nodeKind: "agent",
       canonicalSessionName: "a1@rig-one",
@@ -825,7 +834,11 @@ describe("rev1-r2 B1/B2 — remote action gates (topology table / terminal grid 
       return { ok: true, json: async () => ({}) };
     });
     renderUnprimed(() => <RigScopePage />, { path: "/topology/rig/$rigId", entry: "/topology/rig/r1" });
-    await waitFor(() => expect(screen.getByTestId("rig-status-selection-pending")).toBeTruthy());
+    // The topology source gate now holds the whole rig body (its reads and
+    // local actions) until a host read succeeds; its resolving state is the
+    // pending marker. Every original no-control / no-read / no-POST
+    // assertion below is unchanged.
+    await waitFor(() => expect(screen.getByTestId("topology-source-gate").getAttribute("data-state")).toBe("resolving"));
     expect(document.querySelector('[data-testid^="rig-primary-action"]')).toBeNull();
     expect(document.querySelector('[data-testid^="rig-status-control"]')).toBeNull();
     expect(screen.queryByTestId("rig-status-remote-readonly")).toBeNull();

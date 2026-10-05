@@ -46,6 +46,9 @@ import { useTopologyActivity } from "../../hooks/useTopologyActivity.js";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion.js";
 import { useSelectedHostId } from "../../hooks/useHosts.js";
 import { isTopologyGraph, topologyRead } from "../../lib/topology-read.js";
+import { projectRigGraph, type RigGraphIssue } from "./rig-graph-projection.js";
+import { GraphPartialNotice } from "./GraphPartialNotice.js";
+import { freshTopologyVisitState, topologyTarget, useKnownSelectedHost } from "./topology-navigation.js";
 import {
   HYBRID_COLLAPSED_RIG_HEIGHT,
   HYBRID_COLLAPSED_RIG_WIDTH,
@@ -80,8 +83,9 @@ const HOST_GRAPH_FIT_PADDING = 0.08;
 
 export function HostMultiRigGraph() {
   const navigate = useNavigate();
-  const { data: psEntries } = usePsEntries();
+  const { data: psEntries, isError: psFailed, error: psError, refetch: refetchPs } = usePsEntries();
   const hostId = useSelectedHostId();
+  const linkSource = useKnownSelectedHost();
   const reducedMotion = usePrefersReducedMotion();
 
   // V1 polish slice Phase 5.2 bounce-fix: rig-expanded state lifted to
@@ -126,7 +130,7 @@ export function HostMultiRigGraph() {
   }, [rigList, setRigExpanded]);
 
   // Build per-rig nested subgraphs and lay out rig frames on the host canvas.
-  const { mergedNodes, mergedEdges } = useMemo(() => {
+  const { mergedNodes, mergedEdges, partialIssues, unavailableRigs } = useMemo(() => {
     type RawN = Node & { data?: Record<string, unknown>; initialWidth?: number; initialHeight?: number };
     type RawE = Edge & { source: string; target: string; data?: Record<string, unknown>; label?: unknown };
 
@@ -145,6 +149,8 @@ export function HostMultiRigGraph() {
       width: number;
       height: number;
     }> = [];
+    const partialIssues: RigGraphIssue[] = [];
+    const unavailableRigs: Array<{ rigName: string; message: string }> = [];
 
     for (let i = 0; i < rigList.length; i++) {
       const rig = rigList[i]!;
@@ -157,8 +163,16 @@ export function HostMultiRigGraph() {
       let height = HYBRID_COLLAPSED_RIG_HEIGHT;
       let podCount: number | undefined;
 
-      const rawNodes = (queryResult?.data?.nodes ?? []) as RawN[];
-      const rawEdges = (queryResult?.data?.edges ?? []) as RawE[];
+      // Untrusted entries: keep usable siblings, disclose the rest.
+      const projection = projectRigGraph(queryResult?.data);
+      const rawNodes = projection.nodes as RawN[];
+      const rawEdges = projection.edges as RawE[];
+      if (isExpanded) {
+        for (const issue of projection.issues) partialIssues.push({ ...issue, detail: `${rig.name}: ${issue.detail}` });
+        if (queryResult?.isError) {
+          unavailableRigs.push({ rigName: rig.name, message: queryResult.error instanceof Error ? queryResult.error.message : "graph unavailable" });
+        }
+      }
       const layout = layoutHybridRig({
         rigId: rig.rigId,
         rigName: rig.name,
@@ -225,7 +239,7 @@ export function HostMultiRigGraph() {
       }
     }
 
-    return { mergedNodes: nodes, mergedEdges: edges };
+    return { mergedNodes: nodes, mergedEdges: edges, partialIssues, unavailableRigs };
     // toggleRig is stable per-render but useMemo doesn't know; safe to
     // include rigList + expanded + graphQueries as deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -315,20 +329,41 @@ export function HostMultiRigGraph() {
     if (node.type === "rigGroup") return; // body click handled by RigGroupNode
     if (node.type === "podGroup" || node.type === "group") {
       const podName = data?.podNamespace ?? data?.podId;
-      if (!podName) return;
-      navigate({
-        to: "/topology/pod/$rigId/$podName",
-        params: { rigId, podName },
-      });
+      if (typeof podName !== "string" || !podName) return;
+      const target = topologyTarget({ scope: { kind: "pod", rigId, podName }, sourceHost: linkSource });
+      if (target) navigate({ to: target.to, params: target.params, search: target.search, state: freshTopologyVisitState } as never);
       return;
     }
-    if (data?.logicalId) {
-      navigate({
-        to: "/topology/seat/$rigId/$logicalId",
-        params: { rigId, logicalId: encodeURIComponent(data.logicalId) },
-      });
+    if (typeof data?.logicalId === "string" && data.logicalId) {
+      // Raw params through the shared builder (encoded once by the router).
+      const target = topologyTarget({ scope: { kind: "seat", rigId, logicalId: data.logicalId }, sourceHost: linkSource });
+      if (target) navigate({ to: target.to, params: target.params, search: target.search, state: freshTopologyVisitState } as never);
     }
   };
+
+  // Pending or failed inventory is not an empty fleet.
+  if (psEntries === undefined) {
+    return psFailed ? (
+      <div
+        data-testid="host-multi-rig-graph-unavailable"
+        role="alert"
+        className="flex flex-col items-center justify-center gap-2 h-full font-mono text-[10px] text-error"
+      >
+        <span>Rig inventory unavailable: {psError instanceof Error ? psError.message : "read failed"}.</span>
+        <button type="button" onClick={() => void refetchPs()} className="border border-outline px-3 py-1 uppercase tracking-wide text-on-surface">
+          Retry
+        </button>
+      </div>
+    ) : (
+      <div
+        data-testid="host-multi-rig-graph-loading"
+        role="status"
+        className="flex flex-col items-center justify-center h-full font-mono text-[10px] text-on-surface-variant"
+      >
+        Reading rigs…
+      </div>
+    );
+  }
 
   if (rigList.length === 0) {
     return (
@@ -360,6 +395,16 @@ export function HostMultiRigGraph() {
         proOptions={{ hideAttribution: true }}
       >
         <HostGraphAutoFit layoutSignature={layoutSignature} />
+        {partialIssues.length > 0 || unavailableRigs.length > 0 || psFailed ? (
+          <Panel position="bottom-left" className="!m-3 max-w-md border border-outline-variant bg-background/90 px-2 py-1.5">
+            {psFailed ? (
+              <div data-testid="host-multi-rig-graph-stale" className="mb-1 font-mono text-[10px] text-error">
+                Rig inventory refresh failed; showing the last successful list.
+              </div>
+            ) : null}
+            <GraphPartialNotice issues={partialIssues} unavailable={unavailableRigs} />
+          </Panel>
+        ) : null}
         <Panel position="top-right" className="!m-3">
           <div className="flex items-center gap-1 border border-outline-variant bg-background/80 px-1.5 py-1 shadow-[2px_2px_0_rgba(46,52,46,0.10)] backdrop-blur-sm">
             <button

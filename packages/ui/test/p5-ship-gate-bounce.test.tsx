@@ -113,7 +113,8 @@ describe("TopologyTableView P0-1 regression: no rules-of-hooks crash on first-re
     expect(container.querySelector("[data-testid='topology-table-view']")).toBeTruthy();
     await waitFor(() => {
       expect(mockFetch).toHaveBeenCalledWith("/api/rigs/summary?host=vps-a", expect.objectContaining({ signal: expect.any(AbortSignal) }));
-      expect(mockFetch).toHaveBeenCalledWith("/api/rigs/rig-1/nodes?host=vps-a");
+      // The table now reads through the bounded inventory reader (query signal).
+      expect(mockFetch).toHaveBeenCalledWith("/api/rigs/rig-1/nodes?host=vps-a", expect.objectContaining({ signal: expect.any(AbortSignal) }));
     });
     expect(
       mockFetch.mock.calls.some(([url]) => String(url) === "/api/rigs/rig-1/nodes"),

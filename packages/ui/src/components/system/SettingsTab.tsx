@@ -17,20 +17,52 @@ import {
   type SettingsKey,
   type ResolvedSetting,
 } from "../../hooks/useSettings.js";
+import { DisplayTime, DisplayZoneNote } from "../time/DisplayTime.js";
 
 interface SettingsRowProps {
   label: string;
   settingKey: SettingsKey;
-  resolved: ResolvedSetting;
+  /** Absent when the connected daemon does not serve this key (older or
+   * partial settings maps are valid; nothing is invented for them). */
+  resolved: ResolvedSetting | undefined;
   testIdPrefix: string;
+  /** Presentation-only rows (changed through the CLI, like the TUI). */
+  readOnly?: boolean;
 }
 
-function SettingsRow({ label, settingKey, resolved, testIdPrefix }: SettingsRowProps) {
+/** Exact display of a served value: false, 0 and "" stay visible as such. */
+export function settingText(value: ResolvedSetting["value"] | null | undefined): string {
+  if (value === undefined || value === null) return "—";
+  if (value === "") return "(empty)";
+  return String(value);
+}
+
+function SettingsRow({ label, settingKey, resolved, testIdPrefix, readOnly = false }: SettingsRowProps) {
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(String(resolved.value ?? ""));
+  const [draft, setDraft] = useState(String(resolved?.value ?? ""));
   const [error, setError] = useState<string | null>(null);
   const setMutation = useSetSetting();
   const resetMutation = useResetSetting();
+
+  if (!resolved) {
+    // Not served by this daemon: no value, default, edit or reset target.
+    return (
+      <div
+        data-testid={`${testIdPrefix}-${settingKey}`}
+        data-state="unavailable"
+        className="border border-dashed border-outline-variant/60 px-3 py-2 space-y-1"
+      >
+        <div className="flex items-center justify-between gap-2">
+          <span className="font-mono text-[10px] text-on-surface truncate">{label}</span>
+          <span className="font-mono text-[8px] uppercase tracking-[0.10em] text-on-surface-variant shrink-0">not reported</span>
+        </div>
+        <div data-testid={`${testIdPrefix}-${settingKey}-unavailable`} className="font-mono text-[9px] text-on-surface-variant break-words">
+          The connected daemon does not serve {settingKey}; no value or default is assumed. Inspect on that instance:{" "}
+          <span className="text-on-surface">rig config get {settingKey} --show-source</span>
+        </div>
+      </div>
+    );
+  }
 
   const isOverridden = resolved.source !== "default";
 
@@ -56,6 +88,7 @@ function SettingsRow({ label, settingKey, resolved, testIdPrefix }: SettingsRowP
   return (
     <div
       data-testid={`${testIdPrefix}-${settingKey}`}
+      data-state="served"
       className="border border-outline-variant/40 bg-surface-lowest/[0.08] px-3 py-2 space-y-1"
     >
       <div className="flex items-center justify-between gap-2">
@@ -68,6 +101,7 @@ function SettingsRow({ label, settingKey, resolved, testIdPrefix }: SettingsRowP
         <div className="space-y-1">
           <input
             data-testid={`${testIdPrefix}-${settingKey}-input`}
+            aria-label={`${label} value`}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             className="w-full border border-outline-variant bg-surface-lowest/80 px-2 py-1 font-mono text-[10px]"
@@ -91,27 +125,31 @@ function SettingsRow({ label, settingKey, resolved, testIdPrefix }: SettingsRowP
         </div>
       ) : (
         <div className="space-y-0.5">
-          <div className="font-mono text-[10px] text-on-surface break-all">{String(resolved.value ?? "")}</div>
-          <div className="font-mono text-[8px] text-on-surface-variant break-all">default: {String(resolved.defaultValue ?? "")}</div>
-          <div className="flex gap-1 pt-1">
-            <button
-              data-testid={`${testIdPrefix}-${settingKey}-edit`}
-              onClick={() => { setEditing(true); setError(null); }}
-              className="font-mono text-[8px] uppercase border border-outline-variant px-1 py-0.5 hover:bg-surface-high"
-            >
-              Edit
-            </button>
-            {isOverridden && (
+          <div data-testid={`${testIdPrefix}-${settingKey}-value`} className="font-mono text-[10px] text-on-surface break-all">{settingText(resolved.value)}</div>
+          <div data-testid={`${testIdPrefix}-${settingKey}-default`} className="font-mono text-[8px] text-on-surface-variant break-all">default: {settingText(resolved.defaultValue)}</div>
+          {readOnly ? null : (
+            <div className="flex gap-1 pt-1">
               <button
-                data-testid={`${testIdPrefix}-${settingKey}-reset`}
-                onClick={() => void onReset()}
-                disabled={resetMutation.isPending}
-                className="font-mono text-[8px] uppercase border border-outline-variant px-1 py-0.5 hover:bg-surface-high disabled:opacity-50"
+                data-testid={`${testIdPrefix}-${settingKey}-edit`}
+                // Start each edit from the currently served value, not the
+                // value seen when this row first mounted.
+                onClick={() => { setDraft(String(resolved.value ?? "")); setEditing(true); setError(null); }}
+                className="font-mono text-[8px] uppercase border border-outline-variant px-1 py-0.5 hover:bg-surface-high"
               >
-                Reset
+                Edit
               </button>
-            )}
-          </div>
+              {isOverridden && (
+                <button
+                  data-testid={`${testIdPrefix}-${settingKey}-reset`}
+                  onClick={() => void onReset()}
+                  disabled={resetMutation.isPending}
+                  className="font-mono text-[8px] uppercase border border-outline-variant px-1 py-0.5 hover:bg-surface-high disabled:opacity-50"
+                >
+                  Reset
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )}
       {error && <div data-testid={`${testIdPrefix}-${settingKey}-error`} className="font-mono text-[9px] text-red-600">{error}</div>}
@@ -129,7 +167,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 }
 
 export function SettingsTab() {
-  const { data, isLoading, error } = useSettings();
+  const { data, isLoading, error, dataUpdatedAt, refetch, isFetching } = useSettings();
   const initWorkspace = useInitWorkspace();
   const [initResult, setInitResult] = useState<string | null>(null);
   const [initError, setInitError] = useState<string | null>(null);
@@ -148,7 +186,7 @@ export function SettingsTab() {
   if (isLoading) {
     return <div data-testid="settings-loading" className="px-4 py-3 font-mono text-[10px] text-on-surface-variant">Loading settings…</div>;
   }
-  if (error || !data) {
+  if (!data) {
     // V1 attempt-3 Phase 3 bounce-fix A2 — soften the failure mode.
     // The shipped daemon (npm package) at v0.2.0 doesn't expose /api/config
     // yet; the route lands at v0.3.0. Render an honest empty-state pointing
@@ -186,10 +224,26 @@ export function SettingsTab() {
     );
   }
 
-  const s = data.settings;
+  // The reader accepts additive/partial maps (older daemons serve fewer
+  // keys); every lookup below may be absent.
+  const s = data.settings as Partial<Record<string, ResolvedSetting>>;
+  const readAt = dataUpdatedAt ? new Date(dataUpdatedAt).toISOString() : null;
 
   return (
     <div data-testid="settings-tab" className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
+      {error ? (
+        <div role="alert" data-testid="settings-stale" className="border border-warning bg-surface-lowest px-3 py-2 font-mono text-[10px]">
+          <div className="uppercase tracking-[0.12em] text-warning">Settings refresh failed · showing last successful read</div>
+          <p className="mt-1 break-words text-on-surface">{(error as Error).message}</p>
+          <p className="mt-1 text-on-surface-variant">
+            Values below were read at <DisplayTime iso={readAt} /> and may no longer be current. Saving still writes to the daemon, which validates it.
+          </p>
+          <button type="button" data-testid="settings-retry" onClick={() => void refetch()} disabled={isFetching}
+            className="mt-1 border border-on-surface px-2 py-0.5 uppercase hover:bg-surface-high disabled:opacity-50">
+            {isFetching ? "Retrying…" : "Retry"}
+          </button>
+        </div>
+      ) : null}
       <Section title="Workspace">
         <SettingsRow label="Workspace root" settingKey="workspace.root" resolved={s["workspace.root"]} testIdPrefix="setting" />
         <SettingsRow label="Mission/slice root" settingKey="workspace.slices_root" resolved={s["workspace.slices_root"]} testIdPrefix="setting" />
@@ -220,6 +274,16 @@ export function SettingsTab() {
       <Section title="Daemon (legacy)">
         <SettingsRow label="Port" settingKey="daemon.port" resolved={s["daemon.port"]} testIdPrefix="setting" />
         <SettingsRow label="Host" settingKey="daemon.host" resolved={s["daemon.host"]} testIdPrefix="setting" />
+      </Section>
+
+      <Section title="Display time">
+        <SettingsRow label="Timezone (ui.timezone)" settingKey={"ui.timezone" as SettingsKey} resolved={s["ui.timezone"]} testIdPrefix="setting" readOnly />
+        <DisplayZoneNote testId="settings-display-zone" />
+        <p className="font-mono text-[9px] text-on-surface-variant">
+          This browser adopts the connected instance&apos;s value on each settings read. Change it persistently on that instance:{" "}
+          <span className="text-on-surface">rig config set ui.timezone Europe/London</span> ·{" "}
+          <span className="text-on-surface">rig config reset ui.timezone</span>
+        </p>
       </Section>
 
       <Section title="Database / Transcripts (legacy)">

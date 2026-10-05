@@ -28,14 +28,17 @@ import { cn } from "../../lib/utils.js";
 import { SectionHeader } from "../ui/section-header.js";
 import { EmptyState } from "../ui/empty-state.js";
 import { useWorkspaceName } from "../../hooks/useWorkspaceName.js";
-import { useHosts, useHostSelection, useLocalFilesAllowed } from "../../hooks/useHosts.js";
+import { useHosts, useHostSelection, useLocalFilesAllowed, useSelectedHostId } from "../../hooks/useHosts.js";
 import { LOCAL_HOST_ID } from "../../lib/host-param.js";
+import { LOCAL_OPERATOR_INSTANCE, type OperatorInstanceScope } from "../../lib/operator-read.js";
+import { useKnownSelectedHost } from "../topology/topology-navigation.js";
 import {
   useQueueItemMap,
   useSliceDetails,
   useSlices,
   useSliceDetail,
   type QueueItemDetail,
+  type QueueItemMapResult,
   type SliceDetail,
   type SliceListEntry,
 } from "../../hooks/useSlices.js";
@@ -48,10 +51,14 @@ import {
   type ProjectMissionGroup,
 } from "../../lib/project-mission-state.js";
 import { StoryGraph } from "./StoryGraph.js";
+import { operatorScopeOrigin } from "./project-file-source.js";
 import { buildStoryForest, type StoryQitemInput } from "../../lib/story-graph-model.js";
 import { useScopeMarkdown } from "../../hooks/useScopeMarkdown.js";
 import { useMission } from "../../hooks/useMission.js";
-import { MarkdownViewer } from "../markdown/MarkdownViewer.js";
+import { MarkdownViewer, type MarkdownSource } from "../markdown/MarkdownViewer.js";
+import { sourceFactsFromRead } from "../files/file-source.js";
+import { useFileOriginAdmission } from "../files/useFileAdmission.js";
+import type { UseScopeMarkdownResult } from "../../hooks/useScopeMarkdown.js";
 import { AcceptanceTab } from "../slices/tabs/AcceptanceTab.js";
 import { ScopeProofRollup, SliceProofTab } from "./ProofTab.js";
 import { TopologyTab } from "../slices/tabs/TopologyTab.js";
@@ -193,10 +200,13 @@ function ScopeShell({
   tabs,
   active,
   onSelect,
+  actions,
   children,
 }: {
   eyebrow: string;
   title: string;
+  /** Header actions (right of the title on wide layouts, below it on narrow). */
+  actions?: ReactNode;
   /** OPR.0.4.6.MH2 FR-4 — the `ON <HOST>` header chip (fr4a's free FR-3
    *  reinforcement); null/absent renders nothing (local today-shape). */
   hostChip?: string | null;
@@ -216,6 +226,7 @@ function ScopeShell({
     <LiveTerminalProvider cap={liveCap}>
     <div className="mx-auto w-full max-w-[1200px] px-6 py-8">
       <header className="border-b border-outline-variant pb-4 mb-4">
+        {actions ? <div className="float-right ml-4 flex flex-wrap items-center gap-2">{actions}</div> : null}
         <SectionHeader tone="muted">{eyebrow}</SectionHeader>
         <h1 className="font-headline text-headline-md font-bold tracking-tight uppercase text-on-surface mt-1">
           {title}
@@ -268,6 +279,76 @@ function rowsForScope(rows: SliceListEntry[], missionId: string | null): SliceLi
   return rows.filter((slice) => sliceMissionKey(slice) === missionId);
 }
 
+/** The queue source for slice work: exactly the host the slice reads use
+ *  (useSelectedHostId), as an explicit operator scope — local-instance for
+ *  local, remote-instance for a remote alias. Queue rows are read only once a
+ *  host read has CONFIRMED that selection: a pre-cache "local" fallback is
+ *  not evidence about which daemon's queue the work IDs belong to. */
+export interface SliceQueueSource {
+  scope: OperatorInstanceScope;
+  hostId: string;
+  known: boolean;
+}
+
+function useSliceQueueSource(): SliceQueueSource {
+  const sourceHostId = useSelectedHostId();
+  const knownHost = useKnownSelectedHost();
+  const scope = useMemo<OperatorInstanceScope>(
+    () => (sourceHostId === LOCAL_HOST_ID ? LOCAL_OPERATOR_INSTANCE : { kind: "remote-instance", hostId: sourceHostId }),
+    [sourceHostId],
+  );
+  return { scope, hostId: sourceHostId, known: knownHost !== null && knownHost === sourceHostId };
+}
+
+/** Why queue details are missing, when they are: unconfirmed source or an
+ *  unsupported (remote) scope. Work IDs stay listed; nothing is substituted. */
+function QueueSourceNotice({ source, queueItems }: { source: SliceQueueSource; queueItems: QueueItemMapResult }) {
+  if (!source.known) {
+    return (
+      <div data-testid="queue-source-unconfirmed" role="status" className="mb-2 font-mono text-[10px] text-on-surface-variant">
+        Queue details wait until the selected host is confirmed; showing work item IDs only.
+      </div>
+    );
+  }
+  if (queueItems.scopeSupported === false) {
+    return (
+      <div data-testid="queue-source-unsupported" role="status" className="mb-2 font-mono text-[10px] text-on-surface-variant">
+        Queue details are not available for remote host {source.hostId}; showing work item IDs only.
+      </div>
+    );
+  }
+  return null;
+}
+
+function QueueItemError({ qitemId, queueItems }: { qitemId: string; queueItems: QueueItemMapResult }) {
+  const error = queueItems.errorsById?.get(qitemId);
+  if (!error || queueItems.scopeSupported === false) return null;
+  return (
+    <span data-testid={`queue-item-error-${qitemId}`} className="mt-1 block text-[10px] text-error">
+      Queue detail unavailable: {error.message}
+    </span>
+  );
+}
+
+/** Source facts for an inline scope README/PROGRESS: the exact served read
+ *  (root, authored path, canonical resolvedPath) from the connected LOCAL
+ *  instance — /api/files has no remote forwarding, so the producing origin of
+ *  this content is always local, never the current selection recaptured. Its
+ *  relative links/images are admitted only while that local origin is the
+ *  confirmed selection; there is no catalog project identity for workspace
+ *  scopes, so none is attached. */
+function useScopeMarkdownSource(md: UseScopeMarkdownResult): MarkdownSource | undefined {
+  const admission = useFileOriginAdmission(LOCAL_HOST_ID);
+  if (!md.file || !md.resolved) return undefined;
+  const target = { originInstance: LOCAL_HOST_ID, root: md.file.root, path: md.file.path };
+  return {
+    facts: sourceFactsFromRead(target, md.file),
+    admitted: admission.admitted,
+    ...(admission.admitted ? {} : { blockedMessage: admission.message }),
+    truncated: md.file.truncated === true,
+  };
+}
+
 function useProjectScopeRollup(missionId: string | null, loadDetails: boolean) {
   const list = useSlices("all");
   const rows = useMemo(() => {
@@ -284,9 +365,10 @@ function useProjectScopeRollup(missionId: string | null, loadDetails: boolean) {
     }
     return Array.from(ids).sort();
   }, [details.itemsByName]);
-  const queueItems = useQueueItemMap(loadDetails ? qitemIds : []);
+  const queueSource = useSliceQueueSource();
+  const queueItems = useQueueItemMap(loadDetails && queueSource.known ? qitemIds : [], queueSource.scope);
 
-  return { list, rows, details, qitemIds, queueItems };
+  return { list, rows, details, qitemIds, queueItems, queueSource };
 }
 
 function ScopeProgressRollup({
@@ -343,10 +425,14 @@ function ScopeQueueRollup({
   qitemIds,
   queueItemsById,
   isFetching,
+  queueItems,
+  queueSource,
 }: {
   qitemIds: string[];
   queueItemsById: Map<string, QueueItemDetail>;
   isFetching: boolean;
+  queueItems?: QueueItemMapResult;
+  queueSource?: SliceQueueSource;
 }) {
   // V0.3.1 slice 17 founder-walk-workspace-state-correctness — walk item 10 (slice queue descending order). Latest qitem at top. Prefer
   // tsCreated when the loaded detail is available; fall back to the
@@ -361,10 +447,16 @@ function ScopeQueueRollup({
     return tsA < tsB ? 1 : -1; // DESC
   });
   if (sortedQitemIds.length === 0) {
-    return <EmptyState label="NO QITEMS" description="No queue items are indexed for this scope." variant="card" testId="scope-queue-empty" />;
+    return (
+      <>
+        {queueSource && queueItems ? <QueueSourceNotice source={queueSource} queueItems={queueItems} /> : null}
+        <EmptyState label="NO QITEMS" description="No queue items are indexed for this scope." variant="card" testId="scope-queue-empty" />
+      </>
+    );
   }
   return (
     <div data-testid="scope-queue-rollup">
+      {queueSource && queueItems ? <QueueSourceNotice source={queueSource} queueItems={queueItems} /> : null}
       {isFetching ? (
         <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.12em] text-on-surface-variant">
           Loading queue bodies...
@@ -387,6 +479,7 @@ function ScopeQueueRollup({
                 <span className="mt-2 block whitespace-pre-wrap break-words text-on-surface">
                   {queueBodyPreview(qitemId, item)}
                 </span>
+                {queueItems ? <QueueItemError qitemId={qitemId} queueItems={queueItems} /> : null}
                 {item ? (
                   <span className="mt-2 block space-y-2">
                     <FlowChips source={item.sourceSession} destination={item.destinationSession} muted />
@@ -490,11 +583,15 @@ export function toStoryInput(item: QueueItemDetail): StoryQitemInput {
 function ScopeStoryRollup({
   queueItemsById,
   isFetching,
+  queueItems,
+  queueSource,
 }: {
   rows: SliceListEntry[];
   detailsByName: Map<string, SliceDetail>;
   queueItemsById: Map<string, QueueItemDetail>;
   isFetching: boolean;
+  queueItems?: QueueItemMapResult;
+  queueSource?: SliceQueueSource;
 }) {
   const forest = useMemo(
     () => buildStoryForest(Array.from(queueItemsById.values()).map(toStoryInput)),
@@ -505,7 +602,13 @@ function ScopeStoryRollup({
   }
   return (
     <div data-testid="scope-story-rollup">
-      <StoryGraph forest={forest} />
+      {/* The story is built from queue lineage: without queue details it is
+          incomplete, not empty. */}
+      {queueSource && queueItems ? <QueueSourceNotice source={queueSource} queueItems={queueItems} /> : null}
+      {/* Artifacts come from queue items read under queueSource: attribute them
+          to that exact producing origin (known remote stays remote; an
+          unconfirmed/absent source stays explicit null). */}
+      <StoryGraph forest={forest} originInstance={queueSource?.known ? operatorScopeOrigin(queueSource.scope) : null} />
     </div>
   );
 }
@@ -734,6 +837,15 @@ export function WorkspaceScopePage() {
       eyebrow={fromFleet ? `Fleet ▸ ${selectedHost} · Workspace` : "Workspace"}
       title={isRemote ? "workspace" : (workspace.name ?? "loading…")}
       hostChip={isRemote ? selectedHost : null}
+      actions={
+        <Link
+          to="/project/catalog"
+          data-testid="workspace-open-catalog"
+          className="border border-outline px-3 py-1 font-mono text-[10px] uppercase tracking-wide text-on-surface hover:bg-surface-low/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-on-surface"
+        >
+          Choose a catalog project
+        </Link>
+      }
       tabs={SHARED_TABS}
       active={active}
       onSelect={(id) => setActive(id as SharedTab)}
@@ -750,6 +862,8 @@ export function WorkspaceScopePage() {
           detailsByName={rollup.details.itemsByName}
           queueItemsById={rollup.queueItems.itemsById}
           isFetching={rollup.details.isFetching || rollup.queueItems.isFetching}
+          queueItems={rollup.queueItems}
+          queueSource={rollup.queueSource}
         />
       ) : null}
       {active === "progress" ? (
@@ -778,6 +892,8 @@ export function WorkspaceScopePage() {
           qitemIds={rollup.qitemIds}
           queueItemsById={rollup.queueItems.itemsById}
           isFetching={rollup.details.isFetching || rollup.queueItems.isFetching}
+          queueItems={rollup.queueItems}
+          queueSource={rollup.queueSource}
         />
       ) : null}
       {active === "topology" ? (
@@ -821,6 +937,8 @@ export function MissionScopePage() {
     filesAllowed && missionData.data && "missionPath" in missionData.data ? missionData.data.missionPath : null;
   const missionReadme = useScopeMarkdown(missionPath, "README.md");
   const missionProgress = useScopeMarkdown(missionPath, "PROGRESS.md");
+  const missionReadmeSource = useScopeMarkdownSource(missionReadme);
+  const missionProgressSource = useScopeMarkdownSource(missionProgress);
   const scopeAudit = useScopeAudit(missionId);
   return (
     <ScopeShell
@@ -847,7 +965,7 @@ export function MissionScopePage() {
         <div data-testid="mission-overview-panel" className="space-y-6">
           {missionReadme.content && (
             <section data-testid="mission-overview-readme" className="border border-outline-variant bg-surface-lowest/20 p-4">
-              <MarkdownViewer content={missionReadme.content} hideFrontmatter hideRawToggle />
+              <MarkdownViewer content={missionReadme.content} source={missionReadmeSource} hideFrontmatter hideRawToggle />
             </section>
           )}
           <div className="space-y-3">
@@ -899,6 +1017,8 @@ export function MissionScopePage() {
           detailsByName={rollup.details.itemsByName}
           queueItemsById={rollup.queueItems.itemsById}
           isFetching={rollup.details.isFetching || rollup.queueItems.isFetching}
+          queueItems={rollup.queueItems}
+          queueSource={rollup.queueSource}
         />
       ) : null}
       {active === "progress" ? (
@@ -938,7 +1058,7 @@ export function MissionScopePage() {
             />
           ) : missionProgress.content ? (
             <section data-testid="mission-progress-readme" className="border border-outline-variant bg-surface-lowest/20 p-4">
-              <MarkdownViewer content={missionProgress.content} hideFrontmatter hideRawToggle />
+              <MarkdownViewer content={missionProgress.content} source={missionProgressSource} hideFrontmatter hideRawToggle />
             </section>
           ) : missionProgress.state === "read_error" ? (
             // R1: the read failed — NOT an empty progress file.
@@ -1005,6 +1125,8 @@ export function MissionScopePage() {
           qitemIds={rollup.qitemIds}
           queueItemsById={rollup.queueItems.itemsById}
           isFetching={rollup.details.isFetching || rollup.queueItems.isFetching}
+          queueItems={rollup.queueItems}
+          queueSource={rollup.queueSource}
         />
       ) : null}
       {active === "topology" ? (
@@ -1061,10 +1183,14 @@ function SliceQueueTab({
   qitemIds,
   queueItemsById,
   queueItemsFetching,
+  queueItems,
+  queueSource,
 }: {
   qitemIds: string[];
   queueItemsById: Map<string, QueueItemDetail>;
   queueItemsFetching: boolean;
+  queueItems?: QueueItemMapResult;
+  queueSource?: SliceQueueSource;
 }) {
   // V1 attempt-3 Phase 5 P5-2: slice queue tab. Each qitem id is wrapped in
   // QueueItemTrigger (P5-1 trigger primitive). Phase B supplies the body and
@@ -1081,6 +1207,7 @@ function SliceQueueTab({
   }
   return (
     <div>
+      {queueSource && queueItems ? <QueueSourceNotice source={queueSource} queueItems={queueItems} /> : null}
       {queueItemsFetching ? (
         <div
           data-testid="slice-queue-fetching"
@@ -1109,6 +1236,7 @@ function SliceQueueTab({
                 <span className="mt-2 block whitespace-pre-wrap break-words text-on-surface">
                   {queueBodyPreview(qitemId, item)}
                 </span>
+                {queueItems ? <QueueItemError qitemId={qitemId} queueItems={queueItems} /> : null}
                 {item ? (
                   <span
                     data-testid={`slice-queue-meta-${qitemId}`}
@@ -1151,6 +1279,7 @@ function SliceOverviewTab({ detail, remoteGated }: { detail: SliceDetail; remote
   // tree are sufficient).
   // MH-2 guard-B1: remote slicePath never resolves against local roots.
   const readmeMd = useScopeMarkdown(remoteGated ? null : (detail.slicePath ?? null), "README.md");
+  const readmeSource = useScopeMarkdownSource(readmeMd);
 
   return (
     <div data-testid="slice-overview-tab" className="space-y-6">
@@ -1163,7 +1292,7 @@ function SliceOverviewTab({ detail, remoteGated }: { detail: SliceDetail; remote
 
       {readmeMd.content && (
         <section data-testid="slice-overview-readme" className="border border-outline-variant bg-surface-lowest/20 p-4">
-          <MarkdownViewer content={readmeMd.content} hideFrontmatter hideRawToggle />
+          <MarkdownViewer content={readmeMd.content} source={readmeSource} hideFrontmatter hideRawToggle />
         </section>
       )}
 
@@ -1236,7 +1365,9 @@ export function SliceScopePage() {
   // guard-B1 round 2: the review composer is LOCAL-only — same treatment.
   const { known: hostSelectionKnown, isLocal: hostIsLocal } = useHostSelection();
   const detailQuery = useSliceDetail(sliceId);
-  const queueItems = useQueueItemMap(detailQuery.data?.qitemIds ?? []);
+  // Same source as the slice detail read; no queue read until it is confirmed.
+  const queueSource = useSliceQueueSource();
+  const queueItems = useQueueItemMap(queueSource.known ? detailQuery.data?.qitemIds ?? [] : [], queueSource.scope);
   const queueItemsById = useMemo(() => queueItems.itemsById, [queueItems.itemsById]);
   const sliceScopeAudit = useScopeAudit(detailQuery.data?.missionId ?? null);
 
@@ -1319,6 +1450,8 @@ export function SliceScopePage() {
           detailsByName={new Map<string, SliceDetail>()}
           queueItemsById={queueItemsById}
           isFetching={false}
+          queueItems={queueItems}
+          queueSource={queueSource}
         />
       ) : null}
       {active === "overview" ? (
@@ -1374,6 +1507,8 @@ export function SliceScopePage() {
           qitemIds={detail.qitemIds}
           queueItemsById={queueItemsById}
           queueItemsFetching={queueItems.isFetching}
+          queueItems={queueItems}
+          queueSource={queueSource}
         />
       ) : null}
       {active === "topology" ? <TopologyTab topology={detail.topology} /> : null}

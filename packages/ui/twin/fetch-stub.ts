@@ -30,6 +30,22 @@ import {
   correctiveQitemById,
   correctiveMdByPath,
 } from "./corrective/fixtures-corrective.js";
+// TEST-ONLY sanitized connected-instance operator fixtures (Health,
+// Attention, Configuration, Connections). Checked before /api/config so the
+// read-only browser view is not answered with the raw settings map.
+import { operatorTwinBody } from "./operator-fixtures.js";
+// TEST-ONLY project catalog / workflow execution fixtures (mutations need method + body).
+import { projectWorkflowTwinBody } from "./project-workflow-fixtures.js";
+// TEST-ONLY seat startup / fleet restore / terminal catalog routes (inert effects).
+import { recoveryTwinBody } from "./recovery-twin-routes.js";
+// TEST-ONLY Files fixtures (fully conforming read DTOs) and Recent/Pulse/stream
+// served-contract emulation. Operator keeps /api/queue/list.
+import { filesTwinBody, filesTwinRoots } from "./files-fixtures.js";
+import { recentPulseQueueRows, recentPulseTwinBody } from "./recent-pulse-fixtures.js";
+import { twinQueueRows } from "./operator-fixtures.js";
+// TEST-ONLY Library fixtures (Library owns the data): spec catalog/reviews,
+// observed-consumer rigs/inventory, context packs, in-memory active lens.
+import { libraryTwinBody, libraryTwinRigs } from "./library-fixtures.js";
 
 // Mission workspace root (matches /api/config workspace.root); the Steering
 // tab's brief reads MISSION_BRIEF.md relative to a files-root containing the mission path.
@@ -41,15 +57,50 @@ function json(body: unknown, status = 200): Response {
 
 const realFetch: typeof fetch | undefined = globalThis.fetch ? globalThis.fetch.bind(globalThis) : undefined;
 
-function route(pathname: string, search: URLSearchParams): Response {
-  if (pathname === "/api/rigs/summary") return json(rigSummary);
+function route(pathname: string, search: URLSearchParams, method = "GET", body?: unknown): Response {
+  const operator = operatorTwinBody(pathname, search);
+  if (operator) return json(operator.body, operator.status);
+  const recentPulse = recentPulseTwinBody(pathname, search, [...recentPulseQueueRows, ...twinQueueRows]);
+  if (recentPulse) return json(recentPulse.body, recentPulse.status);
+  // The connected-instance spec catalog is composed from BOTH fixture modules
+  // so every kind filter agrees with the unfiltered list (Project serves the
+  // workflow rows its instances bind to; Library serves the rest). Each module
+  // still answers its own reviews below. Exact IDs; Project wins a shared ID
+  // because it also answers that ID's review first.
+  if (pathname === "/api/specs/library" && method === "GET" && !search.has("host")) {
+    const kind = search.get("kind");
+    const projectRows = kind === null || kind === "workflow"
+      ? (projectWorkflowTwinBody(pathname, new URLSearchParams({ kind: "workflow" }), "GET")?.body as Array<{ id: string }> | undefined) ?? []
+      : [];
+    const library = libraryTwinBody(pathname, search, method, body);
+    const libraryRows = (library?.status === 200 ? library.body as Array<{ id: string; kind?: string }> : []);
+    const seen = new Set(projectRows.map((row) => row.id));
+    return json([...projectRows, ...libraryRows.filter((row) => !seen.has(row.id))]);
+  }
+  const projectWorkflow = projectWorkflowTwinBody(pathname, search, method, body);
+  if (projectWorkflow) return json(projectWorkflow.body, projectWorkflow.status);
+  const recovery = recoveryTwinBody(pathname, search, method, rigSummary);
+  if (recovery) return json(recovery.body, recovery.status);
+  // The twin IS the connected instance: an explicit known-local selection
+  // (fictional name), so connected-instance pages and gates read it truthfully.
+  if (pathname === "/api/hosts") return json({ ownName: "demo-studio", selected: "local", hosts: [] });
+  // Library answers its own spec/library/rig-inventory routes BEFORE the
+  // legacy catch-alls below (e.g. /api/rigs/:id/nodes would answer []).
+  const library = libraryTwinBody(pathname, search, method, body);
+  if (library) return json(library.body, library.status);
+  // Library's fictional rigs are appended; neither fixture array is mutated.
+  if (pathname === "/api/rigs/summary") return json([...rigSummary, ...libraryTwinRigs]);
   if (pathname === "/api/ps") return json(psEntries);
   // Settings (useSettings, staleTime:0). workspace.root unblocks the /project surface
   // (useWorkspaceName); preview settings keep the terminal pane consistent.
   if (pathname === "/api/config") {
     return json({
       settings: {
-        "workspace.root": { value: "/Users/x/code/workspace", source: "config", defaultValue: "" },
+        // A deliberately PARTIAL map (older daemons serve fewer keys): absent
+        // keys must render as unavailable, never with invented defaults.
+        "workspace.root": { value: "/Users/x/code/workspace", source: "file", defaultValue: "" },
+        "ui.timezone": { value: "Europe/London", source: "file", defaultValue: "America/Los_Angeles" },
+        "transcripts.enabled": { value: false, source: "default", defaultValue: false },
         "ui.preview.default_lines": { value: 100, source: "default", defaultValue: 100 },
         "ui.preview.refresh_interval_seconds": { value: 3, source: "default", defaultValue: 3 },
       },
@@ -104,9 +155,13 @@ function route(pathname: string, search: URLSearchParams): Response {
     const missionId = decodeURIComponent(mm[1]!);
     return json({ missionId, missionPath: `${TWIN_WORKSPACE_ROOT}/missions/${missionId}`, slices: [] });
   }
-  // useFilesRoots -> a root that CONTAINS the mission path (so useScopeMarkdown resolves).
+  // Files fixtures answer before the legacy /api/files handlers below.
+  const files = filesTwinBody(pathname, search, method, body);
+  if (files) return json(files.body, files.status);
+  // useFilesRoots -> a root that CONTAINS the mission path (so useScopeMarkdown
+  // resolves), plus the fully conforming Files fixture roots.
   if (pathname === "/api/files/roots") {
-    return json({ roots: [{ name: "workspace", path: TWIN_WORKSPACE_ROOT }] });
+    return json({ roots: [{ name: "workspace", path: TWIN_WORKSPACE_ROOT }, ...filesTwinRoots] });
   }
   // useFilesList (the Artifacts navigator): per-folder entries.
   if (pathname === "/api/files/list") {
@@ -157,7 +212,12 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promis
   const url = typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request).url;
   try {
     const u = new URL(url, "http://twin.local");
-    if (u.pathname.startsWith("/api/")) return route(u.pathname, u.searchParams);
+    if (u.pathname.startsWith("/api/")) {
+      const method = (init?.method ?? "GET").toUpperCase();
+      let body: unknown;
+      try { body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined; } catch { body = undefined; }
+      return route(u.pathname, u.searchParams, method, body);
+    }
   } catch {
     /* fall through to real fetch */
   }

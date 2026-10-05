@@ -181,7 +181,13 @@ describe("OPR.0.4.1.23 — PROOF tab", () => {
     expect(src).toContain("/api/files/asset");
     // resolved against the slice-root asset base -> the proof/ path, NOT a bare route-relative "proof/..."
     expect(src).toContain("16-brief");
-    expect(src).toContain("proof/real-live-a.png");
+    // The inline document now carries its served Files source, so the asset URL
+    // is built by fileAssetUrl (query value encoded once). Same slice-scoped
+    // contract, asserted exactly on the decoded path parameter.
+    const asset = new URL(src, "http://t.local");
+    expect(asset.pathname).toBe("/api/files/asset");
+    expect(asset.searchParams.get("root")).toBe("work");
+    expect(asset.searchParams.get("path")).toBe("missions/m/slices/16-brief/proof/real-live-a.png");
     expect(src.startsWith("proof/")).toBe(false);
   });
 

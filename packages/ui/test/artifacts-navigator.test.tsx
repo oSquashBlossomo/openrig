@@ -143,11 +143,13 @@ describe("OPR.0.4.1.21 — Artifacts navigator", () => {
     await waitFor(() => expect(screen.getByTestId("artifacts-file-row-README.md")).toBeTruthy());
     expect(screen.getByTestId("artifacts-file-badge-README.md").textContent).toBe("MD");
     expect(screen.getByTestId("artifacts-file-size-README.md").textContent).toBe("4.0 KB");
-    // mtime sourced from the /list entry (formatted in local time), not fabricated.
+    // mtime sourced from the /list entry, not fabricated, shown in the adopted
+    // display zone. Without the app's DisplayTimeProvider the shared context's
+    // explicit fallback (America/Los_Angeles) applies, never the browser zone;
+    // the configured-zone case is in artifacts-navigator-mtime.test.tsx.
     const fileMtime = TREE["missions/release-0.4.1"][0]!.mtime!;
-    const d = new Date(fileMtime);
-    const expectedDate = new RegExp(`${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
-    expect(screen.getByTestId("artifacts-file-mtime-README.md").textContent).toMatch(expectedDate);
+    expect(screen.getByTestId("artifacts-file-mtime-README.md").textContent).toBe("06-23 15:01 PDT");
+    expect(screen.getByTestId("artifacts-file-mtime-README.md").querySelector("time")!.getAttribute("datetime")).toBe(fileMtime);
   });
 
   it("AC-3: lazy-load boundary — landing fetches only /roots + /list(base); NO file bodies, NO tree pre-walk", async () => {

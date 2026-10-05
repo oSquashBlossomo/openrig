@@ -17,6 +17,7 @@
 import type { ReactNode, CSSProperties } from "react";
 import { FileReferenceTrigger } from "../drawer-triggers/FileReferenceTrigger.js";
 import type { FileKind, FileViewerData } from "../drawer-viewers/FileViewer.js";
+import type { FileProjectIdentity } from "../files/file-source.js";
 
 export interface FileLinkProps {
   /** Display path. Also the relative read path under `root` when
@@ -35,6 +36,13 @@ export interface FileLinkProps {
   /** Optional explicit kind override. When omitted, FileViewer infers
    *  from `path` extension at render time. */
   kind?: FileKind;
+  /** Exact host whose data produced this reference (null = unknown). When
+   *  omitted the drawer attributes the known selection at open time. */
+  originInstance?: string | null;
+  /** Heading slug to reveal in the opened document. */
+  anchor?: string;
+  /** Applicable catalog project identity. */
+  project?: FileProjectIdentity;
   /** Children rendered inside the clickable wrapper. Defaults to the
    *  raw `path` string when omitted. */
   children?: ReactNode;
@@ -49,6 +57,9 @@ export function FileLink({
   readPath,
   absolutePath,
   kind,
+  originInstance,
+  anchor,
+  project,
   children,
   className,
   style,
@@ -60,6 +71,9 @@ export function FileLink({
     ...(readPath !== undefined ? { readPath } : {}),
     ...(absolutePath !== undefined ? { absolutePath } : {}),
     ...(kind !== undefined ? { kind } : {}),
+    ...(originInstance !== undefined ? { originInstance } : {}),
+    ...(anchor !== undefined ? { anchor } : {}),
+    ...(project !== undefined ? { project } : {}),
   };
   return (
     <FileReferenceTrigger

@@ -13,7 +13,11 @@ import {
 import { useMission } from "../../hooks/useMission.js";
 import { useScopeMarkdown } from "../../hooks/useScopeMarkdown.js";
 import { useHostSelection, useLocalFilesAllowed } from "../../hooks/useHosts.js";
-import { MarkdownViewer } from "../markdown/MarkdownViewer.js";
+import { MarkdownViewer, type MarkdownSource } from "../markdown/MarkdownViewer.js";
+import { FileLink } from "../ui/FileLink.js";
+import { DisplayTime } from "../time/DisplayTime.js";
+import { LOCAL_HOST_ID } from "../../lib/host-param.js";
+import { useDetachedMarkdownSource, useOpenFileTarget, useScopeMarkdownSource } from "./project-file-source.js";
 import { SectionHeader } from "../ui/section-header.js";
 import { EmptyState } from "../ui/empty-state.js";
 
@@ -26,6 +30,11 @@ function isUnavailable(
 // --- Panel 1: STEERING.md projection (GET /api/steering) ------------------------------
 function SteeringPanel() {
   const { data, isLoading, error } = useSteering();
+  // /api/steering is a connected-instance read (no host envelope). Its text is
+  // served without a Files root, so relative references in it are refused
+  // inline; the served file itself opens in the drawer through Files.
+  const steeringOrigin = data && !isUnavailable(data) && data.priorityStack ? LOCAL_HOST_ID : null;
+  const steeringSource = useDetachedMarkdownSource(steeringOrigin, "STEERING.md");
 
   let body: ReactNode;
   if (isLoading) {
@@ -63,11 +72,14 @@ function SteeringPanel() {
     body = (
       <>
         <div data-testid="steering-panel-content" className="mt-1">
-          <MarkdownViewer content={ps.content} hideFrontmatter hideRawToggle />
+          <MarkdownViewer content={ps.content} source={steeringSource} hideFrontmatter hideRawToggle />
         </div>
         {/* Off-intent → traceable-to-source: the live directive + where it lives. */}
         <div data-testid="steering-panel-source" className="mt-2 font-mono text-[10px] text-on-surface-variant">
-          source: {ps.absolutePath} · updated {new Date(ps.mtime).toLocaleString()}
+          source: {ps.absolutePath} · updated <DisplayTime iso={ps.mtime} className="" />
+          {" "}·{" "}
+          <FileLink path="STEERING.md" absolutePath={ps.absolutePath} originInstance={steeringOrigin} testId="steering-open-file"
+            className="underline underline-offset-2 hover:text-on-surface">open file</FileLink>
         </div>
       </>
     );
@@ -132,13 +144,13 @@ function parseBrief(markdown: string): ParsedBrief {
   };
 }
 
-function BriefSectionBlock({ header, body }: { header: string; body: string | undefined }) {
+function BriefSectionBlock({ header, body, source, onOpenFile }: { header: string; body: string | undefined; source?: MarkdownSource; onOpenFile?: Parameters<typeof MarkdownViewer>[0]["onOpenFile"] }) {
   return (
     <div data-testid={`brief-section-${header}`} className="border-t border-outline-variant/60 py-2">
       <div className="font-mono text-[11px] uppercase tracking-[0.08em] text-on-surface">{header}</div>
       {body && body.length > 0 ? (
         <div className="mt-1">
-          <MarkdownViewer content={body} hideFrontmatter hideRawToggle />
+          <MarkdownViewer content={body} source={source} onOpenFile={onOpenFile} hideFrontmatter hideRawToggle />
         </div>
       ) : (
         // Missing OR empty canonical section → muted dash (degrade-to-dash; shows the
@@ -161,6 +173,9 @@ function BriefPanel({ missionId }: { missionId: string | null }) {
   const missionPath =
     filesAllowed && mission.data && "missionPath" in mission.data ? mission.data.missionPath : null;
   const brief = useScopeMarkdown(missionPath, "MISSION_BRIEF.md");
+  // Sections are excerpts of the served MISSION_BRIEF.md: same source facts.
+  const briefSource = useScopeMarkdownSource(brief);
+  const openFileTarget = useOpenFileTarget();
 
   let body: ReactNode;
   if (selectionKnown && !isLocal) {
@@ -231,11 +246,11 @@ function BriefPanel({ missionId }: { missionId: string | null }) {
         {parsed.tldr && <p className="mt-0.5 text-[12px] italic text-on-surface-variant">{parsed.tldr}</p>}
         {/* Canonical sections, in contract order, by EXACT header match. */}
         {BRIEF_SECTIONS.map((header) => (
-          <BriefSectionBlock key={header} header={header} body={bodyByHeader.get(header)} />
+          <BriefSectionBlock key={header} header={header} body={bodyByHeader.get(header)} source={briefSource} onOpenFile={openFileTarget} />
         ))}
         {/* Unknown/extra sections render AFTER the known ones, in document order — never dropped. */}
         {extras.map((s, i) => (
-          <BriefSectionBlock key={`extra-${i}-${s.header}`} header={s.header} body={s.body} />
+          <BriefSectionBlock key={`extra-${i}-${s.header}`} header={s.header} body={s.body} source={briefSource} onOpenFile={openFileTarget} />
         ))}
       </div>
     );

@@ -3,12 +3,13 @@
 // mutations. It always renders from the CURRENT model entry for the selected
 // key, so refreshed data (or the seat disappearing) is reflected immediately.
 
-import { Link } from "@tanstack/react-router";
 import { ArrowUpRight, Crosshair } from "lucide-react";
 import type { SpatialAgent, SpatialModel, SpatialSeatStatus } from "../../../lib/spatial-topology.js";
 import { formatRuntimeModel } from "../../../lib/runtime-brand.js";
 import { shortQitemTail } from "../../../lib/activity-visuals.js";
+import type { TopologyScope } from "../../../lib/topology-location.js";
 import { cn } from "../../../lib/utils.js";
+import { TopologyLink, topologyTarget } from "../topology-navigation.js";
 import { hslCss, type SpatialPalette } from "./spatial-palette.js";
 
 export interface SpatialInspectorProps {
@@ -19,6 +20,10 @@ export interface SpatialInspectorProps {
   canFocus: boolean;
   onSelect: (key: string) => void;
   onFocus: (key: string) => void;
+  /** Source host for new links (null = not yet confirmed: legacy link). */
+  linkSource?: string | null;
+  /** The scope being left by Open seat (its drafts commit first). */
+  from?: TopologyScope | null;
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -30,7 +35,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-export function SpatialInspector({ model, agent, status, palette, canFocus, onSelect, onFocus }: SpatialInspectorProps) {
+export function SpatialInspector({ model, agent, status, palette, canFocus, onSelect, onFocus, linkSource = null, from = null }: SpatialInspectorProps) {
   if (!agent || !status) {
     return (
       <div data-testid="spatial-inspector-empty" className="px-4 py-4">
@@ -159,14 +164,17 @@ export function SpatialInspector({ model, agent, status, palette, canFocus, onSe
 
       <div className="mt-4 flex flex-wrap gap-2">
         {agent.logicalId ? (
-          <Link
+          // Exact logical id from the selected graph entry (never the graph
+          // node id or a label); raw params, encoded once by the router.
+          <TopologyLink
             data-testid="spatial-open-seat"
-            to="/topology/seat/$rigId/$logicalId"
-            params={{ rigId: agent.rigId, logicalId: encodeURIComponent(agent.logicalId) }}
+            target={topologyTarget({ scope: { kind: "seat", rigId: agent.rigId, logicalId: agent.logicalId }, sourceHost: linkSource })}
+            from={from}
+            unavailableTitle="This seat's identity cannot be represented in a link."
             className="spatial-hud-button !h-8 !px-3"
           >
             Open seat <ArrowUpRight aria-hidden="true" className="h-3.5 w-3.5" />
-          </Link>
+          </TopologyLink>
         ) : (
           <span className="font-mono text-[10px] italic text-on-surface-variant">
             Detail unavailable: the graph entry has no logical id.

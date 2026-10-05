@@ -1,41 +1,57 @@
 // UI Enhancement Pack v0 — Files browser workspace.
 //
 // Top-level center-workspace surface for /files route. Two-pane shape:
-//   - Left: allowlist root selector + directory tree of the selected root.
+//   - Left: allowlist root selector + directory filter + tree of the root.
 //   - Right: file content panel (markdown via MarkdownViewer, code via
 //     SyntaxHighlight, images inline, other → "view as text" affordance).
 //
-// Item 4 (edit mode) is integrated: a header toggle flips the right
-// pane into a `<textarea>` editor with Save/Cancel; Save does the
-// daemon's atomic-write contract; 409 conflicts surface a refresh
-// affordance per the PRD's recommendation. Per item 4's recommended
-// landing posture: lightweight `<textarea>` (no CodeMirror).
+// Location (root, dir, filter, file, anchor, attribution, return link) is a
+// FilesLocation. Routed through FilesRoute it lives in the URL, so each
+// choice is a history entry and browser Back restores source/root/anchor/
+// filter; scroll is restored per entry by the router (data-scroll-
+// restoration-id). Mounted without a location (tests, embeds) it keeps the
+// same state internally. Drafts are never put in the location.
 //
-// Save replaces the WHOLE file with the draft, guarded by the full-file
-// mtime + contentHash CAS. The CAS proves the disk has not changed since
-// the read; it cannot prove the read was the whole file. So the editor is
-// only offered for reads that are complete, valid UTF-8 and round-trip
-// through a textarea unchanged (see assessFileEditability). Truncated,
-// binary, CR-line-ending or unverified reads stay view-only.
+// Local-only: /api/files has no remote forwarding. The workspace reads only
+// when its origin (explicit ?origin= or the known selection) and the known
+// selection are the connected local instance. Relative Markdown links and
+// images resolve against the served canonical source (resolvedPath).
+//
+// Item 4 (edit mode): FileEditor (see FileEditor.tsx) — whole-file CAS save,
+// line-ending-preserving serialization, retained drafts and 409 conflicts.
 
-import { useEffect, useMemo, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "@tanstack/react-router";
 import {
   fileAssetUrl,
+  FilesReadError,
   useFilesList,
   useFilesRead,
   useFilesRoots,
-  useFilesWrite,
   type AllowlistRoot,
   type FileEntry,
   type FilesReadResponse,
-  type FileWriteResult,
 } from "../../hooks/useFiles.js";
 import { MarkdownViewer } from "../markdown/MarkdownViewer.js";
 import { SyntaxHighlight } from "../markdown/SyntaxHighlight.js";
 import { useSpecReview } from "../../hooks/useSteering.js";
 import { useWorkspace } from "../../hooks/useWorkspace.js";
 import { WorkspaceKindBadge, resolveKindForPath } from "../WorkspaceKindBadge.js";
+import {
+  fileOriginAdmission,
+  fileTargetKey,
+  parentPath,
+  sourceFactsFromRead,
+  type FileOriginAdmission,
+  type FileSourceTarget,
+  type FilesLocation,
+} from "./file-source.js";
+import { useKnownSelectedHost } from "./useFileAdmission.js";
+import { isDraftDirty, useFileDraft, useFileDraftStore, useFileDrafts, type FileDraft } from "./file-drafts.js";
+import { FileReadFacts } from "./FileReadFacts.js";
+import { assessFileEditability, EditUnavailableNotice, FileEditor, RetainedDraftNotice } from "./FileEditor.js";
+
+export { assessFileEditability, FileEditor, type FileEditability } from "./FileEditor.js";
 
 const TEXT_LIKE_EXTENSIONS = new Set([".md", ".txt", ".log", ".yaml", ".yml", ".json", ".js", ".jsx", ".ts", ".tsx", ".py", ".sh", ".bash", ".sql", ".css", ".html"]);
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"]);
@@ -45,77 +61,212 @@ function isUnavailable(data: unknown): data is { unavailable: true; error: strin
   return Boolean(data && typeof data === "object" && "unavailable" in (data as Record<string, unknown>));
 }
 
-export function FilesWorkspace() {
-  const roots = useFilesRoots();
+export type FilesNavigate = (next: FilesLocation, options?: { replace?: boolean }) => void;
+
+export interface FilesWorkspaceProps {
+  /** Controlled location (FilesRoute). Omit for internal state. */
+  location?: FilesLocation;
+  onNavigate?: FilesNavigate;
+}
+
+/** Attribution/return fields that persist across in-workspace navigation. */
+function carried(location: FilesLocation): FilesLocation {
+  const out: FilesLocation = {};
+  for (const key of ["origin", "project", "projectRoot", "from", "fromLabel"] as const) {
+    if (location[key] !== undefined) out[key] = location[key];
+  }
+  return out;
+}
+
+export function FilesWorkspace({ location: controlled, onNavigate }: FilesWorkspaceProps = {}) {
+  const [internal, setInternal] = useState<FilesLocation>({});
+  const location = controlled ?? internal;
+  const contentRef = useRef<HTMLElement>(null);
+  const go: FilesNavigate = (next, options) => {
+    // A pushed entry for a different file starts at the top; Back restores
+    // the previous entry's scroll through the router.
+    if (!options?.replace && (next.file !== location.file || next.root !== location.root)) {
+      const el = contentRef.current;
+      if (el) el.scrollTop = 0;
+    }
+    if (onNavigate) onNavigate(next, options);
+    else setInternal(next);
+  };
+  const known = useKnownSelectedHost();
+  const origin = location.origin ?? known ?? null;
+  const admission = fileOriginAdmission(origin, known);
+  const project = location.project !== undefined && location.projectRoot !== undefined
+    ? { projectId: location.project, projectRoot: location.projectRoot }
+    : undefined;
+  const roots = useFilesRoots({ enabled: admission.admitted });
   const workspace = useWorkspace();
-  const [selectedRoot, setSelectedRoot] = useState<string | null>(null);
-  const [currentPath, setCurrentPath] = useState<string>("");
-  const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [editMode, setEditMode] = useState<boolean>(false);
+  const keep = carried(location);
+  const selectedRoot = location.root ?? null;
+  const currentPath = location.dir ?? (location.file ? parentPath(location.file) : "");
+  const selectedFile = location.file ?? null;
+  const rootList = roots.data && !isUnavailable(roots.data) ? roots.data.roots : null;
+  // A URL-provided root is read only after the served roots confirm it.
+  const rootConfigured = !!selectedRoot && !!rootList && rootList.some((r) => r.name === selectedRoot);
+  const rootMissing = !!selectedRoot && !!rootList && !rootConfigured;
 
-  // Default-select the first root once roots arrive.
+  // Default-select the first root once roots arrive (replace: not a choice).
   useEffect(() => {
-    if (selectedRoot) return;
-    if (!roots.data || isUnavailable(roots.data)) return;
-    const first = roots.data.roots[0];
-    if (first) setSelectedRoot(first.name);
-  }, [roots.data, selectedRoot]);
-
-  // Reset path + selected file when root changes.
-  useEffect(() => {
-    setCurrentPath("");
-    setSelectedFile(null);
-    setEditMode(false);
-  }, [selectedRoot]);
+    if (selectedRoot || !admission.admitted || !rootList) return;
+    const first = rootList[0];
+    if (first) go({ ...keep, root: first.name, dir: "" }, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rootList, selectedRoot, admission.admitted]);
 
   return (
     <div data-testid="files-workspace" className="flex h-full flex-col lg:pl-[var(--workspace-left-offset,0px)] lg:pr-[var(--workspace-right-offset,0px)]">
-      <header className="border-b border-outline-variant bg-background px-4 py-3">
-        <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-on-surface-variant">Workspace</div>
-        <h1 className="font-headline text-xl font-bold tracking-tight text-on-surface">Files</h1>
+      <header className="flex flex-wrap items-end justify-between gap-2 border-b border-outline-variant bg-background px-4 py-3">
+        <div>
+          <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-on-surface-variant">Workspace</div>
+          <h1 className="font-headline text-xl font-bold tracking-tight text-on-surface">Files</h1>
+          {project && (
+            <div data-testid="files-project" className="mt-0.5 font-mono text-[10px] text-on-surface-variant break-all">
+              project {project.projectId} · {project.projectRoot}
+            </div>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {location.from && <ReturnLink href={location.from} label={location.fromLabel} />}
+          <DraftsMenu origin={origin} onOpen={(draft) => go({ ...keep, root: draft.root, dir: parentPath(draft.path), file: draft.path })} />
+        </div>
       </header>
-      {/* Slice 20 mobile: at narrow viewports the two-pane
-          shape stacks vertically so the document panel claims full width
-          on a phone. Tree pane caps at max-h-48 on mobile so the user
-          can scroll past it to the content. Desktop (sm:) layout
-          unchanged — horizontal flex + 288px tree column. */}
-      <div className="flex flex-1 min-h-0 flex-col sm:flex-row">
-        <aside data-testid="files-tree-pane" className="w-full max-h-48 shrink-0 overflow-y-auto border-b border-outline-variant bg-background sm:w-72 sm:max-h-none sm:border-b-0 sm:border-r">
-          <RootSelector roots={roots.data} isLoading={roots.isLoading} selectedRoot={selectedRoot} onSelect={setSelectedRoot} workspace={workspace.data ?? null} />
-          {selectedRoot && (
-            <>
-              <Breadcrumbs root={selectedRoot} path={currentPath} onNavigate={setCurrentPath} />
-              <DirectoryTree
-                root={selectedRoot}
-                path={currentPath}
-                onEnterDir={(rel) => { setCurrentPath(rel); setSelectedFile(null); }}
-                onSelectFile={(rel) => { setSelectedFile(rel); setEditMode(false); }}
-                selectedFile={selectedFile}
-              />
-            </>
-          )}
-        </aside>
-        <main data-testid="files-content-pane" className="flex-1 min-w-0 overflow-y-auto bg-surface-lowest">
-          {!selectedRoot && (
-            <div className="m-auto p-4 font-mono text-[10px] text-on-surface-variant">
-              Select an allowlist root to browse.
-            </div>
-          )}
-          {selectedRoot && !selectedFile && (
-            <div className="p-4 font-mono text-[10px] text-on-surface-variant" data-testid="files-no-selection">
-              Select a file from the tree.
-            </div>
-          )}
-          {selectedRoot && selectedFile && (
-            <FileContentPanel
-              root={selectedRoot}
-              path={selectedFile}
-              editMode={editMode}
-              onEditModeChange={setEditMode}
+      {!admission.admitted ? (
+        <BlockedWorkspace admission={admission} />
+      ) : (
+        <div className="flex flex-1 min-h-0 flex-col sm:flex-row">
+          {/* Slice 20 mobile: at narrow viewports the two-pane shape stacks
+              vertically so the document panel claims full width on a phone.
+              Tree pane caps at max-h-48 on mobile so the user can scroll past
+              it to the content. Desktop (sm:) layout: 288px tree column. */}
+          <aside data-testid="files-tree-pane" data-scroll-restoration-id="files-tree" className="w-full max-h-48 shrink-0 overflow-y-auto border-b border-outline-variant bg-background sm:w-72 sm:max-h-none sm:border-b-0 sm:border-r">
+            <RootSelector
+              roots={roots.data}
+              isLoading={roots.isLoading}
+              error={roots.isError ? (roots.error as Error) : null}
+              onRetry={() => void roots.refetch()}
+              selectedRoot={selectedRoot}
+              onSelect={(name) => go({ ...keep, root: name, dir: "" })}
+              workspace={workspace.data ?? null}
             />
-          )}
-        </main>
-      </div>
+            {selectedRoot && rootConfigured && (
+              <>
+                <Breadcrumbs root={selectedRoot} path={currentPath} onNavigate={(dir) => go({ ...keep, root: selectedRoot, dir })} />
+                <DirectoryFilter
+                  value={location.q ?? ""}
+                  onChange={(q) => go({ ...location, q: q || undefined }, { replace: true })}
+                />
+                <DirectoryTree
+                  root={selectedRoot}
+                  path={currentPath}
+                  filter={location.q ?? ""}
+                  origin={origin}
+                  onEnterDir={(rel) => go({ ...keep, root: selectedRoot, dir: rel })}
+                  onSelectFile={(rel) => go({ ...keep, root: selectedRoot, dir: currentPath, ...(location.q ? { q: location.q } : {}), file: rel })}
+                  selectedFile={selectedFile}
+                />
+              </>
+            )}
+          </aside>
+          <main ref={contentRef} data-testid="files-content-pane" data-scroll-restoration-id="files-content" className="flex-1 min-w-0 overflow-y-auto bg-surface-lowest">
+            {!selectedRoot && (
+              <div className="m-auto p-4 font-mono text-[10px] text-on-surface-variant">
+                Select an allowlist root to browse.
+              </div>
+            )}
+            {selectedRoot && !rootList && (
+              <div data-testid="files-root-pending" className="p-4 font-mono text-[10px] text-on-surface-variant">
+                Confirming root “{selectedRoot}” on the connected instance…
+              </div>
+            )}
+            {rootMissing && (
+              <div data-testid="files-root-missing" role="alert" className="m-4 border border-red-300 bg-red-50 px-3 py-2 font-mono text-[10px] text-red-900">
+                Root “{selectedRoot}” is not configured on the connected instance. Nothing was read; choose a listed root.
+              </div>
+            )}
+            {selectedRoot && rootConfigured && !selectedFile && (
+              <div className="p-4 font-mono text-[10px] text-on-surface-variant" data-testid="files-no-selection">
+                Select a file from the tree.
+              </div>
+            )}
+            {selectedRoot && rootConfigured && selectedFile && (
+              <FileContentPanel
+                key={`${selectedRoot}\u0000${selectedFile}`}
+                target={{ originInstance: origin, root: selectedRoot, path: selectedFile, ...(location.anchor ? { anchor: location.anchor } : {}), ...(project ? { project } : {}) }}
+                onOpenTarget={(target) => go({ ...keep, root: target.root, dir: parentPath(target.path), file: target.path, ...(target.anchor ? { anchor: target.anchor } : {}) })}
+                onAnchor={(anchor) => go({ ...location, anchor })}
+              />
+            )}
+          </main>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReturnLink({ href, label }: { href: string; label?: string }) {
+  const router = useRouter({ warn: false });
+  return (
+    <a
+      data-testid="files-return-link"
+      href={href}
+      onClick={(e) => {
+        if (!router || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+        e.preventDefault();
+        router.history.push(href);
+      }}
+      className="border border-outline-variant px-2 py-1 font-mono text-[10px] uppercase tracking-[0.10em] text-on-surface hover:bg-surface-low"
+    >
+      ← {label ?? "return"}
+    </a>
+  );
+}
+
+function DraftsMenu({ origin, onOpen }: { origin: string | null; onOpen: (draft: FileDraft) => void }) {
+  const store = useFileDraftStore();
+  const drafts = useFileDrafts(store).filter((d) => isDraftDirty(d) || d.conflict);
+  const [open, setOpen] = useState(false);
+  if (drafts.length === 0) return null;
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        data-testid="files-drafts-toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="border border-amber-400 bg-amber-50 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.10em] text-amber-900"
+      >
+        {drafts.length} unsaved draft{drafts.length === 1 ? "" : "s"}
+      </button>
+      {open && (
+        <ul data-testid="files-drafts-list" className="absolute right-0 z-10 mt-1 w-72 max-w-[90vw] border border-outline-variant bg-background p-1 shadow">
+          {drafts.map((d) => (
+            <li key={d.key}>
+              {d.originInstance === origin ? (
+                <button type="button" onClick={() => { setOpen(false); onOpen(d); }} className="block w-full px-2 py-1 text-left font-mono text-[10px] text-on-surface hover:bg-surface-low break-all">
+                  {d.root}/{d.path}{d.conflict ? " · conflict" : ""}
+                </button>
+              ) : (
+                <span className="block px-2 py-1 font-mono text-[10px] text-on-surface-variant break-all">
+                  {d.root}/{d.path} · kept for {d.originInstance ?? "unknown instance"}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function BlockedWorkspace({ admission }: { admission: Extract<FileOriginAdmission, { admitted: false }> }) {
+  return (
+    <div data-testid="files-blocked" data-reason={admission.reason} role="status" className="m-4 border border-amber-400 bg-amber-50 px-3 py-2 font-mono text-[10px] leading-relaxed text-amber-900">
+      {admission.message}
+      <div className="mt-1 text-amber-900/80">Unsaved drafts stay in this tab and are not saved or discarded while Files is unavailable.</div>
     </div>
   );
 }
@@ -123,17 +274,29 @@ export function FilesWorkspace() {
 function RootSelector({
   roots,
   isLoading,
+  error,
+  onRetry,
   selectedRoot,
   onSelect,
   workspace,
 }: {
   roots: ReturnType<typeof useFilesRoots>["data"] | undefined;
   isLoading: boolean;
+  error: Error | null;
+  onRetry: () => void;
   selectedRoot: string | null;
   onSelect: (name: string) => void;
   workspace: import("../../hooks/useWorkspace.js").WhoamiWorkspaceUI | null;
 }) {
   if (isLoading) return <div className="p-3 font-mono text-[10px] text-on-surface-variant">Loading roots…</div>;
+  if (error && !roots) {
+    return (
+      <div data-testid="files-roots-error" role="alert" className="p-3 font-mono text-[10px] text-red-700">
+        <div>Could not read file roots: {error.message}</div>
+        <button type="button" onClick={onRetry} className="mt-1 underline">retry</button>
+      </div>
+    );
+  }
   if (!roots) return null;
   if (isUnavailable(roots)) {
     return (
@@ -163,8 +326,9 @@ function RootSelector({
                 type="button"
                 data-testid={`files-root-${r.name}`}
                 data-active={selectedRoot === r.name}
+                aria-current={selectedRoot === r.name ? "true" : undefined}
                 onClick={() => onSelect(r.name)}
-                className={`flex w-full items-center justify-between gap-2 px-2 py-1 text-left font-mono text-[10px] hover:bg-surface-low ${
+                className={`flex w-full items-center justify-between gap-2 px-2 py-1 text-left font-mono text-[11px] hover:bg-surface-low ${
                   selectedRoot === r.name ? "bg-surface-high/80 text-on-surface" : "text-on-surface"
                 }`}
                 title={r.path}
@@ -183,7 +347,7 @@ function RootSelector({
 function Breadcrumbs({ root, path, onNavigate }: { root: string; path: string; onNavigate: (path: string) => void }) {
   const segments = path ? path.split("/") : [];
   return (
-    <nav data-testid="files-breadcrumbs" className="flex flex-wrap items-baseline gap-1 border-b border-outline-variant px-2 py-1 font-mono text-[10px] text-on-surface">
+    <nav aria-label="Directory" data-testid="files-breadcrumbs" className="flex flex-wrap items-baseline gap-1 border-b border-outline-variant px-2 py-1 font-mono text-[10px] text-on-surface">
       <button type="button" onClick={() => onNavigate("")} className="font-bold hover:underline">{root}</button>
       {segments.map((seg, idx) => {
         const accumulated = segments.slice(0, idx + 1).join("/");
@@ -200,91 +364,149 @@ function Breadcrumbs({ root, path, onNavigate }: { root: string; path: string; o
   );
 }
 
+function DirectoryFilter({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return (
+    <div className="border-b border-outline-variant px-2 py-1.5">
+      <label className="block font-mono text-[8px] uppercase tracking-[0.18em] text-on-surface-variant" htmlFor="files-filter-input">
+        Filter this directory
+      </label>
+      <input
+        id="files-filter-input"
+        data-testid="files-filter"
+        type="search"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="name contains…"
+        className="mt-0.5 w-full border border-outline-variant bg-surface-lowest px-2 py-1 font-mono text-[11px] text-on-surface"
+      />
+    </div>
+  );
+}
+
 function DirectoryTree({
   root,
   path,
+  filter,
+  origin,
   onEnterDir,
   onSelectFile,
   selectedFile,
 }: {
   root: string;
   path: string;
+  filter: string;
+  origin: string | null;
   onEnterDir: (rel: string) => void;
   onSelectFile: (rel: string) => void;
   selectedFile: string | null;
 }) {
   const list = useFilesList(root, path);
+  const store = useFileDraftStore();
+  const drafts = useFileDrafts(store);
   if (list.isLoading) return <div className="p-3 font-mono text-[10px] text-on-surface-variant">Loading…</div>;
-  if (list.isError) return <div data-testid="files-list-error" className="p-3 font-mono text-[10px] text-red-600">{(list.error as Error)?.message ?? "Error loading directory."}</div>;
-  if (!list.data || list.data.entries.length === 0) {
-    return <div className="p-3 font-mono text-[10px] text-on-surface-variant">Empty directory.</div>;
+  if (list.isError && !list.data) {
+    const absent = list.error instanceof FilesReadError && list.error.code === "absent";
+    return (
+      <div data-testid="files-list-error" role="alert" className="p-3 font-mono text-[10px] text-red-600">
+        {absent ? `Directory ${root}/${path} was not found on disk.` : (list.error as Error)?.message ?? "Error loading directory."}
+      </div>
+    );
   }
+  const entries = list.data?.entries ?? [];
+  const needle = filter.toLocaleLowerCase();
+  const shown = needle ? entries.filter((e) => e.name.toLocaleLowerCase().includes(needle)) : entries;
+  const draftPaths = new Set(drafts.filter((d) => d.originInstance === origin && d.root === root && (isDraftDirty(d) || d.conflict)).map((d) => d.path));
   return (
-    <ul data-testid="files-directory-tree" className="p-1">
-      {path && (
-        <li>
-          <button
-            type="button"
-            data-testid="files-up"
-            onClick={() => onEnterDir(parentPath(path))}
-            className="block w-full px-2 py-1 text-left font-mono text-[10px] text-on-surface-variant hover:bg-surface-low"
-          >
-            ..
-          </button>
-        </li>
+    <>
+      {list.isError && (
+        <div data-testid="files-list-refresh-failed" role="status" className="px-3 pt-2 font-mono text-[9px] text-red-700">
+          Refresh failed; showing the last listing.
+        </div>
       )}
-      {list.data.entries.map((entry: FileEntry) => {
-        const rel = path ? `${path}/${entry.name}` : entry.name;
-        const isFile = entry.type === "file";
-        const isSelected = selectedFile === rel;
-        return (
-          <li key={rel}>
+      {entries.length === 0 && !path && (
+        <div className="p-3 font-mono text-[10px] text-on-surface-variant">Empty directory.</div>
+      )}
+      {needle && (
+        <div data-testid="files-filter-count" role="status" className="px-3 pt-2 font-mono text-[9px] text-on-surface-variant">
+          {shown.length} of {entries.length} entries match “{filter}”
+        </div>
+      )}
+      <ul data-testid="files-directory-tree" className="p-1">
+        {path && (
+          <li>
             <button
               type="button"
-              data-testid={`files-entry-${rel}`}
-              data-type={entry.type}
-              onClick={() => isFile ? onSelectFile(rel) : entry.type === "dir" ? onEnterDir(rel) : undefined}
-              disabled={entry.type === "other"}
-              className={`block w-full px-2 py-1 text-left font-mono text-[10px] ${
-                entry.type === "other"
-                  ? "text-on-surface-variant"
-                  : `hover:bg-surface-low ${isSelected ? "bg-surface-high/80 text-on-surface" : "text-on-surface"}`
-              }`}
+              data-testid="files-up"
+              onClick={() => onEnterDir(parentPath(path))}
+              className="block w-full px-2 py-1 text-left font-mono text-[11px] text-on-surface-variant hover:bg-surface-low"
             >
-              {entry.type === "dir" ? `▸ ${entry.name}` : entry.name}
+              ..
             </button>
           </li>
-        );
-      })}
-    </ul>
+        )}
+        {entries.length === 0 && path && (
+          <li className="px-2 py-1 font-mono text-[10px] text-on-surface-variant">Empty directory.</li>
+        )}
+        {shown.map((entry: FileEntry) => {
+          const rel = path ? `${path}/${entry.name}` : entry.name;
+          const isFile = entry.type === "file";
+          const isSelected = selectedFile === rel;
+          return (
+            <li key={rel}>
+              <button
+                type="button"
+                data-testid={`files-entry-${rel}`}
+                data-type={entry.type}
+                data-draft={draftPaths.has(rel) || undefined}
+                aria-current={isSelected ? "true" : undefined}
+                onClick={() => isFile ? onSelectFile(rel) : entry.type === "dir" ? onEnterDir(rel) : undefined}
+                disabled={entry.type === "other"}
+                className={`block w-full px-2 py-1 text-left font-mono text-[11px] ${
+                  entry.type === "other"
+                    ? "text-on-surface-variant"
+                    : `hover:bg-surface-low ${isSelected ? "bg-surface-high/80 text-on-surface" : "text-on-surface"}`
+                } ${draftPaths.has(rel) ? "italic text-amber-800" : ""}`}
+              >
+                {entry.type === "dir" ? `▸ ${entry.name}` : entry.name}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </>
   );
 }
 
 function FileContentPanel({
-  root,
-  path,
-  editMode,
-  onEditModeChange,
+  target,
+  onOpenTarget,
+  onAnchor,
 }: {
-  root: string;
-  path: string;
-  editMode: boolean;
-  onEditModeChange: (editMode: boolean) => void;
+  target: FileSourceTarget;
+  onOpenTarget: (target: FileSourceTarget) => void;
+  onAnchor: (anchor: string) => void;
 }) {
+  const { root, path } = target;
   const read = useFilesRead(root, path);
+  const store = useFileDraftStore();
+  const draftKey = fileTargetKey(target);
+  const draft = useFileDraft(store, draftKey);
+  const hasDraft = !!draft && (isDraftDirty(draft) || !!draft.conflict);
   const editability = useMemo(() => (read.data ? assessFileEditability(read.data) : null), [read.data]);
   const canEdit = editability?.editable === true;
+  // A retained draft reopens its editor when the operator returns to it.
+  const [editMode, setEditMode] = useState<boolean>(hasDraft);
   const editing = editMode && canEdit;
   // A refetch can turn an editable read into an unsafe one (file grew past
-  // the cap, became binary). Leave edit mode instead of re-opening the editor
-  // later on whatever read arrives next.
+  // the cap, became binary). Leave edit mode; any draft stays retained.
   useEffect(() => {
-    if (editMode && editability && !editability.editable) onEditModeChange(false);
-  }, [editMode, editability, onEditModeChange]);
+    if (editMode && editability && !editability.editable) setEditMode(false);
+  }, [editMode, editability]);
+  const failure = read.isError ? readFailure(read.error) : null;
   return (
-    <div data-testid="files-content-panel" className="flex h-full flex-col">
-      <header className="flex items-center justify-between border-b border-outline-variant bg-background px-3 py-2 font-mono text-[10px]">
-        <div className="text-on-surface" data-testid="files-content-path">{root}/{path}</div>
+    <div data-testid="files-content-panel" data-read-state={!read.data ? (failure ? failure.reason : "loading") : failure ? "refresh-failed" : "current"} className="flex h-full flex-col">
+      <header className="flex flex-wrap items-center justify-between gap-2 border-b border-outline-variant bg-background px-3 py-2 font-mono text-[10px]">
+        <div className="min-w-0 break-all text-on-surface" data-testid="files-content-path">{root}/{path}</div>
         <div className="flex items-center gap-3 text-on-surface-variant">
           {read.data && (
             <>
@@ -297,9 +519,10 @@ function FileContentPanel({
             data-testid="files-edit-toggle"
             data-active={editing}
             data-editable={canEdit}
+            aria-pressed={editing}
             disabled={!canEdit}
             title={editability && !editability.editable ? `Read-only: ${editability.detail}` : undefined}
-            onClick={() => onEditModeChange(!editing)}
+            onClick={() => setEditMode(!editing)}
             className={`border px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.10em] disabled:cursor-not-allowed disabled:opacity-50 ${
               editing
                 ? "border-amber-400 bg-amber-50 text-amber-900"
@@ -312,14 +535,27 @@ function FileContentPanel({
       </header>
       <div className="flex-1 min-h-0 overflow-y-auto">
         {read.isLoading && <div className="p-4 font-mono text-[10px] text-on-surface-variant">Loading…</div>}
-        {read.isError && <div data-testid="files-read-error" className="p-4 font-mono text-[10px] text-red-600">{(read.error as Error)?.message ?? "Error loading file."}</div>}
+        {failure && !read.data && (
+          <div data-testid="files-read-error" data-reason={failure.reason} role="alert" className="m-4 border border-red-300 bg-red-50 px-3 py-2 font-mono text-[10px] text-red-900">
+            {failure.text}
+          </div>
+        )}
+        {failure && read.data && (
+          <div data-testid="files-read-refresh-failed" role="alert" className="mx-4 mt-3 border border-red-300 bg-red-50 px-3 py-2 font-mono text-[10px] text-red-900">
+            Refresh failed ({failure.text}). Showing the last successful read from {new Date(read.dataUpdatedAt).toISOString()}.
+          </div>
+        )}
+        {hasDraft && !editing && (
+          <RetainedDraftNotice draft={draft!} onResume={canEdit ? () => setEditMode(true) : undefined} onDiscard={() => store.delete(draftKey)} />
+        )}
         {read.data && (
           editing
-            ? <FileEditor root={root} path={path} read={read.data} />
+            ? <FileEditor root={root} path={path} read={read.data} originInstance={target.originInstance} />
             : (
               <>
                 {editability && !editability.editable && <EditUnavailableNotice editability={editability} />}
-                <FileViewer root={root} path={path} read={read.data} />
+                <FileReadFacts read={read.data} target={target} testIdPrefix="files" />
+                <FileBody target={target} read={read.data} onOpenTarget={onOpenTarget} onAnchor={onAnchor} />
               </>
             )
         )}
@@ -328,71 +564,21 @@ function FileContentPanel({
   );
 }
 
-export type FileEditability =
-  | { editable: true }
-  | { editable: false; reason: "truncated" | "binary" | "line-endings" | "unverified"; detail: string };
-
-const utf8Encoder = new TextEncoder();
-
-/** Whether a read is the complete, exact text of the file, so that a
- *  whole-file save of an edited copy loses nothing it did not change.
- *  Unknown metadata counts as unverified rather than complete. */
-export function assessFileEditability(read: FilesReadResponse): FileEditability {
-  if (read.truncated === true) {
-    const shownKb = Math.round((read.truncatedAtBytes ?? 0) / 1024);
-    const totalKb = Math.round((read.totalBytes ?? read.size) / 1024);
-    return {
-      editable: false,
-      reason: "truncated",
-      detail: `this view is a truncated ${shownKb} KB preview of a ${totalKb} KB file. Saving it would replace the whole file and drop everything after the preview. Edit the full file in an external editor.`,
-    };
+function readFailure(error: unknown): { reason: "absent" | "bad_path" | "read_error"; text: string } {
+  if (error instanceof FilesReadError) {
+    if (error.code === "absent") return { reason: "absent", text: "Deleted or missing: this file is no longer on disk. Nothing else was substituted." };
+    if (error.code === "bad_path") return { reason: "bad_path", text: "The path is invalid or outside its root." };
   }
-  if (read.binary === true) {
-    return {
-      editable: false,
-      reason: "binary",
-      detail: "this file is binary or not valid UTF-8. The text editor would re-encode its bytes on save. Edit it with an external tool.",
-    };
-  }
-  const unverified = (why: string): FileEditability => ({
-    editable: false,
-    reason: "unverified",
-    detail: `${why} Reload the file or edit it in an external editor.`,
-  });
-  if (read.truncated !== false || read.binary !== false) {
-    return unverified("the daemon did not confirm this read is the complete UTF-8 text of the file.");
-  }
-  if (typeof read.content !== "string" || !read.mtime || !read.contentHash) {
-    return unverified("the read is missing its content or change-detection fields.");
-  }
-  const returnedBytes = utf8Encoder.encode(read.content).length;
-  if (returnedBytes !== read.totalBytes || returnedBytes !== read.size) {
-    return unverified(`the returned text is ${returnedBytes} bytes but the file reports ${read.totalBytes ?? "unknown"} bytes read and ${read.size} bytes on disk.`);
-  }
-  if (read.content.includes("\r")) {
-    return {
-      editable: false,
-      reason: "line-endings",
-      detail: "this file has CR or CRLF line endings, which the browser text editor converts to LF, rewriting every line ending on save. Edit it in an external editor.",
-    };
-  }
-  return { editable: true };
+  return { reason: "read_error", text: (error as Error)?.message ?? "Error loading file." };
 }
 
-function EditUnavailableNotice({ editability }: { editability: Extract<FileEditability, { editable: false }> }) {
-  return (
-    <div
-      data-testid="files-edit-unavailable"
-      data-reason={editability.reason}
-      role="status"
-      className="mx-4 mt-4 border border-outline-variant bg-background px-3 py-2 font-mono text-[10px] text-on-surface"
-    >
-      Read-only: {editability.detail}
-    </div>
-  );
-}
-
-function FileViewer({ root, path, read }: { root: string; path: string; read: FilesReadResponse }) {
+function FileBody({ target, read, onOpenTarget, onAnchor }: {
+  target: FileSourceTarget;
+  read: FilesReadResponse;
+  onOpenTarget: (target: FileSourceTarget) => void;
+  onAnchor: (anchor: string) => void;
+}) {
+  const { root, path } = target;
   const ext = pathExtension(path);
   // OSR v0 item 3: detect spec-kind YAML files for inline validation.
   const specKind = detectSpecKind(path);
@@ -404,11 +590,38 @@ function FileViewer({ root, path, read }: { root: string; path: string; read: Fi
       </div>
     );
   }
+  if (DOWNLOAD_ONLY_EXTENSIONS.has(ext) || read.binary === true) {
+    return (
+      <div data-testid="files-download-only" className="p-4 font-mono text-[10px] text-on-surface">
+        {read.binary === true && (
+          <p data-testid="files-binary-notice" className="mb-2 text-on-surface-variant">
+            Binary or non-UTF-8 file; text is not displayed.
+          </p>
+        )}
+        <a href={fileAssetUrl(root, path)} download className="text-blue-700 underline">
+          Download {path}
+        </a>
+      </div>
+    );
+  }
+  if (read.content === "") {
+    return (
+      <div data-testid="files-empty-file" role="status" className="p-4 font-mono text-[10px] text-on-surface-variant">
+        Empty file — the read completed with 0 bytes.
+      </div>
+    );
+  }
   if (ext === ".md") {
     return (
       <div className="p-4">
         <TruncationMarker read={read} />
-        <MarkdownViewer content={read.content} />
+        <MarkdownViewer
+          content={read.content}
+          source={{ facts: sourceFactsFromRead(target, read), admitted: true, truncated: read.truncated === true }}
+          anchor={target.anchor}
+          onOpenFile={onOpenTarget}
+          onAnchorChange={(anchor) => { if (anchor !== target.anchor) onAnchor(anchor); }}
+        />
       </div>
     );
   }
@@ -421,19 +634,10 @@ function FileViewer({ root, path, read }: { root: string; path: string; read: Fi
       </div>
     );
   }
-  if (DOWNLOAD_ONLY_EXTENSIONS.has(ext)) {
-    return (
-      <div data-testid="files-download-only" className="p-4 font-mono text-[10px] text-on-surface">
-        <a href={fileAssetUrl(root, path)} download className="text-blue-700 underline">
-          Download {path}
-        </a>
-      </div>
-    );
-  }
   return (
     <div data-testid="files-text-fallback" className="p-4">
       <TruncationMarker read={read} />
-      <pre className="whitespace-pre-wrap break-words font-mono text-[10px] text-on-surface">{read.content}</pre>
+      <pre className="whitespace-pre-wrap break-words font-mono text-[11px] text-on-surface">{read.content}</pre>
     </div>
   );
 }
@@ -526,152 +730,8 @@ function SpecValidationPanel({ kind, yaml }: { kind: "rig" | "agent"; yaml: stri
   );
 }
 
-type EditorBase = Pick<FilesReadResponse, "content" | "mtime" | "contentHash">;
-
-export function FileEditor({ root, path, read }: { root: string; path: string; read: FilesReadResponse }) {
-  const editability = useMemo(() => assessFileEditability(read), [read]);
-  // The snapshot the draft was seeded from. Save sends ITS CAS tokens, so
-  // the draft and the expected mtime/hash always describe the same bytes.
-  const [base, setBase] = useState<EditorBase>(() => ({ content: read.content, mtime: read.mtime, contentHash: read.contentHash }));
-  const [draft, setDraft] = useState(read.content);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState<{ currentMtime: string; currentContentHash: string } | null>(null);
-  const [savedIndicator, setSavedIndicator] = useState(false);
-  const write = useFilesWrite();
-  const qc = useQueryClient();
-
-  // When a fresh read comes in (after Refresh on conflict, or after a
-  // successful save), reset the draft to the new content. Note: useFilesWrite
-  // intentionally does NOT invalidate the read query on a 409 conflict,
-  // so a conflict-state read stays stable until the operator clicks
-  // Refresh (which triggers the invalidation explicitly).
-  useEffect(() => {
-    setBase({ content: read.content, mtime: read.mtime, contentHash: read.contentHash });
-    setDraft(read.content);
-    setConflict(null);
-  }, [read.contentHash, read.mtime, read.content]);
-
-  const dirty = useMemo(() => draft !== base.content, [draft, base.content]);
-
-  // Defend the editor itself, not only the toolbar gate: a direct render or
-  // a refetch onto an unsafe read never exposes a draft or a save.
-  if (!editability.editable) {
-    return (
-      <div data-testid="files-editor" data-readonly="true">
-        <EditUnavailableNotice editability={editability} />
-      </div>
-    );
-  }
-
-  const save = () => {
-    setSaveError(null);
-    setConflict(null);
-    setSavedIndicator(false);
-    // Re-check the newest cached read at click time: it must still be the
-    // complete snapshot the draft came from. The daemon CAS then checks the
-    // disk bytes against those same tokens.
-    const latest = qc.getQueryData<FilesReadResponse>(["files", "read", root, path]) ?? read;
-    const latestEditability = assessFileEditability(latest);
-    if (!latestEditability.editable) {
-      setSaveError(`not saved. Read-only: ${latestEditability.detail}`);
-      return;
-    }
-    if (latest.mtime !== base.mtime || latest.contentHash !== base.contentHash || latest.content !== base.content) {
-      setSaveError("not saved. The file was re-read after this draft was started; review the current content before saving.");
-      return;
-    }
-    write.mutate(
-      {
-        root,
-        path,
-        content: draft,
-        expectedMtime: base.mtime,
-        expectedContentHash: base.contentHash,
-        actor: "ui-files-edit-mode",
-      },
-      {
-        onSuccess: (result: FileWriteResult) => {
-          if ("conflict" in result) {
-            setConflict({ currentMtime: result.currentMtime, currentContentHash: result.currentContentHash });
-          } else {
-            setSavedIndicator(true);
-            setTimeout(() => setSavedIndicator(false), 2000);
-          }
-        },
-        onError: (err) => {
-          setSaveError(err instanceof Error ? err.message : String(err));
-        },
-      },
-    );
-  };
-
-  return (
-    <div data-testid="files-editor" className="flex h-full flex-col">
-      <div className="flex items-center gap-2 border-b border-outline-variant bg-amber-50 px-3 py-1.5 font-mono text-[9px]">
-        <span className="font-bold text-amber-900" data-testid="files-editor-status">
-          {dirty ? "draft (unsaved)" : "no changes"}
-        </span>
-        <button
-          type="button"
-          data-testid="files-editor-save"
-          disabled={!dirty || write.isPending}
-          onClick={save}
-          className="border border-emerald-500 bg-emerald-50 px-2 py-0.5 uppercase tracking-[0.10em] text-emerald-900 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          save
-        </button>
-        <button
-          type="button"
-          data-testid="files-editor-cancel"
-          onClick={() => { setDraft(base.content); setSaveError(null); setConflict(null); }}
-          className="border border-outline bg-surface-lowest px-2 py-0.5 uppercase tracking-[0.10em] text-on-surface"
-        >
-          cancel
-        </button>
-        {savedIndicator && (
-          <span data-testid="files-editor-saved" className="ml-auto text-emerald-700">saved</span>
-        )}
-      </div>
-      {conflict && (
-        <div data-testid="files-editor-conflict" className="flex items-center gap-2 border-b border-red-200 bg-red-50 px-3 py-2 font-mono text-[10px] text-red-900">
-          <span className="flex-1">
-            File changed externally. Local mtime <code>{base.mtime}</code> ≠ server <code>{conflict.currentMtime}</code>. Click Refresh to re-read the file (your draft will be replaced with the new server content; copy it elsewhere first if you need to re-apply).
-          </span>
-          <button
-            type="button"
-            data-testid="files-editor-refresh"
-            onClick={() => {
-              qc.invalidateQueries({ queryKey: ["files", "read", root, path] });
-            }}
-            className="border border-red-500 bg-surface-lowest px-2 py-0.5 uppercase tracking-[0.10em] text-red-900"
-          >
-            refresh
-          </button>
-        </div>
-      )}
-      {saveError && (
-        <div data-testid="files-editor-error" className="border-b border-red-200 bg-red-50 px-3 py-2 font-mono text-[10px] text-red-900">
-          Save failed: {saveError}
-        </div>
-      )}
-      <textarea
-        data-testid="files-editor-textarea"
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        className="flex-1 min-h-0 resize-none border-0 bg-background p-3 font-mono text-[11px] leading-relaxed text-on-surface outline-none"
-        spellCheck={false}
-      />
-    </div>
-  );
-}
-
 function pathExtension(p: string): string {
   const idx = p.lastIndexOf(".");
   if (idx === -1) return "";
   return p.slice(idx).toLowerCase();
-}
-
-function parentPath(p: string): string {
-  const idx = p.lastIndexOf("/");
-  return idx === -1 ? "" : p.slice(0, idx);
 }

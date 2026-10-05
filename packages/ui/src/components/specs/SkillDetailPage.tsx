@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { EmptyState } from "../ui/empty-state.js";
 import { SectionHeader } from "../ui/section-header.js";
 import { MarkdownViewer } from "../markdown/MarkdownViewer.js";
@@ -9,6 +9,60 @@ import {
   librarySkillFilePathFromToken,
   librarySkillIdFromToken,
 } from "../../lib/library-skills-routing.js";
+import { DisplayTime } from "../time/DisplayTime.js";
+
+// Read-state discipline: each query (catalog, directory, file) is shown as
+// cold pending, current success, cold failure, or successful data retained
+// behind a newer failed refresh — with its own receipt time. Only a current
+// successful catalog can establish that a skill is absent.
+
+interface ReadQuery {
+  data?: unknown;
+  error: unknown;
+  dataUpdatedAt: number;
+  isFetching: boolean;
+  refetch: () => unknown;
+}
+
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/** When the connected daemon's response was received (not a file time). */
+function Received({ at, testId }: { at: number; testId?: string }) {
+  return <DisplayTime iso={at ? new Date(at).toISOString() : null} fallback="not yet read" testId={testId} />;
+}
+
+function RetryButton({ query, testId }: { query: ReadQuery; testId: string }) {
+  return (
+    <button type="button" data-testid={testId} disabled={query.isFetching} onClick={() => void query.refetch()}
+      className="ml-2 underline decoration-dotted hover:text-on-surface disabled:opacity-50">
+      {query.isFetching ? "Retrying…" : "Retry"}
+    </button>
+  );
+}
+
+/** Retained data behind a newer failed read: dated, never presented as current. */
+function StaleNotice({ query, what, testId }: { query: ReadQuery; what: string; testId: string }) {
+  if (!query.error || query.data === undefined) return null;
+  return (
+    <div role="status" data-testid={testId} className="border-b border-amber-300 bg-amber-50/70 px-3 py-1.5 font-mono text-[10px] leading-snug text-amber-900">
+      Refreshing the {what} failed ({errorText(query.error)}); showing the copy received <Received at={query.dataUpdatedAt} />.
+      <RetryButton query={query} testId={`${testId}-retry`} />
+    </div>
+  );
+}
+
+function PageState({ label, description, testId, query }: { label: string; description: ReactNode; testId: string; query?: ReadQuery }) {
+  return (
+    <div className="h-full bg-paper-grid px-6 py-5 lg:pl-[var(--workspace-left-offset,0px)] lg:pr-[var(--workspace-right-offset,0px)]">
+      <EmptyState label={label} description={description} variant="card" testId={testId} />
+      {query && (
+        <div className="mt-3 font-mono text-[10px] text-on-surface-variant">
+          <RetryButton query={query} testId={`${testId}-retry`} />
+        </div>
+      )}
+    </div>
+  );
+}
 
 const TEXT_LIKE_EXTENSIONS = new Set([
   ".md", ".mdx", ".txt", ".log",
@@ -40,9 +94,9 @@ export function SkillDetailPage({
   skillToken: string;
   fileToken?: string | null;
 }) {
-  const { data: skills = [], isLoading } = useLibrarySkills();
+  const catalog = useLibrarySkills();
   const skillId = librarySkillIdFromToken(skillToken);
-  const skill = skillId ? skills.find((entry) => entry.id === skillId) ?? null : null;
+  const skill = skillId && catalog.data ? catalog.data.find((entry) => entry.id === skillId) ?? null : null;
 
   // Relative path within the skill folder. Empty string = skill root.
   const [currentPath, setCurrentPath] = useState<string>("");
@@ -77,29 +131,34 @@ export function SkillDetailPage({
     setDefaultPicked(true);
   }, [list.data, currentPath, defaultPicked]);
 
-  if (isLoading) {
-    return (
-      <div className="h-full bg-paper-grid px-6 py-5 lg:pl-[var(--workspace-left-offset,0px)] lg:pr-[var(--workspace-right-offset,0px)]">
-        <EmptyState
-          label="LOADING SKILL"
-          description="Loading skill files from the daemon skill library."
-          variant="card"
-          testId="skill-detail-loading"
-        />
-      </div>
+  if (catalog.data === undefined) {
+    return catalog.error ? (
+      <PageState
+        label="SKILL LIBRARY UNAVAILABLE"
+        description={`The connected daemon's skill library could not be read (${errorText(catalog.error)}), so whether this skill exists is unknown.`}
+        testId="skill-detail-unavailable"
+        query={catalog}
+      />
+    ) : (
+      <PageState label="LOADING SKILL" description="Loading skill files from the daemon skill library." testId="skill-detail-loading" />
     );
   }
 
   if (!skill) {
-    return (
-      <div className="h-full bg-paper-grid px-6 py-5 lg:pl-[var(--workspace-left-offset,0px)] lg:pr-[var(--workspace-right-offset,0px)]">
-        <EmptyState
-          label="SKILL NOT FOUND"
-          description="The selected skill is not discoverable through the daemon skill library."
-          variant="card"
-          testId="skill-detail-not-found"
-        />
-      </div>
+    // Absence is established only by a current successful catalog.
+    return catalog.error ? (
+      <PageState
+        label="SKILL NOT CONFIRMED"
+        description={<>This skill was not in the library list received <Received at={catalog.dataUpdatedAt} />, and the latest refresh failed ({errorText(catalog.error)}); it may exist now.</>}
+        testId="skill-detail-unconfirmed"
+        query={catalog}
+      />
+    ) : (
+      <PageState
+        label="SKILL NOT FOUND"
+        description="The selected skill is not discoverable through the daemon skill library."
+        testId="skill-detail-not-found"
+      />
     );
   }
 
@@ -130,7 +189,11 @@ export function SkillDetailPage({
         >
           {skill.absolutePath}
         </div>
+        <div data-testid="skill-detail-catalog-read" className="mt-1 font-mono text-[10px] text-on-surface-variant">
+          Listed by the connected daemon <Received at={catalog.dataUpdatedAt} />
+        </div>
       </header>
+      <StaleNotice query={catalog} what="skill library" testId="skill-detail-catalog-stale" />
 
       <div
         data-testid="skill-detail-docs-browser"
@@ -146,15 +209,17 @@ export function SkillDetailPage({
             path={currentPath}
             onNavigate={(rel) => { setCurrentPath(rel); setSelectedFile(null); }}
           />
-          {list.isLoading ? (
+          <StaleNotice query={list} what="directory listing" testId="skill-detail-tree-stale" />
+          {list.data === undefined && list.error ? (
+            <div role="alert" data-testid="skill-detail-tree-error" className="p-3 font-mono text-[10px] text-red-600">
+              Directory unavailable: {errorText(list.error)}. Its contents are unknown.
+              <RetryButton query={list} testId="skill-detail-tree-retry" />
+            </div>
+          ) : list.data === undefined ? (
             <div data-testid="skill-detail-tree-loading" className="p-3 font-mono text-[10px] text-on-surface-variant">
               Loading…
             </div>
-          ) : list.isError ? (
-            <div data-testid="skill-detail-tree-error" className="p-3 font-mono text-[10px] text-red-600">
-              {(list.error as Error)?.message ?? "Error loading directory."}
-            </div>
-          ) : !list.data || list.data.entries.length === 0 ? (
+          ) : list.data.entries.length === 0 ? (
             <div data-testid="skill-detail-tree-empty" className="p-3 font-mono text-[10px] text-on-surface-variant">
               Empty directory.
             </div>
@@ -253,29 +318,28 @@ function SkillFileContent({ skillId, path }: { skillId: string; path: string }) 
   const read = useSkillFilesRead(skillId, path);
   const ext = useMemo(() => pathExtension(path), [path]);
 
-  if (read.isLoading) {
-    return (
+  if (read.data === undefined) {
+    return read.error ? (
+      <div role="alert" data-testid="skill-detail-viewer-error" className="p-4 font-mono text-[10px] text-red-600">
+        File unavailable: {errorText(read.error)}.
+        <RetryButton query={read} testId="skill-detail-viewer-retry" />
+      </div>
+    ) : (
       <div data-testid="skill-detail-viewer-loading" className="p-4 font-mono text-[10px] text-on-surface-variant">
         Loading…
       </div>
     );
   }
-  if (read.isError) {
-    return (
-      <div data-testid="skill-detail-viewer-error" className="p-4 font-mono text-[10px] text-red-600">
-        {(read.error as Error)?.message ?? "Error loading file."}
-      </div>
-    );
-  }
-  if (!read.data) return null;
 
   return (
     <div data-testid="skill-detail-viewer-content" className="flex h-full flex-col">
+      <StaleNotice query={read} what="file" testId="skill-detail-viewer-stale" />
       <header className="flex items-baseline justify-between border-b border-outline-variant bg-surface-lowest/30 px-3 py-2 font-mono text-[10px]">
         <div data-testid="skill-detail-viewer-path" className="text-on-surface">{path}</div>
         <div className="flex items-baseline gap-3 text-on-surface-variant">
           <span>{read.data.size}b</span>
-          <span>{read.data.mtime}</span>
+          <span data-testid="skill-detail-viewer-mtime">modified <DisplayTime iso={read.data.mtime} /></span>
+          <span data-testid="skill-detail-viewer-read">read <Received at={read.dataUpdatedAt} /></span>
         </div>
       </header>
       <div className="flex-1 min-h-0 overflow-y-auto">

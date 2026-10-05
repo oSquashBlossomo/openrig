@@ -4,11 +4,12 @@
 // Enter/Space selects. Selecting never opens or focuses a terminal.
 
 import { useCallback, type KeyboardEvent } from "react";
-import { Link } from "@tanstack/react-router";
 import { ChevronRight } from "lucide-react";
 import type { SpatialAgent, SpatialModel, SpatialRig, SpatialSeatStatus } from "../../../lib/spatial-topology.js";
 import { formatRuntimeModel } from "../../../lib/runtime-brand.js";
+import type { TopologyScope } from "../../../lib/topology-location.js";
 import { cn } from "../../../lib/utils.js";
+import { TopologyLink, topologyTarget } from "../topology-navigation.js";
 import { hslCss, type SpatialPalette } from "./spatial-palette.js";
 
 export interface SpatialNodeListProps {
@@ -21,6 +22,13 @@ export interface SpatialNodeListProps {
   variant: "compact" | "table";
   onSelect: (key: string) => void;
   onHover: (key: string | null) => void;
+  /** Source host for drill links (null = not yet confirmed: legacy link). */
+  linkSource?: string | null;
+  /** The scope being left by a rig/pod drill. */
+  from?: TopologyScope | null;
+  /** Drill links keep the rich 3D view and the current Scene/List choice;
+   *  the new scope starts with no search, no selection and a fitted camera. */
+  spatialMode?: "scene" | "list";
 }
 
 const ROW_SELECTOR = "[data-spatial-agent-row]";
@@ -98,14 +106,14 @@ function RigSection({
   return (
     <section data-testid="spatial-index-rig" aria-label={`Rig ${rig.rigName}`} className="border-b border-outline-variant last:border-b-0">
       <header className="flex items-baseline gap-2 px-3 pt-3 pb-1">
-        <Link
-          to="/topology/rig/$rigId"
-          params={{ rigId: rig.rigId }}
+        <TopologyLink
+          target={topologyTarget({ scope: { kind: "rig", rigId: rig.rigId }, sourceHost: props.linkSource ?? null, view: "spatial", spatialMode: props.spatialMode ?? "scene" })}
+          from={props.from ?? null}
           className="min-w-0 truncate font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-on-surface hover:underline"
           title={`Open rig ${rig.rigName}`}
         >
           {rig.rigName}
-        </Link>
+        </TopologyLink>
         <span className="shrink-0 font-mono text-[9px] text-on-surface-variant">
           {rig.agents.length} seat{rig.agents.length === 1 ? "" : "s"}
           {rig.summaryNodeCount !== null && rig.summaryNodeCount !== rig.agents.length
@@ -120,14 +128,14 @@ function RigSection({
         <div key={group.key} data-testid="spatial-index-pod" className="pb-1">
           <div className="flex items-center gap-1 px-3 pt-1.5 pb-0.5 font-mono text-[9px] lowercase tracking-[0.06em] text-on-surface-variant">
             {group.podName ? (
-              <Link
-                to="/topology/pod/$rigId/$podName"
-                params={{ rigId: rig.rigId, podName: group.podName }}
+              <TopologyLink
+                target={topologyTarget({ scope: { kind: "pod", rigId: rig.rigId, podName: group.podName }, sourceHost: props.linkSource ?? null, view: "spatial", spatialMode: props.spatialMode ?? "scene" })}
+                from={props.from ?? null}
                 className="hover:text-on-surface hover:underline"
                 title={`Open pod ${group.title}`}
               >
                 {group.title}
-              </Link>
+              </TopologyLink>
             ) : (
               <span>{group.title}</span>
             )}

@@ -406,4 +406,157 @@ describe("SpatialRenderer color and labels", () => {
     expect(suppressed).toBeGreaterThan(0);
     expect(visible).toBeLessThan(42);
   });
+
+  // --- Visit camera continuity (navigation contract) ------------------------
+  // The pose is a bounded value: snapshot/restore through the controller,
+  // reported on settle (not per frame) and on teardown, applied once,
+  // instantly, and only to compatible layout bounds.
+  describe("camera snapshot / restore", () => {
+    const cameraOf = () =>
+      gl.instances.at(-1)!.render.mock.calls.at(-1)![1] as { position: { toArray(): number[] } };
+
+    it("reports one settled pose after a command, none while idle, and a final pose on teardown", () => {
+      const { props, controllerRef } = setup();
+      const onCameraSettle = vi.fn();
+      const { unmount } = render(<SpatialRenderer {...props} onCameraSettle={onCameraSettle} />);
+      flushFrames();
+      onCameraSettle.mockClear();
+      act(() => controllerRef.current!.preset("top"));
+      const frames = flushFrames();
+      expect(frames).toBeGreaterThan(5);
+      expect(onCameraSettle).toHaveBeenCalledTimes(1);
+      expect(onCameraSettle.mock.calls[0]![0]).toMatchObject({ userMoved: true });
+      expect(flushFrames()).toBe(0);
+      expect(onCameraSettle).toHaveBeenCalledTimes(1);
+      unmount();
+      expect(onCameraSettle).toHaveBeenCalledTimes(2);
+      expect(onCameraSettle.mock.calls[1]![0].position).toEqual(onCameraSettle.mock.calls[0]![0].position);
+    });
+
+    it("a remounted renderer restores the saved manual pose instantly instead of auto-fitting", () => {
+      const first = setup();
+      const onCameraSettle = vi.fn();
+      const a = render(<SpatialRenderer {...first.props} reducedMotion onCameraSettle={onCameraSettle} />);
+      flushFrames();
+      act(() => first.controllerRef.current!.zoom(0.5));
+      act(() => first.controllerRef.current!.orbit(0.4, 0.1));
+      flushFrames();
+      const saved = first.controllerRef.current!.snapshot()!;
+      expect(saved.userMoved).toBe(true);
+      a.unmount();
+
+      const second = setup();
+      render(<SpatialRenderer {...second.props} initialCamera={saved} />);
+      expect(flushFrames()).toBeLessThan(5);
+      const restored = cameraOf().position.toArray();
+      saved.position.forEach((v, i) => expect(restored[i]).toBeCloseTo(v, 6));
+      expect(second.controllerRef.current!.snapshot()!.userMoved).toBe(true);
+      // An ordinary refresh does not re-fit the restored pose.
+      expect(flushFrames()).toBe(0);
+    });
+
+    it("ignores a pose taken against different layout bounds, nonfinite values or a degenerate camera", () => {
+      const base = setup();
+      render(<SpatialRenderer {...base.props} />);
+      flushFrames();
+      const fitted = base.controllerRef.current!.snapshot()!;
+      cleanup();
+
+      const variants = [
+        { ...fitted, userMoved: true, position: [fitted.position[0] + 5, fitted.position[1], fitted.position[2]] as [number, number, number], bounds: { center: fitted.bounds.center, radius: fitted.bounds.radius * 3 } },
+        { ...fitted, userMoved: true, position: [Number.NaN, 1, 1] as [number, number, number] },
+        { ...fitted, userMoved: true, position: fitted.target },
+      ];
+      for (const bad of variants) {
+        const next = setup();
+        render(<SpatialRenderer {...next.props} initialCamera={bad} />);
+        flushFrames();
+        const pose = next.controllerRef.current!.snapshot()!;
+        expect(pose.userMoved).toBe(false);
+        pose.position.forEach((v, i) => expect(v).toBeCloseTo(fitted.position[i]!, 6));
+        expect(next.controllerRef.current!.restore(bad)).toBe(false);
+        cleanup();
+      }
+    });
+
+    it("Reset hands the camera back to auto-fit; restoring that pose fits rather than pinning it", () => {
+      const { props, controllerRef } = setup();
+      render(<SpatialRenderer {...props} reducedMotion />);
+      flushFrames();
+      act(() => controllerRef.current!.zoom(0.4));
+      act(() => controllerRef.current!.reset());
+      flushFrames();
+      const afterReset = controllerRef.current!.snapshot()!;
+      expect(afterReset.userMoved).toBe(false);
+      cleanup();
+      const next = setup();
+      render(<SpatialRenderer {...next.props} initialCamera={{ ...afterReset, position: [afterReset.position[0] * 0.9, afterReset.position[1], afterReset.position[2]] }} />);
+      flushFrames();
+      expect(next.controllerRef.current!.snapshot()!.userMoved).toBe(false);
+    });
+
+    it("clamps a restored distance into the current control limits", () => {
+      const { props, controllerRef } = setup();
+      render(<SpatialRenderer {...props} />);
+      flushFrames();
+      const fitted = controllerRef.current!.snapshot()!;
+      const [tx, ty, tz] = fitted.target;
+      const far = { ...fitted, userMoved: true, position: [tx, ty + 1e5, tz + 1e5] as [number, number, number] };
+      expect(controllerRef.current!.restore(far)).toBe(true);
+      const pose = controllerRef.current!.snapshot()!;
+      const distance = Math.hypot(pose.position[0] - tx, pose.position[1] - ty, pose.position[2] - tz);
+      expect(distance).toBeLessThan(1300);
+      expect(distance).toBeGreaterThan(6);
+    });
+  });
+
+  // Reduced motion turning on while a camera move is animating ends it at
+  // once: one final paint at the move's destination, a settled pose report,
+  // and instantaneous commands from then on (no further tween frames).
+  describe("live reduced-motion activation", () => {
+    it("lands an in-flight tween on its destination in one frame and keeps later commands instant", () => {
+      const reference = setup();
+      render(<SpatialRenderer {...reference.props} />);
+      flushFrames();
+      act(() => reference.controllerRef.current!.preset("top"));
+      flushFrames();
+      const destination = reference.controllerRef.current!.snapshot()!;
+      cleanup();
+
+      const { props, controllerRef } = setup();
+      const onCameraSettle = vi.fn();
+      const mounted = render(<SpatialRenderer {...props} onCameraSettle={onCameraSettle} />);
+      flushFrames();
+      onCameraSettle.mockClear();
+      act(() => controllerRef.current!.preset("top"));
+      expect(flushFrames(2)).toBe(2);
+      expect(rafQueue.size).toBeGreaterThan(0);
+      mounted.rerender(<SpatialRenderer {...props} onCameraSettle={onCameraSettle} reducedMotion />);
+      expect(flushFrames()).toBeLessThanOrEqual(1);
+      expect(rafQueue.size).toBe(0);
+      const pose = controllerRef.current!.snapshot()!;
+      pose.position.forEach((v, i) => expect(v).toBeCloseTo(destination.position[i]!, 6));
+      pose.target.forEach((v, i) => expect(v).toBeCloseTo(destination.target[i]!, 6));
+      expect(pose.userMoved).toBe(true);
+      expect(onCameraSettle).toHaveBeenCalledTimes(1);
+      expect(onCameraSettle.mock.calls[0]![0].position).toEqual(pose.position);
+
+      act(() => controllerRef.current!.zoom(0.6));
+      expect(flushFrames()).toBe(1);
+      expect(flushFrames()).toBe(0);
+    });
+
+    it("idle activation schedules no frame; turning reduced motion off restores bounded animation", () => {
+      const { props, controllerRef } = setup();
+      const mounted = render(<SpatialRenderer {...props} />);
+      flushFrames();
+      mounted.rerender(<SpatialRenderer {...props} reducedMotion />);
+      expect(flushFrames()).toBe(0);
+      mounted.rerender(<SpatialRenderer {...props} reducedMotion={false} />);
+      act(() => controllerRef.current!.preset("iso"));
+      const frames = flushFrames();
+      expect(frames).toBeGreaterThan(5);
+      expect(frames).toBeLessThan(120);
+    });
+  });
 });

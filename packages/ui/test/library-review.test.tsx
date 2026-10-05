@@ -2,6 +2,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createAppTestRouter } from "./helpers/test-router.js";
 import { LibraryReview } from "../src/components/LibraryReview.js";
+import { useQueryClient } from "@tanstack/react-query";
+import type { ReactNode } from "react";
+
+/** The active lens is a connected-instance preference: its actions require a
+ * KNOWN local host selection (a cold, unknown selection is rejected). */
+function KnownLocalHosts({ children }: { children: ReactNode }) {
+  const qc = useQueryClient();
+  if (!qc.getQueryData(["hosts"])) qc.setQueryData(["hosts"], { ownName: "Fictional", selected: "local", hosts: [] });
+  return <>{children}</>;
+}
 
 describe("LibraryReview", () => {
   afterEach(() => {
@@ -284,6 +294,7 @@ describe("LibraryReview", () => {
         { path: "/specs/library/workflow:conveyor:1", component: () => <LibraryReview entryId="workflow:conveyor:1" /> },
         { path: "/specs", component: () => <div data-testid="back-route">back</div> },
       ],
+      rootComponent: ({ children }) => <KnownLocalHosts>{children}</KnownLocalHosts>,
     }));
 
     await waitFor(() => {

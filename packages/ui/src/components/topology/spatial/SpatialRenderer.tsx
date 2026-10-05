@@ -23,6 +23,10 @@
 //     rig names, pod names and ambient seat names, each only where it fits.
 //   - Auto-framing follows streaming data until the operator commands the
 //     camera (drag, orbit, zoom, preset, fit, focus); Reset hands it back.
+//   - Camera continuity is a value, not GPU state: the controller can
+//     snapshot/restore a bounded pose, the renderer reports the pose when it
+//     settles (never per frame) and on teardown, and a restore is instant,
+//     validated, clamped and rejected when the layout bounds have moved.
 
 import { useEffect, useRef, type MutableRefObject } from "react";
 import {
@@ -72,6 +76,7 @@ import {
   type Vec3,
 } from "../../../lib/spatial-topology.js";
 import { hslCss, type Hsl, type SpatialPalette } from "./spatial-palette.js";
+import { isSpatialCameraSnapshot, type SpatialCameraSnapshot, type Vec3Tuple } from "./spatial-visit-store.js";
 import {
   LABEL_TIER,
   estimateLabelSize,
@@ -92,6 +97,11 @@ export interface SpatialCameraController {
   zoom(factor: number): void;
   orbit(dAzimuth: number, dPolar: number): void;
   focus(key: string): void;
+  /** Current pose, or null before the first framing. */
+  snapshot(): SpatialCameraSnapshot | null;
+  /** Apply a saved pose instantly. False (and nothing changes) when it is
+   *  invalid or was taken against materially different layout bounds. */
+  restore(snapshot: SpatialCameraSnapshot): boolean;
 }
 
 export interface SpatialRendererProps {
@@ -108,6 +118,10 @@ export interface SpatialRendererProps {
   onHover: (key: string | null) => void;
   onFailure: (reason: SpatialRendererFailure) => void;
   onReady?: () => void;
+  /** Pose to restore on the first content build instead of auto-fitting. */
+  initialCamera?: SpatialCameraSnapshot | null;
+  /** Reported when the camera settles after a change, and on teardown. */
+  onCameraSettle?: (snapshot: SpatialCameraSnapshot) => void;
 }
 
 const FOV = 38;
@@ -197,6 +211,13 @@ interface Engine {
   measureOccluders: () => void;
   userMoved: boolean;
   fittedOnce: boolean;
+  /** One-shot restore, applied once content AND a real viewport exist. */
+  pendingRestore: SpatialCameraSnapshot | null;
+  contentBuilt: boolean;
+  /** End any in-flight tween (at its destination) and damping now; one paint. */
+  settleMotion: () => void;
+  restore: (snapshot: SpatialCameraSnapshot) => boolean;
+  snapshot: () => SpatialCameraSnapshot | null;
   state: {
     selectedKey: string | null;
     hoveredKey: string | null;
@@ -212,6 +233,17 @@ export function toColor(c: Hsl): Color {
 
 function v3(p: Vec3): Vector3 {
   return new Vector3(p[0], p[1], p[2]);
+}
+
+const tuple = (v: Vector3): Vec3Tuple => [v.x, v.y, v.z];
+
+/** A saved pose only applies to (nearly) the same layout it was taken in. */
+export function cameraBoundsCompatible(saved: SpatialCameraSnapshot["bounds"], center: Vector3, radius: number): boolean {
+  if (!(radius > 0)) return false;
+  const ratio = saved.radius / radius;
+  if (ratio < 0.8 || ratio > 1.25) return false;
+  const [x, y, z] = saved.center;
+  return Math.hypot(x - center.x, y - center.y, z - center.z) <= radius * 0.25;
 }
 
 function easeInOutCubic(t: number): number {
@@ -245,6 +277,11 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
     // One teardown for unmount AND a failure part-way through init, so every
     // allocation that exists at that point is released exactly once.
     const teardown = () => {
+      const settledEngine = engineRef.current;
+      if (!disposed && settledEngine?.fittedOnce) {
+        const final = settledEngine.snapshot();
+        if (final) propsRef.current.onCameraSettle?.(final);
+      }
       disposed = true;
       if (frame) cancelAnimationFrame(frame);
       frame = 0;
@@ -350,6 +387,18 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
         labelRenderer.render(scene, camera);
       };
 
+      // Settle reporting: once per completed change, never per frame and
+      // never mid-drag (an active drag has no tween and no damping budget).
+      let cameraDirty = false;
+      let interacting = false;
+      const reportSettled = () => {
+        if (!cameraDirty || interacting || tween || dampingFrames > 0) return;
+        cameraDirty = false;
+        const engine = engineRef.current;
+        const snap = engine?.fittedOnce ? engine.snapshot() : null;
+        if (snap) propsRef.current.onCameraSettle?.(snap);
+      };
+
       const tick = (now: number) => {
         frame = 0;
         if (disposed) return;
@@ -370,6 +419,7 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
         }
         renderNow();
         if (again) requestRender();
+        else reportSettled();
       };
 
       const requestRender = () => {
@@ -379,6 +429,7 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
 
       const tweenTo = (position: Vector3, target: Vector3) => {
         dampingFrames = 0;
+        cameraDirty = true;
         if (propsRef.current.reducedMotion) {
           tween = null;
           camera.position.copy(position);
@@ -427,6 +478,11 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
         measureOccluders: () => {},
         userMoved: false,
         fittedOnce: false,
+        pendingRestore: isSpatialCameraSnapshot(propsRef.current.initialCamera) ? propsRef.current.initialCamera : null,
+        contentBuilt: false,
+        settleMotion: () => {},
+        restore: () => false,
+        snapshot: () => null,
         state: {
           selectedKey: propsRef.current.selectedKey,
           hoveredKey: propsRef.current.hoveredKey,
@@ -436,17 +492,21 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
       };
       engineRef.current = engine;
 
-      const onControlsChange = () => requestRender();
+      const onControlsChange = () => {
+        cameraDirty = true;
+        requestRender();
+      };
       const onControlsStart = () => {
         engine.userMoved = true;
+        interacting = true;
         tween = null;
         dampingFrames = 0;
       };
       const onControlsEnd = () => {
-        if (orbit.enableDamping) {
-          dampingFrames = DAMPING_FRAME_BUDGET;
-          requestRender();
-        }
+        interacting = false;
+        cameraDirty = true;
+        if (orbit.enableDamping) dampingFrames = DAMPING_FRAME_BUDGET;
+        requestRender();
       };
       orbit.addEventListener("change", onControlsChange);
       orbit.addEventListener("start", onControlsStart);
@@ -565,6 +625,7 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
           orbit.target.copy(target);
           camera.lookAt(target);
           orbit.update();
+          cameraDirty = true;
           requestRender();
         }
       };
@@ -614,6 +675,63 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
           const dist = Math.min(cameraDistance(), 34);
           tweenTo(point.clone().add(viewDirection().multiplyScalar(dist)), point.clone());
         },
+        snapshot: () => engine.snapshot(),
+        restore: (snapshot) => engine.restore(snapshot),
+      };
+      // Reduced motion turning on mid-move: land the tween on its destination
+      // (a valid, intended pose) and drop damping inertia, then paint once;
+      // that frame reports the settled pose like any completed move.
+      engine.settleMotion = () => {
+        if (!tween && dampingFrames === 0) return;
+        if (tween) {
+          camera.position.copy(tween.to);
+          orbit.target.copy(tween.toTarget);
+          camera.lookAt(orbit.target);
+          tween = null;
+        }
+        dampingFrames = 0;
+        orbit.update();
+        cameraDirty = true;
+        requestRender();
+      };
+      engine.snapshot = () => ({
+        position: tuple(camera.position),
+        target: tuple(orbit.target),
+        userMoved: engine.userMoved,
+        bounds: { center: tuple(engine.boundsCenter), radius: engine.boundsRadius },
+      });
+      engine.restore = (snapshot) => {
+        if (!isSpatialCameraSnapshot(snapshot)) return false;
+        if (!cameraBoundsCompatible(snapshot.bounds, engine.boundsCenter, engine.boundsRadius)) return false;
+        if (!snapshot.userMoved) {
+          // An auto-fit pose stays auto-fit: frame the current data.
+          engine.userMoved = false;
+          fitAlong(v3(SPATIAL_CAMERA_DIRECTIONS.iso), false);
+          return true;
+        }
+        const target = v3(snapshot.target);
+        const offset = v3(snapshot.position).sub(target);
+        const distance = offset.length();
+        if (!(distance > 1e-6)) return false;
+        // Establish this viewport's control limits, then clamp into them.
+        fitAlong(v3(SPATIAL_CAMERA_DIRECTIONS.iso), false);
+        const clamped = Math.min(orbit.maxDistance, Math.max(orbit.minDistance, distance));
+        const phi = Math.min(orbit.maxPolarAngle, Math.max(0.02, Math.acos(Math.min(1, Math.max(-1, offset.y / distance)))));
+        const theta = Math.atan2(offset.x, offset.z);
+        tween = null;
+        dampingFrames = 0;
+        camera.position.set(
+          target.x + clamped * Math.sin(phi) * Math.sin(theta),
+          target.y + clamped * Math.cos(phi),
+          target.z + clamped * Math.sin(phi) * Math.cos(theta),
+        );
+        orbit.target.copy(target);
+        camera.lookAt(target);
+        orbit.update();
+        engine.userMoved = true;
+        cameraDirty = true;
+        requestRender();
+        return true;
       };
       propsRef.current.controllerRef.current = controller;
       engine.fitInitial = () => fitAlong(v3(SPATIAL_CAMERA_DIRECTIONS.iso), false);
@@ -647,7 +765,7 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
         engine.measureOccluders();
         engine.fittedOnce = true;
         // Re-frame on resize until the operator takes the camera.
-        if (!engine.userMoved) engine.fitInitial();
+        if (!engine.userMoved && !applyPendingRestore(engine)) engine.fitInitial();
         requestRender();
       };
       if (typeof ResizeObserver !== "undefined") {
@@ -674,6 +792,13 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
     buildContent(engine, props.model, props.layout, props.palette);
     applyInteractionState(engine);
     engine.measureOccluders();
+    engine.contentBuilt = true;
+    // A visit's saved pose is applied once, on the first build with real
+    // bounds; an incompatible or invalid pose falls back to the normal fit.
+    if (applyPendingRestore(engine)) {
+      engine.requestRender();
+      return;
+    }
     // Keep framing the topology while data streams in, until the operator
     // takes the camera.
     if (!engine.userMoved && engine.fittedOnce) engine.fitInitial();
@@ -706,7 +831,9 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
   // --- Reduced motion toggles damping live ----------------------------------
   useEffect(() => {
     const engine = engineRef.current;
-    if (engine) engine.controls.enableDamping = !props.reducedMotion;
+    if (!engine) return;
+    engine.controls.enableDamping = !props.reducedMotion;
+    if (props.reducedMotion) engine.settleMotion();
   }, [props.reducedMotion]);
 
   return <div ref={hostRef} data-testid="spatial-renderer-host" className="spatial-renderer-host" />;
@@ -715,6 +842,13 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
 // ---------------------------------------------------------------------------
 // Scene construction
 // ---------------------------------------------------------------------------
+
+function applyPendingRestore(engine: Engine): boolean {
+  const pending = engine.pendingRestore;
+  if (!pending || !engine.contentBuilt || !engine.fittedOnce) return false;
+  engine.pendingRestore = null;
+  return engine.restore(pending);
+}
 
 function track<T extends { dispose(): void }>(engine: Engine, item: T): T {
   engine.contentDisposables.push(item);

@@ -36,18 +36,16 @@ import {
 } from "../../lib/project-mission-state.js";
 import { MissionStatusBadge } from "../MissionStatusBadge.js";
 import { MarkdownViewer } from "../markdown/MarkdownViewer.js";
+import { DisplayTime } from "../time/DisplayTime.js";
+import { useOpenFileTarget, useScopeMarkdownSource } from "./project-file-source.js";
 import { SectionHeader } from "../ui/section-header.js";
 import { EmptyState } from "../ui/empty-state.js";
 import { cn } from "../../lib/utils.js";
 
-function formatActivity(ts: number): string {
-  if (!ts || ts <= 0) return "no recent activity";
-  return new Date(ts).toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+/** Most recent activity in the configured display zone (exact instant kept). */
+function ActivityTime({ ts }: { ts: number }) {
+  if (!ts || ts <= 0 || !Number.isFinite(ts)) return <>no recent activity</>;
+  return <DisplayTime iso={new Date(ts).toISOString()} className="" />;
 }
 
 /** Extract the named `## <header>` section body from a MISSION_BRIEF.md (slice-16
@@ -81,6 +79,9 @@ function MissionGlance({ missionId }: { missionId: string }) {
   const missionPath =
     filesAllowed && mission.data && "missionPath" in mission.data ? mission.data.missionPath : null;
   const brief = useScopeMarkdown(missionPath, "MISSION_BRIEF.md");
+  // The glance sections are excerpts of the served MISSION_BRIEF.md.
+  const briefSource = useScopeMarkdownSource(brief);
+  const openFileTarget = useOpenFileTarget();
 
   if (selectionKnown && !isLocal) {
     // Known-REMOTE only — unknown renders the loading branch (fetches stay
@@ -119,13 +120,13 @@ function MissionGlance({ missionId }: { missionId: string }) {
       {building ? (
         <div>
           <div className="mb-0.5 font-mono text-[9px] uppercase tracking-[0.16em] text-on-surface-variant">Building</div>
-          <MarkdownViewer content={building} hideFrontmatter hideRawToggle />
+          <MarkdownViewer content={building} source={briefSource} onOpenFile={openFileTarget} hideFrontmatter hideRawToggle />
         </div>
       ) : null}
       {needsYou ? (
         <div>
           <div className="mb-0.5 font-mono text-[9px] uppercase tracking-[0.16em] text-on-surface-variant">Needs you</div>
-          <MarkdownViewer content={needsYou} hideFrontmatter hideRawToggle />
+          <MarkdownViewer content={needsYou} source={briefSource} onOpenFile={openFileTarget} hideFrontmatter hideRawToggle />
         </div>
       ) : null}
     </div>
@@ -160,7 +161,7 @@ function MissionRow({ mission, expanded, onToggle }: { mission: ProjectMissionGr
               <MissionStatusBadge status={mission.status} label={mission.statusLabel} />
             </div>
             <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.06em] text-on-surface-variant">
-              {provenCount} proven · {activeCount} active · {sliceCount} slice{sliceCount === 1 ? "" : "s"} · {formatActivity(recency)}
+              {provenCount} proven · {activeCount} active · {sliceCount} slice{sliceCount === 1 ? "" : "s"} · <ActivityTime ts={recency} />
             </div>
           </div>
         </button>

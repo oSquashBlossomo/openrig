@@ -41,6 +41,11 @@ function renderSliceScope(opts: {
   const setSelection = vi.fn();
   // Mock /api/slices/:name response.
   mockFetch.mockImplementation(async (url: string) => {
+    // Queue details are read only for a CONFIRMED source host, so the active
+    // hosts observer must read back the same selection that is seeded below.
+    if (url === "/api/hosts") {
+      return new Response(JSON.stringify({ ownName: "fixture", selected: "local", hosts: [] }));
+    }
     if (url.includes(`/api/slices/${opts.sliceId}/doc/`)) {
       return new Response(JSON.stringify({ relPath: "README.md", content: "# Readme" }), { status: 200 });
     }

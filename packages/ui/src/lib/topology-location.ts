@@ -5,7 +5,9 @@ export const TOPOLOGY_QUERY_LIMIT = 256;
 export const TOPOLOGY_URL_LIMIT = 16 * 1_024;
 export type TopologyScope = { kind: "host" } | { kind: "rig"; rigId: string }
   | { kind: "pod"; rigId: string; podName: string } | { kind: "seat"; rigId: string; logicalId: string };
-export type TopologyView = "graph" | "spatial" | "table" | "terminal" | "overview" | "details";
+/** `health` is the scoped canonical Health view (host/rig, and the enclosing
+ *  rig in pod context); seats show Health inline in Overview/Details. */
+export type TopologyView = "graph" | "spatial" | "table" | "terminal" | "health" | "overview" | "details";
 export interface TopologySelection { rigId: string; nodeId: string }
 export interface TopologyLocation {
   scope: TopologyScope;
@@ -48,8 +50,8 @@ function scopeIssue(scope: TopologyScope): TopologyIssue["code"] | null {
 }
 function allowedView(scope: TopologyScope, value: unknown): value is TopologyView {
   return typeof value === "string" && (scope.kind === "seat" ? ["overview", "details"]
-    : scope.kind === "host" ? ["graph", "spatial", "table", "terminal"]
-      : ["graph", "spatial", "table", "terminal", "overview"]).includes(value);
+    : scope.kind === "host" ? ["graph", "spatial", "table", "terminal", "health"]
+      : ["graph", "spatial", "table", "terminal", "health", "overview"]).includes(value);
 }
 /** Pass router-decoded scope params verbatim and supply location.publicHref
  * as serializedPathAndQuery to validate the original whole URL budget/path.

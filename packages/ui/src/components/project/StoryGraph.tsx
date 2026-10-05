@@ -116,7 +116,10 @@ function isViewableArtifact(path: string): boolean {
   return path.startsWith("/");
 }
 
-export function StoryGraph({ forest }: { forest: StoryForest }) {
+/** `originInstance` is the host whose queue read produced `forest` (null =
+ * unknown). Omitted keeps the legacy drawer behaviour of attributing the known
+ * selection at open time. */
+export function StoryGraph({ forest, originInstance }: { forest: StoryForest; originInstance?: string | null }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const toggle = (id: string) =>
@@ -248,7 +251,7 @@ export function StoryGraph({ forest }: { forest: StoryForest }) {
                     <span className="sg-cell sg-date">{formatStoryDate(node.tsCreated)}</span>
                     <span className="sg-cell sg-qid">{node.qitemId}</span>
                   </button>
-                  {isExpanded ? <StoryDetail node={node} forest={forest} /> : null}
+                  {isExpanded ? <StoryDetail node={node} forest={forest} originInstance={originInstance} /> : null}
                 </div>
               );
             })}
@@ -269,7 +272,7 @@ function estimateDetailHeight(node: StoryNode): number {
   return 36 + 34 + (hasArtifacts ? 34 : 0) + 40 + 22;
 }
 
-function StoryDetail({ node, forest }: { node: StoryNode; forest: StoryForest }) {
+function StoryDetail({ node, forest, originInstance }: { node: StoryNode; forest: StoryForest; originInstance?: string | null }) {
   const artifacts = extractArtifacts(node.body);
   const byId = useMemo(() => new Map(forest.nodes.map((n) => [n.qitemId, n])), [forest.nodes]);
   // Lineage chain: resolved ancestors (root->parent) -> self -> forward (handedOffTo / children).
@@ -307,6 +310,7 @@ function StoryDetail({ node, forest }: { node: StoryNode; forest: StoryForest })
                   key={a}
                   absolutePath={a}
                   path={a}
+                  {...(originInstance !== undefined ? { originInstance } : {})}
                   className="sg-chip sg-chip-link"
                   testId={`story-artifact-${a}`}
                 >

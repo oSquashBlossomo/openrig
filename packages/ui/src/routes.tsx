@@ -12,12 +12,20 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  lazyRouteComponent,
   Navigate,
   Outlet,
   useParams,
+  useRouterState,
   useSearch,
 } from "@tanstack/react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
+import type { ReactNode } from "react";
+import { RecoveryOperationsProvider } from "./components/startup/RecoveryOperationsProvider.js";
+import { TerminalCatalogStateProvider } from "./components/terminal-catalog/TerminalCatalogState.js";
+import { DisplayTimeProvider } from "./components/time/DisplayTime.js";
+import { validateHelpSearch, validateTerminalsSearch } from "./components/shell/shell-search.js";
+import { shellRouterOptions } from "./components/shell/history-scroll.js";
 import { DaemonHealthProvider } from "./components/DaemonHealthProvider.js";
 import { queryClient } from "./lib/query-client.js";
 import { AppShell } from "./components/AppShell.js";
@@ -40,14 +48,19 @@ import { useRigSummary } from "./hooks/useRigSummary.js";
 import { EmptyState } from "./components/ui/empty-state.js";
 // Phase 3 destination components.
 import { Dashboard } from "./components/dashboard/Dashboard.js";
-import { Feed } from "./components/for-you/Feed.js";
+import {
+  validateConfigurationSearch,
+  validateConnectionsSearch,
+  validateForYouSearch,
+  validateHealthSearch,
+} from "./components/operator/operator-search.js";
+import { OperatorRouteError, OperatorRoutePending } from "./components/operator/OperatorRouteFallback.js";
 import { SpecsLibraryPage } from "./components/specs/SpecsLibraryPage.js";
 import { SkillDetailPage } from "./components/specs/SkillDetailPage.js";
 import { SkillsIndexPage } from "./components/specs/SkillsIndexPage.js";
 import { PluginsIndexPage } from "./components/specs/PluginsIndexPage.js";
 // Phase 3a slice 3.3 — plugin detail page route.
 import { PluginDetailPage } from "./components/specs/PluginDetailPage.js";
-import { FilesWorkspace } from "./components/files/FilesWorkspace.js";
 import { SettingsCenter } from "./components/system/SettingsCenter.js";
 import { PoliciesPage } from "./components/system/PoliciesPage.js";
 import { LogPage } from "./components/system/LogPage.js";
@@ -76,15 +89,33 @@ import {
   VellumBgAllover,
 } from "./components/lab/VellumBackgroundLab.js";
 
-// Root route — wraps everything in AppShell
+// Root route — wraps everything in AppShell.
+//
+// App-lifetime providers sit inside QueryClientProvider and ABOVE the route
+// Outlet so retained state survives route unmounts: startup attempts,
+// chooser context and fleet restore receipts (RecoveryOperationsProvider),
+// terminal catalog filter/focus/scroll and the single Open lane
+// (TerminalCatalogStateProvider), and the adopted display timezone.
+export function AppProviders({ children }: { children: ReactNode }) {
+  return (
+    <DaemonHealthProvider>
+      <DisplayTimeProvider>
+        <RecoveryOperationsProvider>
+          <TerminalCatalogStateProvider>
+            <AppShell>{children}</AppShell>
+          </TerminalCatalogStateProvider>
+        </RecoveryOperationsProvider>
+      </DisplayTimeProvider>
+    </DaemonHealthProvider>
+  );
+}
+
 const rootRoute = createRootRoute({
   component: () => (
     <QueryClientProvider client={queryClient}>
-      <DaemonHealthProvider>
-        <AppShell>
-          <Outlet />
-        </AppShell>
-      </DaemonHealthProvider>
+      <AppProviders>
+        <Outlet />
+      </AppProviders>
     </QueryClientProvider>
   ),
 });
@@ -99,9 +130,9 @@ const indexRoute = createRoute({
   component: Dashboard,
 });
 
-// Topology destination: SC-5 / SC-10 — single URL with view-mode tabs IN-PLACE
-// (graph / table / terminal). Tab state is React useState INSIDE each scope
-// page; URL stays at the scope path across tab switches.
+// Topology destination: one pathname per scope; view/query/selection are URL
+// search state replaced in place (gui-spatial-navigation-contract.md). No
+// validateSearch here: the pages parse raw search with the original publicHref.
 
 const topologyRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -127,10 +158,17 @@ const topologySeatRoute = createRoute({
   component: SeatScopePage,
 });
 
+// For You = canonical Attention (default) + the existing Activity feed.
+// ?view=attention|activity&item=<canonical attention id>&lens=&q= keeps the
+// selected view, exact item and Attention filters across reload/Back. Lazily loaded with truthful
+// pending/error fallbacks so the page code stays out of the initial chunk.
 const forYouRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/for-you",
-  component: Feed,
+  validateSearch: validateForYouSearch,
+  component: lazyRouteComponent(() => import("./components/operator/ForYouPage.js"), "ForYouPage"),
+  pendingComponent: () => <OperatorRoutePending label="For You" />,
+  errorComponent: (props) => <OperatorRouteError {...props} label="For You" />,
 });
 
 const projectRoute = createRoute({
@@ -245,10 +283,27 @@ const specsPluginsIndexRoute = createRoute({
   component: PluginsIndexPage,
 });
 
+// Files (files/markdown cohort): root/dir/file/anchor/filter/origin/project/
+// return ride the query. No validateSearch: FilesRoutePage reads the original
+// publicHref so names such as "1.0"/"true" and percent bytes stay exact.
+// Drafts never enter the URL.
 const filesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/files",
-  component: FilesWorkspace,
+  component: lazyRouteComponent(() => import("./components/files/FilesRoute.js"), "FilesRoutePage"),
+  pendingComponent: () => <OperatorRoutePending label="Files" />,
+  errorComponent: (props) => <OperatorRouteError {...props} label="Files" />,
+});
+
+// Pulse, Recent and the maintained stream for the CONNECTED instance
+// (recent-pulse cohort). Raw publicHref identities: no validateSearch (a
+// validator would JSON-coerce rig=2024 or qitem IDs).
+const pulseRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/pulse",
+  component: lazyRouteComponent(() => import("./components/recent-pulse/RecentPulsePage.js"), "RecentPulseRoute"),
+  pendingComponent: () => <OperatorRoutePending label="Pulse & Recent" />,
+  errorComponent: (props) => <OperatorRouteError {...props} label="Pulse & Recent" />,
 });
 
 // Phase 3a slice 3.3 — Plugin detail page mounted at /plugins/:pluginId.
@@ -266,13 +321,17 @@ const pluginDetailRoute = createRoute({
 // Generic spec detail by kind/name — Phase 4+ wires direct mounts of
 // existing detail pages (RigSpecReview / AgentSpecReview etc) by kind.
 // V1 placeholder: redirect to /specs/library/$specName when kind matches.
+// Generic kind/name lookup (`spec <name>`, `running <spec>`): Library's
+// SpecLookupPage resolves exact served kind+name (+ optional raw version /
+// source); one openable match forwards to its review, several need a choice,
+// none is unavailable. Never name-as-ID. No validateSearch (raw publicHref).
+// Static /specs/library, /specs/skills, /specs/plugins, … keep precedence.
 const specsKindRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/specs/$specKind/$specName",
-  component: () => {
-    const { specName } = useParams({ from: "/specs/$specKind/$specName" });
-    return <Navigate to="/specs/library/$entryId" params={{ entryId: specName }} />;
-  },
+  component: lazyRouteComponent(() => import("./components/shell/SpecLookupRoute.js"), "SpecLookupRoute"),
+  pendingComponent: () => <OperatorRoutePending label="Spec lookup" />,
+  errorComponent: (props) => <OperatorRouteError {...props} label="Spec lookup" />,
 });
 
 const settingsRoute = createRoute({
@@ -299,6 +358,86 @@ const settingsStatusRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/settings/status",
   component: StatusPage,
+});
+
+// Canonical connected-instance operator pages (System: Health /
+// Configuration / Connections). Distinct from Status (daemon process
+// health) and from the editable Settings form. Lazily loaded; selection
+// and filters ride validated search params for direct links and Back.
+const settingsHealthRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/settings/health",
+  validateSearch: validateHealthSearch,
+  component: lazyRouteComponent(() => import("./components/operator/HealthPage.js"), "HealthPage"),
+  pendingComponent: () => <OperatorRoutePending label="Health" />,
+  errorComponent: (props) => <OperatorRouteError {...props} label="Health" />,
+});
+const settingsConfigurationRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/settings/configuration",
+  validateSearch: validateConfigurationSearch,
+  component: lazyRouteComponent(() => import("./components/operator/ConfigurationPage.js"), "ConfigurationPage"),
+  pendingComponent: () => <OperatorRoutePending label="Configuration" />,
+  errorComponent: (props) => <OperatorRouteError {...props} label="Configuration" />,
+});
+const settingsConnectionsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/settings/connections",
+  validateSearch: validateConnectionsSearch,
+  component: lazyRouteComponent(() => import("./components/operator/ConnectionsPage.js"), "ConnectionsPage"),
+  pendingComponent: () => <OperatorRoutePending label="Connections" />,
+  errorComponent: (props) => <OperatorRouteError {...props} label="Connections" />,
+});
+
+// Seat startup / connected fleet restore (startup cohort). Operations on the
+// connected instance; Back keeps attempts/receipts via the root providers.
+const settingsStartupRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/settings/startup",
+  component: lazyRouteComponent(() => import("./components/startup/StartupPage.js"), "StartupPage"),
+  pendingComponent: () => <OperatorRoutePending label="Seat startup" />,
+  errorComponent: (props) => <OperatorRouteError {...props} label="Seat startup" />,
+});
+const settingsRestoreRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/settings/restore",
+  component: lazyRouteComponent(() => import("./components/restore/FleetRestorePage.js"), "FleetRestorePage"),
+  pendingComponent: () => <OperatorRoutePending label="Fleet restore" />,
+  errorComponent: (props) => <OperatorRouteError {...props} label="Fleet restore" />,
+});
+
+// Saved/Derived terminal views. The exact typed token rides ?view= byte for
+// byte (never trimmed or normalised) so Back returns from detail to catalog.
+const terminalsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/terminals",
+  validateSearch: validateTerminalsSearch,
+  component: lazyRouteComponent(() => import("./components/shell/TerminalsRoute.js"), "TerminalsRoute"),
+  pendingComponent: () => <OperatorRoutePending label="Terminal views" />,
+  errorComponent: (props) => <OperatorRouteError {...props} label="Terminal views" />,
+});
+
+// Exact catalog project (project/workflow cohort). The component reads the
+// raw query from publicHref; no validateSearch, which would coerce IDs
+// such as "1.0".
+const projectCatalogRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/project/catalog",
+  component: lazyRouteComponent(() => import("./components/project/catalog/CatalogProjectPage.js"), "CatalogProjectRoute"),
+  pendingComponent: () => <OperatorRoutePending label="Catalog projects" />,
+  errorComponent: (props) => <OperatorRouteError {...props} label="Catalog projects" />,
+});
+
+// Help & actions: every TUI section equivalent and command, with its GUI
+// destination or CLI/native equivalent. No reads, so it stays usable while
+// the daemon is loading, failing or offline.
+const helpRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/help",
+  validateSearch: validateHelpSearch,
+  component: lazyRouteComponent(() => import("./components/shell/HelpPage.js"), "HelpPage"),
+  pendingComponent: () => <OperatorRoutePending label="Help" />,
+  errorComponent: (props) => <OperatorRouteError {...props} label="Help" />,
 });
 
 const searchRoute = createRoute({
@@ -382,7 +521,9 @@ const liveNodeDetailsRoute = createRoute({
   path: "/rigs/$rigId/nodes/$logicalId",
   component: () => {
     const { rigId, logicalId } = useParams({ from: "/rigs/$rigId/nodes/$logicalId" });
-    return <LiveNodeDetails rigId={rigId} logicalId={decodeURIComponent(logicalId)} />;
+    // The router already decoded the param once; pass it verbatim (a second
+    // decode resolved a different seat for %25/%2F and threw on bad escapes).
+    return <LiveNodeDetails rigId={rigId} logicalId={logicalId} />;
   },
 });
 
@@ -440,9 +581,17 @@ const agentSpecReviewRoute = createRoute({
 const libraryReviewRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/specs/library/$entryId",
+  // `?source=<host>` pins the review's read origin (e.g. View Spec from a
+  // connected-instance workflow). No validateSearch: the raw history entry is
+  // read so a host ID such as "1.0" is never JSON-coerced. Absent → existing
+  // selected-host behaviour; an empty value is passed through and refused by
+  // the hook (no read, no local fallback).
   component: () => {
     const { entryId } = useParams({ from: "/specs/library/$entryId" });
-    return <LibraryReview entryId={entryId} />;
+    const publicHref = useRouterState({ select: (state) => (state.location as { publicHref?: string }).publicHref ?? state.location.href });
+    const query = new URLSearchParams(publicHref.split("#")[0]!.split("?")[1] ?? "");
+    const sourceHostId = query.has("source") ? query.get("source")! : undefined;
+    return <LibraryReview entryId={entryId} sourceHostId={sourceHostId} />;
   },
 });
 
@@ -564,6 +713,15 @@ export const routeTree = rootRoute.addChildren([
   settingsPoliciesRoute,
   settingsLogRoute,
   settingsStatusRoute,
+  settingsHealthRoute,
+  settingsConfigurationRoute,
+  settingsConnectionsRoute,
+  settingsStartupRoute,
+  settingsRestoreRoute,
+  terminalsRoute,
+  pulseRoute,
+  projectCatalogRoute,
+  helpRoute,
   searchRoute,
   projectGraphicsPreviewRoute,
   cardPreviewsLabRoute,
@@ -596,7 +754,12 @@ export const routeTree = rootRoute.addChildren([
   steeringRedirectRoute,
 ]);
 
-export const router = createRouter({ routeTree });
+// Shared router options:
+// - topology search adapters: the four topology routes parse raw search with
+//   the original publicHref (no JSON/number coercion: "1.0" stays "1.0");
+//   unrelated routes keep byte-identical default serialization;
+// - Back/Forward scroll continuity (entry changes only; history-scroll.ts).
+export const router = createRouter({ routeTree, ...shellRouterOptions() });
 
 declare module "@tanstack/react-router" {
   interface Register {

@@ -21,7 +21,7 @@ export function instanceAttentionRank(i: WorkflowInstanceWithDeadline): number {
   if (i.deadline.state !== "healthy") return 1;
   if (i.status === "waiting") return 2;
   if (i.status === "active") return 3;
-  return 4; // completed
+  return 4; // completed or aborted
 }
 
 function statusChip(i: WorkflowInstanceWithDeadline): { glyph: string; label: string; cls: string } {
@@ -29,6 +29,7 @@ function statusChip(i: WorkflowInstanceWithDeadline): { glyph: string; label: st
   if (i.deadline.state !== "healthy") return { glyph: "▲", label: i.deadline.state.toUpperCase(), cls: "text-amber-700" };
   if (i.status === "waiting") return { glyph: "◐", label: "WAITING", cls: "text-on-surface-variant" };
   if (i.status === "active") return { glyph: "●", label: "ACTIVE", cls: "text-emerald-800" };
+  if (i.status === "aborted") return { glyph: "✕", label: "ABORTED", cls: "text-on-surface-variant" };
   return { glyph: "○", label: "COMPLETED", cls: "text-on-surface-variant" };
 }
 
@@ -50,6 +51,7 @@ function positionLabel(i: WorkflowInstanceWithDeadline): string {
   if (i.currentStepId) return `at ${i.currentStepId}`;
   if (i.status === "completed") return "closed";
   if (i.status === "failed") return "felled";
+  if (i.status === "aborted") return "aborted";
   return "—";
 }
 
@@ -124,9 +126,17 @@ export function WorkflowInstancesBand({
    *  /workflows altitude passes false and owns its own empty state. */
   quietWhenEmpty?: boolean;
 }) {
-  const { data, isLoading } = useWorkflowInstances();
+  const { data, isLoading, error } = useWorkflowInstances();
   const rows = selectSpecInstances(data ?? [], workflowName, workflowVersion);
 
+  // A failed read is not an empty list: never report "0 instances" from it.
+  if (error && data === undefined) {
+    return (
+      <p role="alert" data-testid={testId ? `${testId}-error` : "workflow-instances-band-error"} className="font-mono text-[11px] text-tertiary">
+        Instances unavailable — {error.message}
+      </p>
+    );
+  }
   if (isLoading || rows.length === 0) {
     if (quietWhenEmpty) return null;
     return (

@@ -25,6 +25,8 @@ beforeEach(async () => {
   globalThis.fetch = mockFetch;
   mockFetch.mockReset();
   mockFetch.mockImplementation(async (url: string) => {
+    // Topology bodies mount only behind a successfully read source host.
+    if (url === "/api/hosts") return new Response(JSON.stringify({ ownName: "localhost", selected: "local", hosts: [] }));
     if (url === "/api/rigs/summary") return new Response(JSON.stringify([{ id: "abc-rig", name: "acme", nodeCount: 1 }]));
     if (url === "/api/rigs/abc-rig/graph") {
       return new Response(JSON.stringify({
@@ -79,8 +81,9 @@ function mainEl(container: HTMLElement) {
 
 describe("3D view-mode tab", () => {
   it("is discoverable on host and rig/pod scopes, second after Graph; Graph stays the default", () => {
-    expect(HOST_SCOPE_TABS.map((t) => t.id)).toEqual(["graph", "spatial", "table", "terminal"]);
-    expect(RIG_POD_SCOPE_TABS.map((t) => t.id)).toEqual(["graph", "spatial", "table", "terminal", "overview"]);
+    // Health (scoped canonical Health) follows Terminal; Overview stays last.
+    expect(HOST_SCOPE_TABS.map((t) => t.id)).toEqual(["graph", "spatial", "table", "terminal", "health"]);
+    expect(RIG_POD_SCOPE_TABS.map((t) => t.id)).toEqual(["graph", "spatial", "table", "terminal", "health", "overview"]);
     expect(HOST_SCOPE_TABS.find((t) => t.id === "spatial")?.label).toBe("3D");
   });
 

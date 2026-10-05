@@ -9,6 +9,11 @@ interface AgentSpecDisplayProps {
   yaml: string;
   testIdPrefix?: string;
   sourcePath?: string | null;
+  /** Exact host whose read served this review (attribution for file chips).
+   *  A string is passed unchanged (remote/opaque bytes included); null means
+   *  unknown and stays null; omitted keeps the drawer's open-time capture.
+   *  Files admission stays authoritative — this never grants local reads. */
+  originInstance?: string | null;
 }
 
 function resolveSpecRelativePath(sourcePath: string | null | undefined, filePath: string): string | null {
@@ -31,11 +36,13 @@ function resolveSpecRelativePath(sourcePath: string | null | undefined, filePath
 function FileChip({
   label,
   sourcePath,
+  originInstance,
   testId,
   children,
 }: {
   label: string;
   sourcePath?: string | null;
+  originInstance?: string | null;
   testId: string;
   children: ReactNode;
 }) {
@@ -43,7 +50,7 @@ function FileChip({
   if (!absolutePath) return <>{children}</>;
   return (
     <FileReferenceTrigger
-      data={{ path: label, absolutePath }}
+      data={originInstance === undefined ? { path: label, absolutePath } : { path: label, absolutePath, originInstance }}
       testId={testId}
       className="inline-block text-left"
     >
@@ -52,7 +59,7 @@ function FileChip({
   );
 }
 
-export function AgentSpecDisplay({ review, yaml, testIdPrefix = "agent", sourcePath }: AgentSpecDisplayProps) {
+export function AgentSpecDisplay({ review, yaml, testIdPrefix = "agent", sourcePath, originInstance }: AgentSpecDisplayProps) {
   const profiles = review?.profiles ?? [];
   const resources = review?.resources ?? { skills: [], guidance: [], plugins: [], subagents: [] };
   const startup = review?.startup ?? { files: [], actions: [] };
@@ -97,6 +104,7 @@ export function AgentSpecDisplay({ review, yaml, testIdPrefix = "agent", sourceP
                   key={`${g}-${i}`}
                   label={g}
                   sourcePath={sourcePath}
+                  originInstance={originInstance}
                   testId={`${testIdPrefix}-guidance-file-trigger-${g}`}
                 >
                   <span className="mr-1 mb-0.5 inline-flex items-center gap-1 bg-surface-low px-1.5 py-0.5 underline decoration-dotted decoration-outline">
@@ -133,6 +141,7 @@ export function AgentSpecDisplay({ review, yaml, testIdPrefix = "agent", sourceP
                   <FileChip
                     label={f.path}
                     sourcePath={sourcePath}
+                    originInstance={originInstance}
                     testId={`${testIdPrefix}-startup-file-trigger-${f.path}`}
                   >
                     <span className="inline-flex items-center gap-1 underline decoration-dotted decoration-outline">

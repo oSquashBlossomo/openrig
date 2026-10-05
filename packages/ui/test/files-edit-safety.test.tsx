@@ -119,12 +119,21 @@ describe("FilesWorkspace edit safety against actual files routes", () => {
     expect(readFileSync(f.target).toString("hex")).toBe("41ff0042");
   });
 
-  it("refuses CR line endings the browser textarea would normalize on save", async () => {
+  // The CR read-only gate was replaced by the line-ending-preserving
+  // serializer (files-text-draft.ts): a CRLF file is editable and keeps CRLF.
+  it("edits a CRLF file through the serializer and keeps every CRLF separator", async () => {
     const f = await mountWorkspace("windows.txt", Buffer.from("one\r\ntwo\r\n"));
-    expect((screen.getByTestId("files-edit-toggle") as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByTestId("files-edit-unavailable").getAttribute("data-reason")).toBe("line-endings");
-    expectNoEditorSurface();
-    expect(readFileSync(f.target).equals(f.bytes)).toBe(true);
+    expect((screen.getByTestId("files-edit-toggle") as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByTestId("files-edit-unavailable")).toBeNull();
+    fireEvent.click(screen.getByTestId("files-edit-toggle"));
+    const textarea = await screen.findByTestId("files-editor-textarea") as HTMLTextAreaElement;
+    expect(textarea.value).toBe("one\ntwo\n");
+    expect(screen.getByTestId("files-editor-line-endings").getAttribute("data-ending")).toBe("crlf");
+    fireEvent.change(textarea, { target: { value: "one\nTWO\nthree\n" } });
+    fireEvent.click(screen.getByTestId("files-editor-save"));
+    await waitFor(() => expect(f.writes).toHaveLength(1));
+    expect(f.writes[0]!.status).toBe(200);
+    expect(readFileSync(f.target, "utf8")).toBe("one\r\nTWO\r\nthree\r\n");
   });
 
   it.each(["binary", "truncated"] as const)("rechecks the actual hook cache before immediate Save after a late %s read", async change => {
@@ -177,7 +186,6 @@ describe("FileEditor defends itself independent of the toolbar gate", () => {
     ["unverified", { binary: undefined }],
     ["unverified", { totalBytes: 99 }],
     ["unverified", { truncated: undefined }],
-    ["line-endings", { content: "a\rb", totalBytes: 3, size: 3 }],
   ] as const)("direct render with a %s snapshot shows no draft surface (%j)", (reason, patch) => {
     const read = { ...completeRead, ...patch } as FilesReadResponse;
     render(<QueryClientProvider client={newClient()}><FileEditor root="r" path="a.txt" read={read} /></QueryClientProvider>);
@@ -198,5 +206,9 @@ describe("FileEditor defends itself independent of the toolbar gate", () => {
 
   it("classifies the complete multi-byte UTF-8 snapshot as editable", () => {
     expect(assessFileEditability(completeRead)).toEqual({ editable: true });
+  });
+
+  it("CR-only content is now editable through the serializer, not a read-only gate", () => {
+    expect(assessFileEditability({ ...completeRead, content: "a\rb", totalBytes: 3, size: 3 })).toEqual({ editable: true });
   });
 });

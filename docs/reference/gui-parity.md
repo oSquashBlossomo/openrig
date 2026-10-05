@@ -6,345 +6,78 @@ The inventory follows the eight entries in `packages/tui/src/sections.ts`, the c
 
 `ARCHITECTURE.md` describes the upstream UI as maintenance-only. This reference supports GUI modernization in this fork. Existing daemon contracts remain the source of truth; a visually richer surface must not turn unknown evidence into success, treat receipts as acceptance, or perform writes while browsing.
 
-## Implementation checkpoints
+## Current implementation and acceptance ledger
 
-The findings below preserve the audited baseline. This section records subsequent
-verified changes without implying that the rest of the matrix is complete.
+This October 5, 2026 **frontend checkpoint is based on `b3166d90657b94f69446286b5e30a5fd0ed99911`** and includes all eight reviewed frontend cohorts, their shared routes/providers and both completed narrow follow-ups. Final validation, remote publication and CI status are recorded on [PR #11](https://github.com/oSquashBlossomo/openrig/pull/11); this document does not assert that those steps have completed. **GUI/TUI parity is not complete.** The original source-audit findings and capability matrices below remain historical acceptance requirements for `bbbeee6214fe0e0b89c622573e3bb132e360395d`; their “Missing”/“Gap” cells are not current implementation verdicts. This ledger supersedes their status accounting without deleting the baseline.
 
-- **Exact daemon route targets:** Node, native-session, seat, agent-image,
-  terminal WebSocket and pod handlers now use Hono's already-decoded parameters.
-  Thirty redundant decoding calls previously turned literal percent sequences
-  into a different resource name or a server error. Maintained regressions and
-  independent private Hono, SQLite, file, cache and WebSocket checks preserve
-  exact targets through reads, writes, lifecycle admission and shared terminal
-  pipes. Authentication, action guards, native identity checks and pod-name
-  validation remain in force. A percent-containing pod reaching the route does
-  not imply that native launch accepts that name.
-- **Spec source identity:** Rig and agent file IDs now use the full SHA-256 of
-  their canonical file address in a versioned `specfile:v2:` identifier. Names,
-  contents, scan order and overlapping roots cannot silently redirect an ID to
-  a different file. Built-in read-only provenance wins for overlapping aliases.
-  Reads and mutations recheck the authored path's canonical binding; a changed
-  binding returns `409 source_changed`. All legacy 16-hex file IDs return
-  `409 legacy_spec_id` and require reselection. Physical moves change the ID;
-  content edits retain it. CLI add resolves the installed canonical target and
-  reserved file IDs never fall back to display-name lookup. Workflow IDs retain
-  their existing contract. These checks do not provide an atomic filesystem
-  lease against concurrent external replacement.
-- **Agent-image version protection:** Pin/delete/prune protection now keeps a
-  separate record for each image ID. A later version can no longer overwrite
-  the protection of an earlier pinned version. Existing conservative name-based
-  spec and lineage references still protect all relevant versions, and explicit
-  force behavior remains intact. Fourteen maintained regressions, adjacent
-  suites and an independent original deletion reproduction pass.
-- **Agent-image tuple identity:** Colon-bearing names and versions now use an
-  opaque canonical tuple ID instead of ambiguous delimiter concatenation.
-  Colon-free tuples retain their existing `agent-image:name:version` IDs.
-  Snapshot capture uses the scanner's shared ID builder, including exact empty
-  and numeric-coerced version strings. Ambiguous old multi-colon IDs return
-  not-found and require reselection; no alias guesses or disk migration occur.
-  Exact-tuple root precedence remains intentional. The original 15-case
-  reproduction, 15 independent route/producer cases and 150 maintained daemon
-  plus three CLI checks pass. Native image launch was not exercised.
-- **Agent-image catalog reads:** List and preview reads now have a total
-  five-second deadline and cancellation. Server failures and malformed payloads
-  remain errors rather than successful empty libraries. Preview IDs must match
-  exactly, absent IDs cannot fetch through manual refresh, and another image's
-  cache cannot become placeholder content. Nullable, empty, zero and additive
-  metadata remain intact; an absent legacy cwd stays unknown. Thirty-four new
-  hook checks, unchanged consumer tests and eight independent actual-route/file
-  cases pass. Connected-daemon catalog scope and pin mutations are unchanged.
-  Consumers still need consistent preview-error and stale-data presentation.
-- **Integrated image checkpoint:** Immutable `16fbbbb3` passes the full workspace
-  build and typecheck and all 262 UI test files (2,705 passing tests, one existing
-  skip). This includes the earlier backend identity fixes and the two image
-  cohorts above. Existing large-bundle warnings and uncommitted frontend gaps
-  remain; these source checks do not establish full browser or native acceptance.
-- **Backend checkpoint verification:** The immutable `fcb77d69` source archive
-  passes the full workspace build and typecheck, 161 exact-route/source/protection
-  regressions and 29 CLI spec/release checks. At `de6567f0`, the full UI suite
-  passes 2,671 tests with one existing skip; repository checks pass 255 tests
-  with one skip, and TUI passes 839. The broader local daemon/CLI run did not
-  pass: this Mac cannot satisfy the CI process-observation preflight, and the
-  first archive lacked historical release tags. The tag-dependent CLI tests
-  pass after supplying those refs. GitHub CI subsequently passed all eight
-  required checks on `4d592287` (run 37202929516), including the daemon and CLI
-  suites under the repository's process/network isolation. Uncommitted frontend
-  work is excluded from these immutable-source results.
-- **Plugin and skill documentation reads:** All four directory/file readers now
-  bound headers and decoding to five seconds, cancel abandoned reads and verify
-  the exact catalog owner and original requested path. Empty content, nullable
-  directory facts, additive metadata and canonical symlink paths remain valid.
-  Missing identities are refused before fetching; dated same-file cache remains
-  available beside refresh errors. Sixty-four maintained checks and 20 independent
-  actual-route/discovery-service probes pass. The immutable `66488796` archive
-  passes UI typecheck, production build and all 261 UI files (2,671 tests, one
-  existing skip). These connected-instance reads do not add remote catalog or
-  file-write authority. Source-aware Markdown and catalog navigation remain open.
-- **Topology URL dependency:** Paired search adapters retain exact opaque source,
-  rig and graph-node identities through the installed router's parsing and
-  reserialization, including numeric-looking strings and reserved characters.
-  Duplicate/malformed source assertions remain invalid after reload; optional
-  presentation errors retain a usable default with an explicit issue. New links
-  use raw route parameters and once-encoded hrefs with bounded sizes. Sixty-nine
-  root checks and 21 independent router probes pass, including real navigation,
-  node-reader paths and malformed-source retention across replace/Back/reload.
-  The combined immutable `b94bbd71` archive, including the file-text dependency,
-  passes UI typecheck, production build and all 260 UI files (2,625 tests, one
-  existing skip). Large production bundles remain a build warning.
-  Components still need coordinated route encoding, source admission and
-  semantic state integration before this fixes the browser Back defect.
-- **File text serialization dependency:** A pure helper preserves uniform LF,
-  CRLF or CR separators and returns exact original bytes for an unchanged mixed
-  file. A changed mixed draft requires an explicit choice before whole-draft
-  normalization; it never guesses which repeated line survived an edit.
-  Seventy-nine root checks pass, including real private-file writes, original
-  compare-and-swap tokens, external-edit conflict rejection and unchanged editor
-  safety tests. The current CR read-only guard remains until frontend integration
-  and actual typing, paste, undo, composition and conflict acceptance are complete.
-- **Spatial browser navigation checkpoint:** At 1280×720, the actual application
-  with private fictional data supports top/isometric camera shortcuts, exact
-  search/selection, Scene/List switching and cross-pod relationship inspection.
-  A known-source seat drill fully loads the exact detail page. Back still resets
-  to Graph and loses the spatial query/selection. A separate cold host-read HTTP
-  503 still leaves the header labeled local. These are reproduced frontend gaps;
-  semantic navigation and truthful source presentation remain open.
-- **Settings reads and preview defaults:** Connected-instance configuration
-  reads now bound headers and decoding to five seconds, cancel abandoned reads
-  and validate resolved scalar values without rejecting compatible partial or
-  additive settings maps. Write paths are unchanged. Node/session previews use
-  their existing three-second/50-line defaults when setting types are invalid;
-  explicit overrides, paused captures and finite numeric settings retain their
-  behavior. Sixty-six root Settings checks and 55 preview checks pass. Four
-  existing response fixtures now include the source/default metadata always
-  served by the daemon; all original behavior assertions remain unchanged.
-  An immutable archive of `73cb3f3a` passes all 256 UI files (2,499 tests, one
-  existing skip). The same product source at `dca85507` passes UI typecheck and
-  production build. Settings consumers still need stale-state presentation and
-  handling for setting names absent from an older daemon's inventory.
-- **Needs Input source coverage:** One five-second budget now spans inventory
-  and a four-request fanout. Healthy rig results survive peer failures; exact
-  omissions, rejected rows and unknown activity remain explicit. Fair rotation
-  prevents a slow prefix from permanently hiding later rigs. Identity warnings,
-  served attention taxonomy and legacy pane prompts retain their evidence.
-  Forty-eight root and independent maintained checks, plus three independent
-  transport/provenance probes, pass. An immutable archive of `7fd9a1a3` passes
-  typecheck, production build and all 253 UI files (2,458 tests, one existing
-  skip). Feed still must consume the additive read state and coverage before an
-  empty list can be presented as reassuring.
-- **Node/session capture reads:** Preview requests now bound headers and decoding,
-  cancel abandoned reads and reject cross-session responses. A node's native
-  binding remains daemon-authoritative; no session name is inferred from its
-  logical ID. Paused same-target captures, terminal authentication and documented
-  unavailable responses remain compatible. Fifty-five root checks, 102 independent
-  UI checks, 18 daemon tests and three independent Hono/SQLite probes pass. An
-  immutable archive of `d608aa7d` passes UI typecheck, production build and all
-  251 UI test files (2,431 tests, one existing skip).
-- **Native Codex browser checkpoint:** A fresh private Codex 0.160.0 conversation
-  using 6.1 Sol/high produced two replies through the actual browser terminal,
-  source broker and private tmux adapter. Two viewers retained identical current
-  text, including Unicode, across native 137×43 to 155×37 resizing and late
-  attachment. The native process and conversation stayed fixed, and the last
-  detach removed the pipe without stopping the process. This also exposed a
-  remaining layout defect: focusing a fitted viewer can scroll its response out
-  of sight even with product styles loaded. Native Claude rendering, phone
-  readability and complete product navigation remain unverified.
-- **Composed Review and Fleet reads:** One five-second deadline now covers
-  headers and decoding, including ignored cancellation. Exact review identities
-  are checked against the daemon's echoes; nullable and partial Fleet evidence
-  is retained. Unread callback/error bodies are released. Sixty-seven focused
-  root checks and three independent native-stream cases pass.
-- **Slice, mission and workflow-filter reads:** Selection changes no longer
-  borrow another entity's placeholder. Authored document filenames retain reserved
-  characters. Workflow names and versions use separate query fields and cache
-  identities, while representable pairs retain compatibility with older daemons.
-  Fifty-five root UI checks, 42 existing daemon tests and three independent route
-  probes pass. Queue maps expose explicit unsupported remote scope; their existing
-  ScopePages consumers still require frontend wiring to that scope.
-- **Legacy Attention transport:** Legacy and aggregate requests are cancellable
-  and bounded. Malformed payloads produce errors instead of successful empty data;
-  nullable queue facts, origin stamps and remote failure statuses remain intact.
-  Forty-four root checks and an independent two-origin daemon probe pass. Consumer
-  loading, stale and error presentation remains separate frontend acceptance.
-- **Malformed 3D graph identities:** Lone UTF-16 surrogate node and edge IDs now
-  produce partial-graph issues while valid siblings and distinct Unicode IDs
-  survive. All 135 spatial tests and the unchanged five-case crash reproduction
-  pass. This verifies graph-entry handling, not every possible scope or metadata
-  identity or the remaining 2D renderer gaps.
-- **Integrated bounded-read checkpoint:** All 249 UI test files pass, with 2,397
-  passing tests and one existing skip. Two host-level fixtures were corrected to
-  include actual mission/list response fields; their behavior assertions remain
-  unchanged. An isolated archive of `69ddef95` passes UI typecheck/production build
-  and daemon typecheck. These checks do not complete unfinished frontend rows.
-  In particular, six private actual-Feed regressions confirm that initial
-  Attention errors still show reassuring empty copy and failed refreshes retain
-  cached rows/host status without stale disclosure; the successful-empty control
-  passes. The legacy feed must consume read state before freshness UX is complete.
+- **Historical foundation** identifies the separately published data, terminal, Feed and HostIndicator commits on which this checkpoint is based. Their successful checks do not validate later frontend changes.
+- **Frontend checkpoint / reviewed** means the source includes the cohort and its mounting dependencies, with the bounded independent evidence below. Remote publication and current-head CI require their own PR #11 receipts; source inclusion does not establish complete browser acceptance.
+- **Bounded desktop acceptance** means the recorded journey worked at normal **1280×720** with the named private fixture. Fictional API data prove presentation/navigation, not actual daemon/native effects. Production Files, workflow and restore fixtures explicitly distinguish real service receipts from absent or inert native boundaries.
+- **Open** includes recorded repairs, missing integrations and unexercised original acceptance cases. Successful transport, source inspection, mocks or a screenshot alone never close a whole capability row.
 
-- **Shared daemon health:** `SettingsSystemStatusPanel` now uses the common typed
-  health query and shows event-loop-unhealthy evidence. Five regression cases in
-  `packages/ui/test/settings-system-status-health.test.tsx` pass, including offset
-  polling after navigation and preservation of the shared terminal health signal.
-- **Canonical read contracts:** Health, Attention, delivered human updates,
-  Configuration, Connections and Slack manifest hooks now preserve their complete
-  served projections and exact instance/entity query keys. Remote forwarding is
-  explicitly unsupported for these APIs. Five-second deadlines cover headers and
-  body parsing; cancellation and malformed responses are distinct errors. The
-  common daemon-health poll also uses this deadline, so a hung read replaces a
-  previous healthy verdict with an unavailable signal. Four focused suites pass
-  (51 tests), and UI typecheck passes. These are transport and contract checks;
-  user-facing pages and their browser verification are still in progress.
-- **Terminal preview and Open:** `TerminalLauncher` uses `useTerminalPreview` for
-  readiness, provider availability, pages, geometry and unavailable-seat reasons.
-  Open submits the exact preview plan. Twenty-seven launcher tests pass, including
-  stale-plan refresh, saved-name collisions, unknown deep links and host changes.
-  These are HTTP-boundary UI tests; native terminal opening and shared-pane sizing
-  require separate integration evidence.
-- **Shared terminal geometry:** Protocol 2 transmits the native pane dimensions
-  before terminal output; opening or resizing a browser no longer changes the
-  tmux window size or sizing policy. Private tmux/WebSocket tests verify pane
-  identity, two viewers sharing one pipe, native resize propagation and cleanup.
-  Seventy daemon tests and 34 focused UI tests pass. Independent review reproduced
-  and then verified the repair of a resize/output race. Busy output can defer a
-  screen repaint until a quiet boundary, while raw output continues streaming.
-  Clients must reload across this protocol change; older raw-stream clients get
-  explicit update/reload guidance. The later native Codex checkpoint above adds
-  browser evidence and a remaining layout finding; Claude acceptance remains open.
-- **Exact project reads:** Catalog, scopes, execution and slice readers now retain
-  project ID and canonical root in requests and cache keys. Selected-project
-  document routes reuse the same catalog/mission resolver and reject symlink
-  escapes. A selected project without a proof-packet source returns unavailable
-  instead of serving a same-named packet from the default workspace. Twenty-seven
-  UI contract tests and 41 daemon route tests pass; actual daemon responses also
-  pass the browser guards. Project pages still require frontend integration.
-- **Workflow recovery contracts:** Reads now retain aborted status, packets,
-  failure occurrences, source reconciliation and receipt facts. New mutations
-  retain exact failure identity and immutable recovery attempts without automatic
-  retries. An unknown explicit failure ID cannot resume a different failure.
-  HTTP 500 after a committed resume remains an unknown outcome requiring observed
-  readback. Independent real-route reproductions verify both corrections; focused
-  suites pass 45 daemon and 62 UI tests. The existing page's Resume control still
-  requires migration to the occurrence chooser and new mutation helper.
-- **Workflow abort contract:** The new helper retains exact actor/reason bytes,
-  performs one submission and preserves uncertain outcomes for readback. A known
-  missing frontier packet is reported as rejected only for the documented abort
-  HTTP 404 response; its transaction rolls back earlier packet closures. Actual
-  Hono/SQLite checks verify success, rollback and post-commit notification failure.
-  Thirty-eight focused abort/resume/revision/scope tests pass. Frontend controls
-  remain unfinished and are not covered by this transport checkpoint.
-- **Topology data reliability:** Shared 2D/3D summary and graph requests have
-  cancellable five-second deadlines. Invalid payload containers fail visibly;
-  nullable names retain the existing partial-inventory fallback. The spatial
-  model tracks actual cache data, so two updates in one millisecond do not leave
-  it stale. Sample age uses the sample timestamp, with unknown age for terminal
-  output fallback. Renderer presentation and interaction acceptance remain open.
-- **Real browser terminal checkpoint:** Actual xterm, WebSocket broker and a
-  private tmux session were exercised with two viewers, Unicode output, input,
-  native resize, independent history scrolling and disconnect cleanup. Browser
-  resize preserved native pane size, process identity and sizing policy. This
-  used a harmless scripted writer, not native Claude/Codex. Fitted interactive
-  text is still too small at phone width and needs a readable presentation.
-- **Startup and fleet restore contracts:** Exact seat/runtime/revision selections
-  and fresh-start consent remain bound to the inspected state. One mutation lane
-  preserves the first attempt across duplicate clicks; uncertain replies retain
-  identity for inspection rather than automatically replaying effects. Accepted
-  fleet handles survive view unmount and reload, with storage failure reported
-  separately. Detaching observation does not cancel accepted work. Forty-six
-  focused tests pass, with independent duplicate-click and actual daemon-route
-  checks. Startup and fleet receipt screens still require frontend integration.
-- **Durable Recent and Pulse reads:** Served transition windows and exact selected
-  rows no longer depend on the ephemeral event feed. Pulse preserves independently
-  available queue and pane sources, unknown totals, bounded enrichment and partial
-  failures. Unresolved blocker ownership cannot become an exact count; active pane
-  evidence remains visible when queue sources fail. Fifty-nine focused checks and
-  two independent reproductions pass. User-facing consumers and event invalidation
-  remain to be integrated.
-- **Terminal catalog read boundaries:** Catalog and preview reads now have total
-  five-second deadlines, cancellation and payload guards. Unknown host selection
-  waits for actual authority; unsupported remote selection and manual refetch
-  cannot fall back to local data. Exact view/provider/plan identity survives cache
-  transitions. One hundred focused tests pass, including the unchanged launcher;
-  independent actual daemon-route and cancellation cases also pass. A standalone
-  terminal catalog destination remains a frontend gap.
-- **File replacement safety:** The editor cannot save truncated or binary
-  previews as whole-file replacements. It checks complete text metadata, retains
-  the draft's original change-detection tokens and rechecks the latest cached
-  snapshot before Save. Thirty-one focused tests and seven independent private
-  cases pass, including actual Files UI/Hono write behavior. Complete LF UTF-8
-  editing remains supported. CR/CRLF editing is currently read-only until its
-  line endings can be preserved; source/host identity and richer file navigation
-  remain open requirements.
-- **Node and library read identity:** Seat detail, spec listings and opaque-ID
-  reviews no longer show a previous entity or host while the new selection loads.
-  Reads have cancellable five-second deadlines and validate exact returned IDs;
-  supported remote requests keep the daemon's read-through envelope. Original
-  nullable, diagnostic and source-provenance fields remain intact. One hundred
-  thirteen focused tests and an independent actual-source check pass. Consumers
-  still need consistent stale/error presentation and correct source destinations.
-- **Host selection read boundary:** Host reads now validate the actual selection
-  and transport-specific endpoint fields, use one cancellable five-second budget,
-  and retain removed aliases without substituting local authority. Fifty-eight
-  hook/downstream tests and one actual daemon-route test pass; independent review
-  also verifies the missing-endpoint refusals. Existing cached selection semantics
-  remain unchanged, so consumers must disclose failed refreshes separately.
-- **Canonical live refreshes:** Health and Attention event bursts no longer
-  restart an in-flight bounded read. Reconnect and narrower event families
-  coalesce into one follow-up per affected query after it settles. Startup and
-  related health events also refresh Health-derived Attention. Fifty focused
-  tests and the original independent slow-read reproduction pass.
-- **Shared event refresh ownership:** Topology, process, project, activity and
-  workflow event subscribers now share a refresh scheduler per query client.
-  A delivered event causes one refresh even with multiple subscribers; distinct
-  later events retain their follow-up. Slow reads can settle without repeatedly
-  being canceled, and departing subscribers release their pending work without
-  canceling surviving readers. One hundred seven focused tests pass, including
-  twelve legacy/coalescing regressions and the canonical event suites. Event
-  membership and host/rig query identities remain intact.
-- **File read and write scope:** Files now require a known local selection,
-  including manual refetch and a retained editor's Save after switching hosts.
-  Disabled readers hide warm cached content. Cancellable five-second reads retain
-  the original root/path spelling and canonical source metadata; the existing
-  local cache keys preserve the editor's latest-preview safety check. Ninety-four
-  focused tests and four independent actual-file cases pass, including complete
-  UTF-8 saves, conflict retention and late binary/truncated preview protection.
-  Asset links, unsupported-scope presentation and richer navigation remain open.
-- **Fleet selection boundaries:** Summary, graph, process and node inventory
-  hooks clear previous-host/rig placeholders. Inventory reads validate exact rig
-  identity, retain legitimate nullable native bindings and use cancellable
-  five-second deadlines through the supported remote read-through path. One
-  hundred sixty-three focused tests pass, including actual private daemon routes.
-  The table's separate inventory query owner still needs transport migration;
-  malformed partial graph entries still need defensive 2D rendering.
-- **Spatial browser checkpoint:** The actual application, with fictional API data,
-  now fits a 526×448 canvas inside an unchanged 1280×720 browser viewport. Seat
-  selection, focus, evidence, relationships, search and List mode were exercised.
-  A 412-seat fixture retains the final seat in searchable list/detail fallback;
-  an unavailable rig leaves an explicit partial-source warning and usable sibling
-  rigs. Empty and malformed inventories show distinct states. Independent camera
-  tests verify that a Reset animation cannot overwrite newer automatic framing.
-  Rejected renderer imports now receive a fresh loader on Retry; constructor
-  retries reuse downloaded code. Sixty-two focused tests and independent
-  concurrent-mount checks pass. Additional viewport sizes and complete integration
-  remain open; this checkpoint does not establish full spatial acceptance.
-- **Current data integration checkpoint:** All 240 UI test files pass (2,269
-  tests, one existing skip). This includes the file/fleet scope changes and
-  shared event scheduler. Older fixtures now supply the actual daemon DTOs and
-  known local selection; a deferred library response pins a test expansion race
-  without changing density assertions. An isolated archive of the committed UI
-  passes typecheck and production build. Three type errors remain in uncommitted
-  startup components, and full frontend/browser acceptance is still outstanding.
-- **Earlier integrated UI checkpoint:** 214 files passed (1,963 tests, one
-  existing skip) after the contract/data changes and compatible dependency
-  refresh. Workspace build and typechecks pass. This local run includes the
-  unfinished spatial renderer; its known visual/interaction corrections remain
-  required before feature acceptance.
-- **Initial local baseline:** 198 UI test files passed (1,729 tests, one existing
-  skip). Build passed. The first full package run exposed 14 daemon and one CLI
-  test-fixture failures involving macOS path aliases and an ambient daemon state
-  file. The four affected suites pass after isolating their fixture roots (128
-  tests). Full integrated validation remains required as implementation continues.
+### Historical foundation and checkpoint verification
 
-## Priority findings
+The published foundation includes exact Hono route identities; canonical-address `specfile:v2:` IDs with deliberate legacy HTTP 409/reselection; canonical agent-image tuple IDs and version protection; bounded/cancellable headers+body reads; explicit instance/entity keys and read origins; validated partial inventory evidence without replacing the successful array cache; coalesced SSE settlement; project/Recent/Pulse invalidation; and Activity receipt deduplication across StrictMode. Files already reject incomplete/binary replacement and unknown/remote write scope. Workflow occurrence selection and conservative unknown mutation outcomes, startup/restore and terminal preview data contracts are published. These are verified contract dependencies, not completed frontend journeys. The latest data checkpoints publish optional canonical node-detail `nodeId` typing/validation (`e68a31c1`) and explicit-null terminal timestamp clearing in the workflow store and both resume paths (`45cb57f1`). Omitted/empty canonical IDs remain unknown with no logical/session fallback; scoped Health UI and its current-seat-identity admission are implemented and independently reviewed in this frontend checkpoint. Explicit null now clears `completedAt`, omitted/undefined preserves it, and replay after a later terminal close preserves that later timestamp. Focused author checks passed 76 and 77 respectively with strict owned typechecks and independent reviews. No historical timestamp sweep is claimed. The separate status-aware frontend label repair in this checkpoint is independently clear below.
+
+The browser terminal protocol preserves shared native pane size, identity and sizing policy. The published `d0f20ec3` presentation keeps a readable floor, pan fallback and logical viewport through refits. Independent real-xterm checks passed 98 maintained tests plus 5 unchanged reverse-refit probes. **Post-repair** native Codex 6.1 Sol/high desktop acceptance at normal1280×720 demonstrated two Unicode replies, two viewers, private native resize137×43→155×37, viewer removal/grow and reattach/shrink, correct physical scrollbar metrics without outer scroll jump, and final shared-pipe cleanup. All nine frozen source/test hashes match the tested bytes, `d0f20ec3`, its immutable archive and current files; `gui-terminal-browser.md` and `gui-terminal-evidence-reconciliation.md` preserve the chronology. This proves that bounded repaired native rendering journey; a separate full-App private Herdr Open journey is recorded below. Model resume continuity is not established. Mobile/touch, IME, selection/link and real-history breadth, native Claude and broader permission behavior remain unverified.
+
+Two narrow frontend closures were separately published before this checkpoint:
+
+| Closure | Current behavior and executed evidence | Limits |
+| --- | --- | --- |
+| Feed (`913c3922`), `U:components/for-you/{Feed,FeedSourceStatus,feed-read-state}` | Actual Attention/NeedsInput read-state and coverage are consumed. Pending/error/partial do not mean complete-empty; retained rows are identified and dated. Independent isolated 43/43 checks. Actual-App desktop Requests 503 → private allow (no refresh) → product Retry showed unknown then “All caught up” only after valid empty. | Root later exercised exact published7cec partial All/Action/Approval unknown→successful-empty and retained503/date→actualRetry→samecard recovery at1280×720. Partial recovery used a private refetch control; no partial productRetry exists. The published light-warning contrast was1.933:1; its Shared repair included here is independently clear by source-token contrast calculation, with painted acceptance still open. Canonical Attention/update UI is included in this frontend checkpoint. |
+| HostIndicator (`de83732f`), `U:components/HostIndicator.tsx` | Cold pending says resolving; cold failure says unknown/unavailable; failed refresh labels last confirmed selection stale. AppShell already mounts it. AppShell/full published MH2 tests 73/73 and independent cold/warm probes 3/3. Desktop hosts HTTP 503 displayed “HOST UNKNOWN · UNAVAILABLE.” | The stale tooltip has no timestamp. Header disclosure does not grant read/action authority. No warm/recovery/mobile browser claim. |
+
+The earlier Feed and HostIndicator immutable candidates passed root workspace build/lint and full UI **276 files /2863 passed /1 existing skip**. Private Vite dependency optimization with HMR off required a reload before each narrow browser check; no source edits were used to recover. The latest combined canonical-ID/timestamp checkpoint passed immutable workspace build/lint and full UI **277 files /2874 passed /1 existing skip**. Local full-package validation was interrupted by outbound denial during clean-package registry installation; no completed local full-package result is claimed. Published `45cb57f1` subsequently passed **all eight required GitHub checks** in [Tests 37235440810](https://github.com/oSquashBlossomo/openrig/actions/runs/37235440810), completed **2026-10-04 21:27:30 UTC** and independently checked at **21:38:15 UTC**. The supplied receipt is `/private/tmp/openrig-45cb57f1-ci-recovery-independent-review.json`; this documentation task made no network call. That CI validates its named historical source, not this later frontend checkpoint. The later three-file plugin-discovery GET checkpoint `7cec0925` is also published after independent59maintained+5private probe checks and strict owned typecheck. Its isolated workspace build/lint/fullUI279files2899PASS/1existing skip passed; all eight required checks subsequently passed in GitHub Tests37237530595 and portability37237530606 passed. All three reads now have bounded per-attempt transport/cancellation and absent-target admission, while inherited retries, keys, opaque IDs and HTTP errors are preserved. The separate Skill/Plugin detail freshness repair included here is now independently clear (48 focused checks); its browser acceptance remains open. Transport alone did not close that consumer work.
+
+Source-bound receipts are preserved locally in ignored `docs/plans/` and `/private/tmp`, rather than shipped as product documentation: `gui-feed-read-state-closure-independent-review.md`, `gui-host-indicator-independent-review.md`, `gui-browser/{FEED,HOST}-CHECKPOINT-ACCEPTANCE.md`, `gui-browser/FEED-PARTIAL-RETAINED-ACCEPTANCE.md`, and their frozen manifests. Canonical-ID/timestamp evidence is `gui-node-detail-health-identity.md` and `gui-workflow-completed-at-repair.md`, with independently verified commit scope in `/private/tmp/openrig-conservation-data-commits.json`. The earlier detailed checkpoint chronology is preserved privately as `/private/tmp/openrig-gui-parity-before-de83732f.md`; the original baseline matrices remain below.
+
+The historical two-file checkpoint `b3166d90` published only the active-lens GET bound/cancellation and standalone regressions. This frontend checkpoint includes guarded action authority and both migrated callers together as their reviewed atomic unit. Independent projection29, WIPguard18, original actionseam2 and new retained/null/latebody3 checks pass, as do both strict checks; immutable build/lint/fullUI280files2912PASS/1existing skip passed. Its [Tests37238666136](https://github.com/oSquashBlossomo/openrig/actions/runs/37238666136) passed all eight required checks at22:13:52UTC (root CLI verification22:15UTC); portability37238666195 passed and draft Claude37238662297 skipped. That GET repair resolved the reproduced stalled invalidation transport seam without rewriting the guarded action bytes. Library read-state and guarded caller repairs are included together here.
+
+At checkpoint preparation, root workspace build and lint passed. A stale test assertion from the initial full UI run has a separately verified test-only correction; the final full UI/twin rerun and immutable checkpoint/publication/CI receipts remain pending at this wording snapshot. Consult PR #11 for their final outcome. No complete combined-suite pass is claimed here.
+
+### Eight capability cohorts: current closure and remaining work
+
+Together these cohorts cover all eight TUI sections: topology→8; specs→5 plus source reading; scopes→2/5; terminals→3; needs→1/7; system→1; config/connections→4. Startup/restore, Files, reading and shell continuity are cross-section capabilities. Earlier RED counts are historical where the current independent repair report below passes; do not redispatch those old repairs.
+
+| Cohort / source | Included in this frontend checkpoint | Strongest bounded evidence already recorded | Still open; do not mark complete |
+| --- | --- | --- | --- |
+| **1. Canonical Health and Attention** — `U:components/operator/{HealthPage,AttentionView,ForYouPage}` | Canonical pages, action/update lenses, scoped topology Health and shared mounts, over the published readers/refresh and Feed foundation. | Independent operator100 maintained +5 private controls; source-membership repairs. Desktop exact indeterminate finding, 500/640 coverage and source observation distinct from read time. Scoped Health maintained exact-ID/coverage/Back controls pass. Actual-App desktop rig3/5 and seat1/5 scoped findings plus exact finding→Back passed in DOM/URL; capture timed out and the font allowlist issue prevents a painted-layout claim. | Retained seat-ID/current-error correlation repair is independently clear. Delivered/closed-source detail, remote unsupported truth, painted scoped Health and keyboard/mobile browser acceptance remain. Legacy FIFO remains distinct from durable updates. |
+| **2. Exact Project and Execution** — `U:components/project/catalog/`, project `ScopePages` | Exact chooser/story/waves/proof/source routes, producing-origin adapters and configured-timezone consumers, including compact artifact mtime, over published project ID/root readers and refresh. | Desktop duplicate Field Guide roots, exact mission/slice URL, authored done versus withdrawn/reopened0/2 acceptance, proof artifactPASS distinct from outcome, Back/reload and exact Docs source. Latest Project repair independently162 maintained +8 unchanged origin/recovery/warm probes; compact mtime follow-up34 checks. | Compact mtime and ScopePages StoryGraph-origin follow-ups are independently clear. Moved/stale/incomplete-link negative journeys and long-frame/keyboard/source-media/phone acceptance. No guessed missing root. |
+| **3. Authoritative terminal catalog / preview / Open** — `U:components/terminal-catalog/`, `FocusedTerminal` | Authoritative catalog/provider/shared mounts over the published broker/protocol/readers and terminal presentation. | Saved3/derived0, exact saved token, passive Herdr/cmux plans,17 seats/two pages and retained filters. Original preview connection/recovery probes passed. Published native Codex rendering/refit/two-viewer/cleanup passed. Full-App production service/private Herdr explicit Open produced two real shell clients with exact readonly flag and stable target PIDs; stale-plan409 added no mutating RPCs/clients. | Help/Back receipt retention is DOM/route proved; painted Back/rejection is unaccepted because the IAB control also fails on inert HTML. Positive preview/Open screenshots exist. Phone/touch, IME, terminal selection/link/history and network-reconnect breadth remain open. No model-resume, installed-fleet, cmux or remote native-effect claim. |
+| **4. Configuration and Connections** — `U:components/operator/{ConfigurationPage,ConnectionsPage,ConnectionsContext}`, `SettingsTab`, shell/time | Read-only inventory, gateway context, Settings, Help/time and shared mounting over published bounded compatibility/contracts. | Desktop old settings false/0/empty/missing,503/null retained dates, Help/Back/recovery; passive gateway/human eligibility and fixed notice/header access. Shared repair independently106 maintained +6 preserved private executions; exact links/dates and visible spec Retry tested. Configured Feed time and warning source-token contrast pass. | Actual Connections Retry/cross-link, whole-frame/keyboard and painted light/dark warning acceptance. Broader private/remote sources/mobile remain unverified. Slack verification/contact and timezone persistence keep the TUI's explicit CLI/native boundaries; passive browsing must not contact Slack. |
+| **5. Workflow lifecycle and spec provenance** — `U:components/workflow/`, `components/specs/` | Lifecycle/provenance, generic resolver, Help/twin, status-aware timestamps and atomic lens caller migration over published recovery/exact-origin/spec-ID/read helpers. | Original origin3/recovery3/observer-aware warm2 pass unchanged; real Hono/SQLite desktop withheld committed resume response, A→B→Back/readback, explicit abort, one resume/one abort POST and sibling/B preserved. Library repair119 checks; Skill/Plugin details48; prior atomic lens18API+13UI+4real-store probes. Shared actual-route lookup/choice/Back preserves raw identity and served IDs. | Guarded hook plus BOTH Library callers and routes/provider dependencies are included together. Browser catalog→lookup/choice→review→consumers→seat→Back, source/failed/partial observations, and final status-time display remain unaccepted at their new bytes. Native workflow wake effects are not proved by pending intents. |
+| **6. Deliberate startup / recovery** — `U:components/startup/`, `RecoveryOperationsProvider` | Revision-bound chooser, exact connection admission, app-lifetime receipts, shared mounts and configured-time consumers over published data/mutation contracts. | Original7 repair and2 connection probes pass. Real crash-cart/conductor/SQLite desktop202 handle, Help/Back/reload, pause and safe-boundary cancel; kickoff1/cancel1/native effects0. Timestamp follow-up independently60 checks with operation/admission logic unchanged. | Rendered configured-time acceptance remains. Successful native resume/fresh/context/kernel/service start and trust/login/permission behavior remain unverified; absent-pane restore is not a launched session. Startup attempts remain memory-only; fleet handles are per connection/tab. |
+| **7. Persisted Recent / Pulse / stream** — `U:components/recent-pulse/` | Page/nav/twin/scope mounts over published bounded readers/SSE refresh; both Parked label repairs are independently clear. | Original frontend63 checks; latest label repair73 checks. Desktop six lanes/eight transitions and exact transition9→current qitem→Back retained original capture versus new list receipt. Warm rig-summary Recent admission repair passes both preserved probes. | Actual corrected-label, stream cursor/filter/archive, eviction/reload and event/poll journeys; keyboard/phone/reduced-motion acceptance. No invented transition-by-ID history API or total beyond served bounds. |
+| **8. Useful accessible 3D / topology continuity** — `U:components/topology/`, paired URL adapters | Navigation/renderer/visit restoration, scoped Health and provenance mounts over published bounded readers/URL codec/HostIndicator. Warm-summary, live motion and final seat/source repairs are independently clear. | Real WebGL15 seats/12 links: exact search→seat Details→Back, Forward/reload; keyboard List/Home/End/Scene and nonpreset orbit/zoom→seat→Back retained pose; fresh copied link preserved semantics with fitted camera. Earlier412-seat fallback. Latest repair261 maintained pass/1 existing skip, warm2 and motion4; active tween settles after one frame. Final seat/source follow-up2 unchanged probes +167 maintained pass; actual scoped Health finding/Back DOM/URL journey passed. | Current-seat Health and StoryGraph-origin follow-ups are independently clear. Painted scoped Health, pointer drag/pan, reset/scroll/large-fleet live load, live reduced motion and WebGL-failure acceptance remain. Lazy/hidden-view stop/background activity require bounded evidence; missing CPU/GPU evidence is not a confirmed defect. Phone/keyboard breadth remains open. |
+
+### Source reading and completed bounded repairs
+
+Published Files reads are bounded, known-local and exact root/path; complete-file CAS and incomplete/binary Save safety remain. Files/Markdown in this checkpoint implements source metadata, canonical sibling links/anchors, URL state, draft retention and explicit mixed-ending policy. Real private Hono/FileWriteService/disk desktop checks covered CRLF/CR exact bytes, mixed choice/no implicit normalization, empty LF,409 conflict/draft Back/discard, Unicode/image/anchor and canonical symlink reading. Five POST attempts200/200/200/200/409 produced four audits. Native replacement→Undo restored the clean CRLF projection with zero POST/audits and unchanged bytes.
+
+All recorded Files inline-origin, viewer-reuse and explicit-origin-capture repairs are now independently clear:17 preserved probes +65 maintained checks. Later actual browser direct-image local200/decode and remote/unknown withholding passed. The lazy inline-Markdown positive image never naturally fetched/decoded during observation, so that network/paint case remains inconclusive. Caller adapters are implemented across Project/Library/seat; ScopePages StoryGraph now carries its exact producing queue origin; its bounded independent follow-up is clear. Reliable Redo is unaccepted because the same empty result occurred in product and plain HTML textarea. Cut/paste/clipboard, IME, reload warning, other-root/pane continuity and phone acceptance remain open.
+
+The completed repair reports bind source hashes and preserve original reproductions: `gui-files-explicit-origin-independent.md` (82 checks), `gui-recent-label-independent.md` (73), `gui-startup-timezone-independent.md` (60), `gui-library-repair-independent.md` (119), `gui-library-details-independent.md` (48), `gui-shared-repair-independent.md` (112), and `gui-project-repair-independent.md` (162 maintained +8 private). Shared closes Connections Retry, generic resolver/Help/twin integration, Feed time and local warning contrast by source calculation (11.47:1 light/10.29:1 dark), not painted proof. Project closes WorkflowsPage warm catalog disclosure, producing-origin adapters and status-aware terminal stamps. Library closes catalog/consumer/coverage/origin/lens read-state and detail freshness findings. These source-bound reports support this checkpoint; none independently establishes whole-GUI acceptance or remote publication.
+
+Original real-service receipts remain valid within their named bytes/fixtures: `gui-browser/{FILES,FILES-SELECTION,FILES-INLINE,WORKFLOW,RESTORE,TERMINAL-OPEN}-ACCEPTANCE.md`. Fictional-data desktop receipts remain bounded presentation evidence: `gui-browser/{OPERATOR,SETTINGS,RECENT,SPATIAL,SAVED-TERMINALS}-ACCEPTANCE.md`. All private handoffs are ignored evidence, not publishable product data.
+
+### Remaining actions before full parity completion
+
+1. **Preserve the completed narrow follow-ups.** Project's compact artifact time now uses the adopted display zone and preserves unknown timestamps; independent34 focused checks pass. Spatial withholds current Health correlation after a failed seat-detail read and passes StoryGraph its exact producing queue origin; unchanged original2 probes and167 affected maintained checks pass. Existing Markdown adapters and prior reviewed work are preserved. These are scoped source/test closures, not browser or whole-parity acceptance.
+2. **Complete checkpoint validation/publication accounting on PR #11.** This checkpoint includes the guarded active-lens hook plus BOTH Library callers, time provider/mount plus consumers, Files primitives/callers, resolver/routes/Help/twin and Spatial/shared history dependencies. Final immutable fullUI/twin, publication and current-head CI results belong to their exact candidate/commit. Historical checks do not substitute for them; private evidence/histories remain excluded.
+3. **Complete focused normal1280×720 user journeys at finalized bytes.** The normal desktop contextual Health→exact finding→Back journey now has DOM/URL evidence; its painted and error-state breadth remains open. Prioritize Library lookup/ambiguity→review→observed consumer→seat→Back, visible Connections Retry, corrected workflow/Feed/startup/artifact time and warning readability, and canonical delivered/closed-source details. Add the remaining original Project negative-identity/source cases, Recent stream/filter/cursor/retained-selection cases, and Files other-root/filter/anchor/draft/reload continuity. Preserve existing successful journeys rather than treating every one as untested.
+4. **Finish useful 3D and terminal interaction evidence.** Accepted keyboard/List/Scene and nonpreset camera round trips remain valid; pointer pan, live motion preference, fallback, large-fleet/hidden-view lifecycle and background-render activity are not established by fakeGL or screenshots. Native Codex rendering and private Herdr Open are established; terminal selection/history/IME/network-reconnect breadth and model resume are separate. No decorative spatial waves/grid or installed-fleet mutation is introduced as a new gate.
+5. **Respect exact approval and environment limits.** Normal1280×720 verification is authorized. The pending390×844 and1440×900 viewport changes, native Claude trust for the recorded private folder, and clipboard preservation/read request remain unapproved; do not work around them. IAB mouse/capture failure reproduced on inert HTML with no app code/styles, so painted return/rejection and image acceptance remain environment-limited, not a proven route-animation defect. Plain-textarea Redo likewise fails the control. Offline daemon startup, native clipboard/style equivalents and the TUI's timezone/Slack CLI guidance are real architectural equivalents, not permission to replace available GUI flows with Help links.
+
+### 3D requirements and scope
+
+Useful 3D must expose served hierarchy, exact selection, scope/health/activity evidence and relationships, with table/tree/list paths offering the same truth/actions. Camera pose is per visit; semantic state is URL-controlled; zero scroll is a saved position; raw IDs survive router serialization; partial/stale sources remain inspectable. Source-bound motion repair and accepted keyboard/camera desktop journeys do not prove background CPU/GPU stop, pointer behavior or every viewport. Keep lazy loading, hidden-view teardown, retry/disposal, live reduced motion and non-WebGL fallback as original acceptance requirements without inventing a second renderer defect.
+
+The baseline's spatial execution waves, terminal page/grid preview and health depth are optional renderings of useful information, not invented native state or mandatory WebGL views. Ordinary MissionExecution waves and served terminal plan/page/grid already exist and must remain usable without 3D. Richer rendering cannot replace Health/Recent/spec evidence or turn a receipt into acceptance.
+
+## Baseline priority findings
+
+**Historical source snapshot only.** Use the current ledger above for published/working-tree/accepted/open status; retain these triggers and acceptance cases as the original audit record.
 
 | Priority | Finding and concrete consequence | Source evidence | Required acceptance |
 | --- | --- | --- | --- |
@@ -363,7 +96,7 @@ verified changes without implying that the rest of the matrix is complete.
 
 ## Source notation and API envelopes
 
-The matrices describe the audited baseline. Implementations should update affected rows with verification evidence as capabilities are completed.
+The matrices describe the audited baseline. Current implementation/acceptance status is maintained in the ledger above; retain these fine-grained original requirements rather than erasing a gap solely because a related helper exists.
 
 All paths in the matrices are relative to `packages/`. `T:` means `tui/src/`; `U:` means `ui/src/`; `D:` means `daemon/src/`. “Present” means an implementation exists in source; it does not mean a rendered flow was exercised. “Partial” means a related surface exists with missing facts/semantics. “Missing” means no equivalent source consumer was found. “Native equivalent” means browser-native interaction or local CLI fallback is the appropriate equivalent.
 
@@ -389,7 +122,7 @@ All paths in the matrices are relative to `packages/`. `T:` means `tui/src/`; `U
 
 ## Topology section
 
-| TUI capability | Source of truth | Existing GUI equivalent | Gap | Daemon API | Acceptance verification |
+| TUI capability | Source of truth | Baseline GUI equivalent | Baseline gap | Daemon API | Acceptance still to account for |
 | --- | --- | --- | --- | --- | --- |
 | Host → rig → pod → agent drill with qualified identity | `T:navigator.ts`, `state.ts`, `render.ts`; served node identity | Present: `/topology`, `/topology/rig/$rigId`, pod and seat routes, `U:components/topology/ScopePages.tsx` | Preserve identity across selected hosts and duplicate logical names; selection is not enough without host scope | Topology | Two hosts/rigs with identical labels; each drill and Back returns to the same origin entity. |
 | Instance-wide seat table, rig lifecycle and inventory failure | `T:render.ts` `instanceContentLines`; summary plus node inventory | Present: host table/tree/graph and `SeatOverviewTable` | Partial: canonical health and persisted Recent absent; failed inventory must not become zero seats | Topology, Health, Recent | Running, stopped, empty, unavailable rig inventory produce different rows/counts. |
@@ -410,7 +143,7 @@ All paths in the matrices are relative to `packages/`. `T:` means `tui/src/`; `U
 
 ## Specs section
 
-| TUI capability | Source of truth | Existing GUI equivalent | Gap | Daemon API | Acceptance verification |
+| TUI capability | Source of truth | Baseline GUI equivalent | Baseline gap | Daemon API | Acceptance still to account for |
 | --- | --- | --- | --- | --- | --- |
 | Browse rig/agent/workflow catalog by kind, filter and drill | `T:hydrate.ts`, `navigator.ts`; library entries | Present: `/specs`, SpecsTreeView, SpecsLibraryPage and LibraryReview | Generic kind/name route uses wrong ID; future/invalid entries need honest unavailable states | Specs | User/built-in same name plus workflow versions; select exact entry and display diagnostic invalid YAML. |
 | Purpose, source type/state/path and current source | `T:render.ts` `specSourceLines`, source provenance; current file | Partial: LibraryReview ProvenanceBadge, raw YAML | Need explicit authored source vs stored/generated/library representation; current source metadata | Specs, Files | Edit file after cache/launch; raw/current source action names which bytes/time/hash were read. |
@@ -424,7 +157,7 @@ All paths in the matrices are relative to `packages/`. `T:` means `tui/src/`; `U
 
 ## Scopes section: projects, missions, execution and slices
 
-| TUI capability | Source of truth | Existing GUI equivalent | Gap | Daemon API | Acceptance verification |
+| TUI capability | Source of truth | Baseline GUI equivalent | Baseline gap | Daemon API | Acceptance still to account for |
 | --- | --- | --- | --- | --- | --- |
 | Exact workspace catalog project picker and root identity | `T:state.ts`, `navigator.ts`, `hydrate.ts`; ProjectRead | Missing: `/project` means configured workspace | Add catalog identity and source/error rows | Projects | Two projects with same mission/slice names; exact ID/root survives reload/deep link and unknown ID is rejected. |
 | Project → mission → execution row → slice/source tree | `T:scopes/scopes-model.ts` explorer; execution source join | Partial: ProjectTreeView, portfolio/mission/slice routes | Add project-aware coordinates and typed workflow/packet/execution children | Projects, Scopes, Execution | Browse each catalog root; no global indexer data leaks into another selection. |
@@ -455,7 +188,7 @@ All paths in the matrices are relative to `packages/`. `T:` means `tui/src/`; `U
 
 ## Terminals section
 
-| TUI capability | Source of truth | Existing GUI equivalent | Gap | Daemon API | Acceptance verification |
+| TUI capability | Source of truth | Baseline GUI equivalent | Baseline gap | Daemon API | Acceptance still to account for |
 | --- | --- | --- | --- | --- | --- |
 | Independent Saved/Derived view catalog and filter | `T:terminals/terminal-model.ts` | Partial: TerminalLauncher inside rig-scope desktop tab bar | No independent terminal catalog destination; saved/derived browsing depends on a rig and `hidden lg:inline-flex` excludes smaller viewports | Terminal | Zero rigs but saved views; small viewport; all saved/derived targets accessible without opening tiles. |
 | Catalog names/membership do not claim readiness before preview | TUI catalog `readinessUnverified:true` | Broken: saved live=true, derived live from session name | Use passive readiness-unknown label until authoritative preview | Terminal | Dead pane with retained canonical session and absent saved member never says every seat live. |
@@ -471,7 +204,7 @@ All paths in the matrices are relative to `packages/`. `T:` means `tui/src/`; `U
 
 ## Needs section (Attention)
 
-| TUI capability | Source of truth | Existing GUI equivalent | Gap | Daemon API | Acceptance verification |
+| TUI capability | Source of truth | Baseline GUI equivalent | Baseline gap | Daemon API | Acceptance still to account for |
 | --- | --- | --- | --- | --- | --- |
 | Human requests separate from updates; urgency/scope/time | `T:attention/attention-model.ts`; AttentionRead | Partial: For You lenses/raw queue/events | Unified canonical action/update set absent | Attention | Mixed queue/proof/lifecycle/health items; no update is promoted to approval. |
 | Recipient and what request unblocks | Canonical AttentionItem recipient/unblocks/project | Partial: review needs-you/evidence cards | Missing full canonical dependent task set and exact project attribution | Attention | External human address and explicit human blocker show correct recipient; tier-only row with no human recipient excluded. |
@@ -488,7 +221,7 @@ All paths in the matrices are relative to `packages/`. `T:` means `tui/src/`; `U
 
 ## System section: canonical Health
 
-| TUI capability | Source of truth | Existing GUI equivalent | Gap | Daemon API | Acceptance verification |
+| TUI capability | Source of truth | Baseline GUI equivalent | Baseline gap | Daemon API | Acceptance still to account for |
 | --- | --- | --- | --- | --- | --- |
 | Instance health findings sorted and summary by active severity/category | `T:health/health-model.ts`; canonical service | Missing: Settings Status only daemon/cmux/rig counts | Add canonical table/detail and scope-linked count summary | Health | Active/resolved/indeterminate findings; severity totals correspond exactly to served records. |
 | Detector/category/scope/status/confidence/freshness | HealthRecord | Missing | Show all fields, source observation times and stable finding ID | Health | Old source or missing evidence cannot paint healthy; age isn't client poll age. |
@@ -501,7 +234,7 @@ All paths in the matrices are relative to `packages/`. `T:` means `tui/src/`; `U
 
 ## Config section
 
-| TUI capability | Source of truth | Existing GUI equivalent | Gap | Daemon API | Acceptance verification |
+| TUI capability | Source of truth | Baseline GUI equivalent | Baseline gap | Daemon API | Acceptance still to account for |
 | --- | --- | --- | --- | --- | --- |
 | Full read-only resolved settings browser | `T:config/config-model.ts`; settingsBrowser | Partial: editable SettingsTab/general raw settings | Missing multi-source browser contract and application/visibility/source metadata | Settings browser | All daemon-served entries shown even beyond legacy UI union; unsupported browser shape clearly rejected. |
 | Ten categories: instance/context/display/waiting/recovery/activity/agents/Slack/all/sources | CONFIG_CATEGORIES and deterministic category function | Partial: manually maintained UI categories | Queue/workflow/recovery/snapshot/retention/native runtime and future keys absent/incomplete | Settings browser | Every served key reachable under All; category counts match entries; new unknown key discoverable. |
@@ -516,7 +249,7 @@ All paths in the matrices are relative to `packages/`. `T:` means `tui/src/`; `U
 
 ## Connections section
 
-| TUI capability | Source of truth | Existing GUI equivalent | Gap | Daemon API | Acceptance verification |
+| TUI capability | Source of truth | Baseline GUI equivalent | Baseline gap | Daemon API | Acceptance still to account for |
 | --- | --- | --- | --- | --- | --- |
 | Passive gateway/human/routes/work observability | `T:connections/connections-model.ts`; connectionsProjection | Missing | Create System Connections view; refresh doesn't send messages or contact Slack | Connections | Browse/refresh produces only projection reads; no external verify/send side effect. |
 | Running control-plane version/commit/dirty/self-host/target/process/home/time | ControlPlaneRead and ConnectionsRead | Partial: HostIndicator, useDaemonVersion and status | Full identity/instance/source context absent | Control plane, Connections | Running daemon differs from UI build/launcher; don't label compile-time version as daemon. |
@@ -532,7 +265,7 @@ All paths in the matrices are relative to `packages/`. `T:` means `tui/src/`; `U
 
 ## Pulse (cross-section tab)
 
-| TUI capability | Source of truth | Existing GUI equivalent | Gap | Daemon API | Acceptance verification |
+| TUI capability | Source of truth | Baseline GUI equivalent | Baseline gap | Daemon API | Acceptance still to account for |
 | --- | --- | --- | --- | --- | --- |
 | Needs You exception strip | `T:pulse/pulse-model.ts` needsRows | Partial: For You/review bands | Pulse exception surface absent; named summary and age from served timestamps | Queue attention | Zero omitted strip vs failed/deferred read remain distinct; same qitem under pulse and request detail. |
 | Parked with Baton: in-progress + idle owner + no handoff | parkedRows queue/activity join | Missing | Null activity must not be inferred idle; idle duration from owner's lastActivityAt | Queue in-progress, Topology | false/true/null terminalActive, existing handoff, missing owner; only exact parked predicate matches. |
@@ -545,7 +278,7 @@ All paths in the matrices are relative to `packages/`. `T:` means `tui/src/`; `U
 
 ## Startup, recovery and daemon-down entry
 
-| TUI capability | Source of truth | Existing GUI equivalent | Gap | Daemon API | Acceptance verification |
+| TUI capability | Source of truth | Baseline GUI equivalent | Baseline gap | Daemon API | Acceptance still to account for |
 | --- | --- | --- | --- | --- | --- |
 | Distinct probing/up/down/unverified and first-run states | `T:startup.ts`; crash-cart detector PID/probe evidence | Partial: DaemonHealthProvider and setup BootstrapWizard | HTTP failure alone cannot prove daemon down; browser not served when daemon stopped | Control plane; local crash-cart | Refused/timeout/401/foreign server distinguished; no restore action on merely unverified reachability. |
 | Choose rig then exactly one seat; actual history/observed state | StartupSeat revision/hasHistory/observed/intendedAction | Missing | New startup chooser alongside legacy bulk recovery | Startup | Mixed live/resumable/new/unverified/transport-unavailable seats; only selected seat is touched. |
@@ -565,7 +298,7 @@ All paths in the matrices are relative to `packages/`. `T:` means `tui/src/`; `U
 
 ## Shell, reading, live responsiveness and terminal-specific equivalents
 
-| TUI capability | Source of truth | Existing GUI equivalent | Gap | Daemon API | Acceptance verification |
+| TUI capability | Source of truth | Baseline GUI equivalent | Baseline gap | Daemon API | Acceptance still to account for |
 | --- | --- | --- | --- | --- | --- |
 | Complete discoverable command registry/help/palette and contextual availability | `T:commands/registry.ts`, completion/palette/help | Partial: AppShell links and buttons; no equivalent complete palette | Browser navigation/action discovery can implement equivalent inventory; keep unavailable reasons | Same underlying contracts | Keyboard-only discovery of every operator action; unavailable daemon/project/source state explains why. |
 | `:` section jump and host/rig/pod/agent/spec named drill | Registry plus qualified resolver | Native equivalent: routes/explorer/search/links | Need exact ambiguous-name handling and accessible path to hidden workflow/agent/fleet routes | Topology, Specs, Projects | Ambiguous labels never pick first entity; all eight section equivalents reachable. |
@@ -580,30 +313,32 @@ All paths in the matrices are relative to `packages/`. `T:` means `tui/src/`; `U
 | Local control socket, rendered/plain captures and agent-driven command query | TUI socket-server protocol | Terminal-specific; web has tests/digital twin | Not an operator GUI parity gap; browser automation/tests can provide equivalent verification, separate authority | Local socket, not daemon REST | Don't expose local control socket through web merely for parity; keep deterministic UI fixtures. |
 | Demo fixtures and unavailable/context gating | TUI demo gate/command-context composition | Web twin fixtures and test mocks | Test/demo state never masquerades as real fleet in production | None | Unconfigured/empty startup uses real honest-empty state; fixture data only through explicit test harness. |
 
-## Complete command-to-equivalent checklist
+## Current command-to-equivalent accounting
 
-This closes the command registry accounting independently of the section matrices. Commands sharing a capability intentionally share an equivalent. Registry entries are navigation/read operations; recovery/startup also have dedicated keys outside this registry.
+All registry commands remain accounted for independently of the eight cohorts. **P** = published equivalent/dependency; **W** = preserved unpublished frontend; **N** = appropriate native/CLI/browser equivalent. This is capability accounting, not a claim every listed journey has passed. The original section matrices above retain the fine-grained acceptance cases.
 
-| Registry command / aliases | Browser equivalent / inventory row |
+| Registry command / aliases | Equivalent and current limit |
 | --- | --- |
-| `terminals`, `terminal-preview <view>`, `terminal <view>` | Terminal catalog, passive authoritative preview, explicit Open. |
-| `attention`, `needs`, `feed` | Canonical Attention plus delivered updates, reachable For You destination. |
-| `read <root>/<path>[#heading]` | Configured-root File viewer with source metadata and anchors. |
-| `system`, `config [category]`, `setting <key>`, `connections` | Canonical Health, full Configuration browser/entry detail, Connections. |
-| `refresh`, `timezone`, `recent <id>`, `back` | Scoped refetch, explicit timezone, persisted original transition detail, browser/context Back. |
-| `projects`, `project <id>`, `source`, `mission <name>` | Exact project catalog selection, source reader and mission execution with project identity. |
-| `workflow <instance-id>`, `packet <qitem-id>` | Mission-bound workflow and frontier packet detail. |
-| `:<section>`, `/<text>`, `find <text>` | Discoverable destination links/palette and row search. |
-| `tab <table\|recent\|overview\|graph\|health\|topology\|configuration\|yaml\|pulse>` | Same applicable content capability as responsive tab/view mode; Pulse independent overview is acceptable. |
-| `graph`, `g`, `style <name>` | Graph/tree/table/rich-graph view modes; terminal rendering styles need no literal clone. |
-| `scroll up\|down`, `top`, `bottom` | Native scrolling/PageUp/PageDown/Home/End in focused content pane. |
-| `select-text`, `copy` | Browser text selection and explicit copy affordances. |
-| `spec-of <agent>`, `running <spec>` | Effective seat binding → authored spec and observed consumer list → exact seat. |
-| `help`, `?` | Complete contextual help/action palette accessible in unavailable/loading states. |
-| `reqs`, `narrative` | Collapsible canonical requirements and independent PROGRESS narrative. |
-| `host <name>`, `rig <name>`, `pod <name>`, `agent <name>`, `spec <name>` | Qualified explorer/navigation with ambiguity handling and correct catalog IDs. |
+| `terminals`, `terminal-preview <view>`, `terminal <view>` | **P:** authoritative launcher/contracts. **W:** zero-rig saved catalog and passive pages. Preview browser-tested; native Open and full readable attach journey open. |
+| `attention`, `needs`, `feed` | **P:** legacy Feed source truth. **W:** canonical Attention/delivered updates and exact detail continuity; not interchangeable with event FIFO. |
+| `read <root>/<path>[#heading]` | **P:** known-local bounded Files/safe complete replacement. **W:** canonical source/anchor/draft frontend; real disk desktop accepted, inline origins and input/frame breadth still open. |
+| `system`, `config [category]`, `setting <key>`, `connections` | **P:** exact canonical readers, legacy settings/status. **W:** Health/browser/configured-vs-applied Connections UI and Help links; scoped entry and timezone coverage open. |
+| `refresh`, `timezone`, `recent <id>`, `back` | **P:** bounded refetch/SSE settlement. **W:** explicit zone display, frozen original transition and shared/topology/file frame restoration. Back repaired in tested WIP; not every pane accepted. |
+| `projects`, `project <id>`, `source`, `mission <name>` | **P:** exactID+root requests/cache. **W:** chooser/story/source routes; duplicate-root/Docs desktop accepted, moved-root and broad frame negatives open. |
+| `workflow <instance-id>`, `packet <qitem-id>` | **P:** full DTO/recovery contracts. **W:** frontier/occurrence/revision/abort and immutable attempts. Recovery/private routes passed; list freshness and native/browser operations open. |
+| `:<section>`, `/<text>`, `find <text>` | **P:** existing rail/explorer/filter controls. **W:** contextual Help+filtered action inventory, expanded destinations and URL filters. Keyboard/mobile discovery of all advertised operations still open; no literal terminal parser required. |
+| `tab <table\|recent\|overview\|graph\|health\|topology\|configuration\|yaml\|pulse>` | **P:** existing ordinary modes. **W:** URL-controlled topology modes, scoped Recent/Pulse and canonical Health destination. Exact scope semantics and ordinary fallback required. |
+| `graph`, `g`, `style <name>` | **P:** existing graph/tree/table and data. **W:** useful3D continuity/disclosure. TUI glyph styles need no clone; keyboard/non-WebGL must preserve entities/actions. |
+| `scroll up\|down`, `top`, `bottom` | **N:** native content scrolling/Home/End/Page keys. **P:** terminal viewport repair. **W:** shared/per-visit restoration; desktop/phone focus and pan acceptance open. |
+| `select-text`, `copy` | **N:** browser text selection; **P/W:** explicit copy controls. Full identity, terminal selection and IME do not follow from jsdom text snapshots. |
+| `spec-of <agent>`, `running <spec>` | **P:** effective nullable binding/hash and explicit-origin catalog reads. **W:** seat provenance and declared/observed consumer panels; seven LibraryREDs and generic route still open. |
+| `help`, `?` | **W:** contextual Help/filter and safe return; actual desktop Help/notice repaired. Publish shared mount and verify error-state keyboard/mobile reachability. |
+| `reqs`, `narrative` | **W:** catalog canonical intent/mini-requirements and independent narrative, ordinary wave/proof panels. They must not derive native acceptance from prose. |
+| `host <name>`, `rig <name>`, `pod <name>`, `agent <name>`, `spec <name>` | **P:** exact routes/read contracts and truthful header. **W:** source-gated hierarchy/ambiguity resolver. Generic spec target is still wrong until migrated; duplicate names never choose the first entity. |
 
-## Useful 3D integration opportunities
+Startup/restore keys outside the registry are cohort6; offline daemon start/local ledger/spec reading remain explicit **N** CLI/TUI handoffs. Failed HTTP does not prove daemon stopped or authorize browsing another host's local Files. The local TUI control socket and terminal escape rendering are not web parity requirements.
+
+## Baseline useful 3D integration opportunities
 
 These are recommendations from the audited model, not new authoritative data or additional acceptance gates:
 
@@ -614,7 +349,7 @@ These are recommendations from the audited model, not new authoritative data or 
 
 Static art and constant particle motion do not close capability gaps. WebGL should load only on the selected rich view, stop while hidden and have a truthful accessible fallback with identical selections/actions.
 
-## Verification plan and limits
+## Baseline verification plan and limits
 
 No product code was modified by this audit. Source searches covered the actual section/command registries, TUI render/hydration/state/model modules, GUI routes/hooks/components and owning daemon routes/services. The source comparison proves missing consumers and incompatible declared contracts; it does not prove every existing browser journey works. No runtime tests were run for a documentation-only inventory, and no installed fleet operations were attempted.
 
@@ -622,7 +357,7 @@ Before claiming full GUI parity, use isolated deterministic API/UI fixtures for 
 
 Existing TUI regression suites provide semantic examples: `health-view`, `attention`, `feed-source-continuity`, `project-navigation`, `mission-outcomes`, `execution-view`, `workflow-journey`, `config-journey`, `connections-journey`, `terminal-journey`, `startup-*`, `crash-cart-*`, `pulse-live`, `refresh-*`, `reading-*`, `command-registry-parity`, `navigation-continuity` under `packages/tui/test/`. Reuse their edge-case intent rather than merely duplicating snapshots. Existing GUI suites under `packages/ui/test/` cover terminal launch/reconnect, project identity/state, readiness chips, live invalidation, proof file errors and large-N topology; those do not yet demonstrate the missing canonical consumers.
 
-Recommended implementation cohorts:
+Original implementation cohorts (current status is in the ledger above):
 
 1. Canonical Health and Attention: shared typed reads/invalidation; system/scoped findings; action/update detail continuity; delivered updates and source coverage. Test incomplete sources and retained closed records first.
 2. Exact project and execution: catalog selection and URL/query identity; native scope contract/readiness; mission waves and current workflow packets; full slice evidence basis. Use duplicate mission/slice names across catalog projects as the core isolation regression.

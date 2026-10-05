@@ -23,6 +23,7 @@ import { createRoot } from "react-dom/client";
 import { RouterProvider, createRouter, createMemoryHistory } from "@tanstack/react-router";
 import { queryClient } from "../src/lib/query-client.js";
 import { routeTree } from "../src/routes.js";
+import { shellRouterOptions } from "../src/components/shell/history-scroll.js";
 import { seedTwinCache } from "./seed.js";
 import { ThemeProvider } from "../src/components/ThemeProvider.js";
 import { THEME_STORAGE_KEY } from "../src/lib/theme.js";
@@ -66,6 +67,7 @@ seedTwinCache(queryClient);
 const twinRouter = createRouter({
   routeTree,
   history: createMemoryHistory({ initialEntries: [TWIN_ROUTE] }),
+  ...shellRouterOptions(),
 });
 
 const root = document.getElementById("root");

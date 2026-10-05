@@ -34,7 +34,8 @@ import { useCmuxLaunch } from "../../hooks/useCmuxLaunch.js";
 import { useTopologyActivity } from "../../hooks/useTopologyActivity.js";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion.js";
 import { useSelectedHostId } from "../../hooks/useHosts.js";
-import { LOCAL_HOST_ID, withHostParam } from "../../lib/host-param.js";
+import { LOCAL_HOST_ID } from "../../lib/host-param.js";
+import { NodeInventoryPartialReadError, readNodeInventory } from "../../lib/fleet-inventory-reads.js";
 import {
   buildTopologySessionIndex,
   type TopologyActivityBaseline,
@@ -46,11 +47,45 @@ import "./topology-table-shimmer.css";
 import { RuntimeBadge, ToolMark } from "../graphics/RuntimeMark.js";
 import { formatCompactTokenCount, formatTokenTotalTitle, sumTokenCounts } from "../../lib/token-format.js";
 import { contextUsageTextClass } from "../ContextUsageRing.js";
+import { freshTopologyVisitState, topologyTarget, useKnownSelectedHost } from "./topology-navigation.js";
 
-async function fetchNodeInventory(rigId: string, hostId: string): Promise<NodeInventoryEntry[]> {
-  const res = await fetch(withHostParam(`/api/rigs/${encodeURIComponent(rigId)}/nodes`, hostId));
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+/** One rig's inventory as THIS table may present it. Each state is a single
+ *  observation: a newer partial response and an older successful array are
+ *  never spliced, and older rows are never relabelled as fresh. */
+export type RigInventoryView =
+  | { kind: "pending" }
+  | { kind: "current"; rows: NodeInventoryEntry[]; at: number }
+  /** A successful HTTP array with rejected (malformed/foreign/incomplete)
+   *  records: only its validated same-rig rows, dated by receipt. Empty rows
+   *  = all-invalid, which is not a successful empty inventory. */
+  | { kind: "partial"; rows: NodeInventoryEntry[]; rejectedCount: number; at: number }
+  /** The latest read failed (HTTP, non-array, timeout…); rows are the last
+   *  successful array, dated by that success. */
+  | { kind: "stale"; rows: NodeInventoryEntry[]; at: number; reason: string }
+  | { kind: "unavailable"; reason: string };
+
+const readFailure = (error: unknown) => (error instanceof Error ? error.message : "read failed");
+
+export function rigInventoryView(
+  query: { data?: NodeInventoryEntry[]; error: unknown; isError: boolean; dataUpdatedAt: number },
+  source: { hostId: string; rigId: string },
+): RigInventoryView {
+  if (query.isError) {
+    const partial = query.error instanceof NodeInventoryPartialReadError ? query.error.partial : null;
+    // Evidence is admitted only for the exact source and rig being shown.
+    if (partial && partial.hostId === source.hostId && partial.rigId === source.rigId) {
+      return { kind: "partial", rows: partial.rows.filter((row) => row.rigId === source.rigId), rejectedCount: partial.rejectedCount, at: partial.receivedAt };
+    }
+    return query.data !== undefined
+      ? { kind: "stale", rows: query.data, at: query.dataUpdatedAt, reason: readFailure(query.error) }
+      : { kind: "unavailable", reason: readFailure(query.error) };
+  }
+  return query.data !== undefined ? { kind: "current", rows: query.data, at: query.dataUpdatedAt } : { kind: "pending" };
+}
+
+function ReadTime({ at }: { at: number }) {
+  const date = new Date(at);
+  return <time dateTime={date.toISOString()} title={date.toISOString()}>{date.toLocaleTimeString()}</time>;
 }
 
 interface AgentRow {
@@ -70,6 +105,8 @@ interface AgentRow {
   pendingWorkCount?: number;
   activityRing?: TopologyActivityVisual;
   reducedMotion?: boolean;
+  /** Which observation the row comes from (current, partial or stale). */
+  inventoryState?: "current" | "partial" | "stale";
 }
 
 function statusToSemanticPip(s: string): "active" | "running" | "stopped" | "warning" | "error" | "info" {
@@ -347,7 +384,8 @@ export function TopologyTableView({ rigIdScope, podNameScope }: { rigIdScope?: s
   // Topology Tree details-icon-retired contract).
   const navigate = useNavigate();
   const hostId = useSelectedHostId();
-  const { data: rigs } = useRigSummary();
+  const linkSource = useKnownSelectedHost();
+  const { data: rigs, isError: rigsFailed, error: rigsError } = useRigSummary();
   const reducedMotion = usePrefersReducedMotion();
   const scopedRigs = useMemo(
     () =>
@@ -363,23 +401,39 @@ export function TopologyTableView({ rigIdScope, podNameScope }: { rigIdScope?: s
   const inventoryResults = useQueries({
     queries: scopedRigs.map((r) => ({
       queryKey: ["rig", r.id, "nodes", hostId] as const,
-      queryFn: () => fetchNodeInventory(r.id, hostId),
+      // The shared bounded reader (deadline, cancellation, exact-rig guard):
+      // same key/poll as useNodeInventory, no second transport or cache.
+      queryFn: ({ signal }: { signal: AbortSignal }) => readNodeInventory(r.id, hostId, { signal }),
       refetchInterval: 30_000,
+      retry: false,
+      placeholderData: undefined,
     })),
+    // Only the facts a view is derived from, structurally shared across
+    // renders, so fetching-only changes do not rebuild rows (and the
+    // activity index derived from them) on every render.
+    combine: (results) => results.map((q) => ({ data: q.data, error: q.error, isError: q.isError, dataUpdatedAt: q.dataUpdatedAt })),
   });
+  const inventoryViews = useMemo(
+    () => scopedRigs.map((rig, i) => {
+      const result = inventoryResults[i];
+      return result ? rigInventoryView(result, { hostId, rigId: rig.id }) : ({ kind: "pending" } as const);
+    }),
+    [scopedRigs, inventoryResults, hostId],
+  );
 
   const data: AgentRow[] = useMemo(() => {
     const rows: AgentRow[] = [];
     for (let i = 0; i < scopedRigs.length; i++) {
       const rig = scopedRigs[i];
-      const result = inventoryResults[i];
-      if (!rig || !result) continue;
-      const nodes: NodeInventoryEntry[] = result.data ?? [];
+      const view = inventoryViews[i];
+      if (!rig || !view) continue;
+      const nodes: NodeInventoryEntry[] = "rows" in view ? view.rows : [];
       const scopedNodes = podNameScope
         ? nodes.filter((n) => (n.podNamespace ?? n.podId) === podNameScope)
         : nodes;
       for (const n of scopedNodes) {
         rows.push({
+          inventoryState: view.kind === "partial" || view.kind === "stale" ? view.kind : "current",
           rigId: rig.id,
           rigName: rig.name,
           podName: inferPodName(n.logicalId) ?? "default",
@@ -398,7 +452,7 @@ export function TopologyTableView({ rigIdScope, podNameScope }: { rigIdScope?: s
       }
     }
     return rows;
-  }, [scopedRigs, inventoryResults, podNameScope]);
+  }, [scopedRigs, inventoryViews, podNameScope]);
 
   const sessionIndex = useMemo(() => buildTopologySessionIndex(data.map((row) => ({
     nodeId: `${row.rigId}::${row.logicalId}`,
@@ -454,8 +508,43 @@ export function TopologyTableView({ rigIdScope, podNameScope }: { rigIdScope?: s
     },
   });
 
+  // A pending or failed read is not "no agents": say which it is, per rig.
+  const rigLabel = (i: number) => scopedRigs[i]?.name ?? scopedRigs[i]?.id ?? "rig";
+  const failedInventories = inventoryViews.flatMap((v, i) => (v.kind === "unavailable" ? [{ name: rigLabel(i), reason: v.reason }] : []));
+  const partialInventories = inventoryViews.flatMap((v, i) => (v.kind === "partial" ? [{ name: rigLabel(i), view: v }] : []));
+  const staleInventories = inventoryViews.flatMap((v, i) => (v.kind === "stale" ? [{ name: rigLabel(i), view: v }] : []));
+  const inventoryPending = rigs === undefined
+    ? !rigsFailed
+    : inventoryViews.some((v) => v.kind === "pending");
+
   return (
     <div data-testid="topology-table-view" className="space-y-3 mt-4">
+      {rigsFailed ? (
+        <div data-testid="topology-table-inventory-error" role="alert" className="font-mono text-[10px] text-error">
+          {rigs === undefined
+            ? `Rig inventory unavailable: ${rigsError instanceof Error ? rigsError.message : "read failed"}.`
+            : "Rig inventory refresh failed; rows below are from the last successful read."}
+        </div>
+      ) : null}
+      {failedInventories.length > 0 ? (
+        <div data-testid="topology-table-rig-errors" role="alert" className="font-mono text-[10px] text-error">
+          Agents not listed for {failedInventories.length} rig{failedInventories.length === 1 ? "" : "s"} whose inventory could not be read:{" "}
+          {failedInventories.slice(0, 6).map((f) => `${f.name} (${f.reason})`).join(", ")}
+          {failedInventories.length > 6 ? ", …" : ""}.
+        </div>
+      ) : null}
+      {partialInventories.map(({ name, view }) => (
+        <div key={`partial-${name}`} data-testid="topology-table-inventory-partial" role="status" className="font-mono text-[10px] text-tertiary">
+          {view.rows.length > 0
+            ? <>{name}: partial inventory — {view.rows.length} verified agent{view.rows.length === 1 ? "" : "s"} shown; {view.rejectedCount} record{view.rejectedCount === 1 ? "" : "s"} rejected as malformed or foreign (read <ReadTime at={view.at} />).</>
+            : <>{name}: inventory read at <ReadTime at={view.at} /> had no valid agent records ({view.rejectedCount} rejected) — agents not listed.</>}
+        </div>
+      ))}
+      {staleInventories.map(({ name, view }) => (
+        <div key={`stale-${name}`} data-testid="topology-table-inventory-stale" role="status" className="font-mono text-[10px] text-on-surface-variant">
+          {name}: refresh failed ({view.reason}); its rows are from the last successful read at <ReadTime at={view.at} />.
+        </div>
+      ))}
       <div className="flex items-center gap-2">
         <VellumInput
           placeholder="Filter agents..."
@@ -490,7 +579,11 @@ export function TopologyTableView({ rigIdScope, podNameScope }: { rigIdScope?: s
             {table.getRowModel().rows.length === 0 ? (
               <tr>
                 <td colSpan={columns.length} className="px-3 py-6 text-center font-mono text-xs text-on-surface-variant">
-                  No agents match.
+                  {activityData.length === 0 && inventoryPending
+                    ? "Reading agents…"
+                    : activityData.length === 0 && (rigsFailed || failedInventories.length > 0 || partialInventories.some((p) => p.view.rows.length === 0))
+                      ? "No agents could be read."
+                      : "No agents match."}
                 </td>
               </tr>
             ) : (
@@ -498,19 +591,21 @@ export function TopologyTableView({ rigIdScope, podNameScope }: { rigIdScope?: s
                 <tr
                   key={row.id}
                   data-testid={`topology-table-row-${row.original.logicalId}`}
+                  data-inventory-state={row.original.inventoryState}
                   onClick={() => {
                     // OPR.0.4.1.31 part D — guard malformed rows: a null/empty
                     // logicalId would build /seat/$rigId/"null"
                     // (encodeURIComponent(null) === "null"). Skip navigation for
                     // such rows instead of routing to a bogus seat URL.
                     if (!row.original.logicalId) return;
-                    navigate({
-                      to: "/topology/seat/$rigId/$logicalId",
-                      params: {
-                        rigId: row.original.rigId,
-                        logicalId: encodeURIComponent(row.original.logicalId),
-                      },
+                    // Raw params through the shared builder (router encodes once).
+                    const target = topologyTarget({
+                      scope: { kind: "seat", rigId: row.original.rigId, logicalId: row.original.logicalId },
+                      sourceHost: linkSource,
                     });
+                    if (target) {
+                      navigate({ to: target.to, params: target.params, search: target.search, state: freshTopologyVisitState } as never);
+                    }
                   }}
                   className="group border-b border-outline-variant last:border-b-0 hover:bg-surface-low focus-within:bg-surface-low cursor-pointer"
                 >

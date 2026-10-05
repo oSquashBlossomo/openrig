@@ -198,20 +198,22 @@ describe("WF-4 render-parity — the ExceptionBanner (overdue disclosed vs faile
   it("the OVERDUE banner (S2, production-unreachable) renders the SAME banner element a live overdue instance would", () => {
     const overdue = inst({ status: "active", deadline: { state: "overdue-unclaimed", evidence: EVIDENCE } });
     const { getByTestId } = render(
-      <ExceptionBanner instance={overdue} onResume={() => {}} resuming={false} resumeError={null} />,
+      <ExceptionBanner instance={overdue} />,
     );
     const banner = getByTestId("workflow-exception-banner");
     expect(banner.textContent).toContain("OVERDUE-UNCLAIMED");
     expect(banner.textContent).toContain("inspector@acme-factory");
   });
 
-  it("the FAILED banner (live) renders + wires Resume (route-from-web omitted)", () => {
+  it("the FAILED banner (live) renders and points to the occurrence chooser (route-from-web omitted)", () => {
     const failed = inst({ status: "failed", currentStepId: null, deadline: { state: "healthy", evidence: null } });
     const { getByTestId, queryByTestId } = render(
-      <ExceptionBanner instance={failed} onResume={() => {}} resuming={false} resumeError={null} />,
+      <ExceptionBanner instance={failed} unresolvedFailures={2} />,
     );
     expect(getByTestId("workflow-exception-banner").textContent).toContain("FAILED");
-    expect(getByTestId("workflow-resume")).toBeTruthy();
+    // Resume is an explicit occurrence choice below the banner, never a generic button here.
+    expect(queryByTestId("workflow-resume")).toBeNull();
+    expect(getByTestId("workflow-exception-failures-link").textContent).toContain("2 unresolved failure occurrences");
     // route-from-web is deferred — no re-route affordance renders.
     expect(queryByTestId("workflow-route")).toBeNull();
   });

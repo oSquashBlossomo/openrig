@@ -15,7 +15,7 @@
 // useRouterState pathname parsing inside RigBranch + PodBranch.
 
 import { useEffect, useState, type ReactNode } from "react";
-import { Link, useRouterState } from "@tanstack/react-router";
+import { useRouterState } from "@tanstack/react-router";
 import { Archive, ChevronDown, ChevronRight, Globe } from "lucide-react";
 import { cn } from "../../lib/utils.js";
 import { useRigSummary } from "../../hooks/useRigSummary.js";
@@ -26,6 +26,16 @@ import { useHosts, useSelectHost } from "../../hooks/useHosts.js";
 import { LOCAL_HOST_ID } from "../../lib/host-param.js";
 import { displayPodName, inferPodName } from "../../lib/display-name.js";
 import { RuntimeMark } from "../graphics/RuntimeMark.js";
+import { TopologyLink, topologyTarget, useKnownSelectedHost } from "./topology-navigation.js";
+
+/** Pathnames are serialized (encoded once); a malformed escape is no match. */
+function decodeSegment(segment: string): string | null {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return null;
+  }
+}
 
 /** Parse the active topology pathname for the seat-scope rigId+logicalId
  *  and (when on a rig/pod URL) the active rigId / podName. Used for
@@ -37,26 +47,27 @@ function useActiveTopologyContext(): {
 } {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   // /topology/seat/$rigId/$logicalId
-  const seatMatch = pathname.match(/^\/topology\/seat\/([^/]+)\/(.+)$/);
+  const seatMatch = pathname.match(/^\/topology\/seat\/([^/]+)\/([^/]+)$/);
   if (seatMatch) {
-    const rigId = decodeURIComponent(seatMatch[1]!);
-    const logicalId = decodeURIComponent(seatMatch[2]!);
-    const podName = inferPodName(logicalId) ?? "default";
-    return { rigId, podName, logicalId };
+    const rigId = decodeSegment(seatMatch[1]!);
+    const logicalId = decodeSegment(seatMatch[2]!);
+    if (rigId !== null && logicalId !== null) {
+      const podName = inferPodName(logicalId) ?? "default";
+      return { rigId, podName, logicalId };
+    }
   }
   // /topology/pod/$rigId/$podName
   const podMatch = pathname.match(/^\/topology\/pod\/([^/]+)\/([^/]+)$/);
   if (podMatch) {
-    return {
-      rigId: decodeURIComponent(podMatch[1]!),
-      podName: decodeURIComponent(podMatch[2]!),
-      logicalId: null,
-    };
+    const rigId = decodeSegment(podMatch[1]!);
+    const podName = decodeSegment(podMatch[2]!);
+    if (rigId !== null && podName !== null) return { rigId, podName, logicalId: null };
   }
   // /topology/rig/$rigId
   const rigMatch = pathname.match(/^\/topology\/rig\/([^/]+)$/);
   if (rigMatch) {
-    return { rigId: decodeURIComponent(rigMatch[1]!), podName: null, logicalId: null };
+    const rigId = decodeSegment(rigMatch[1]!);
+    if (rigId !== null) return { rigId, podName: null, logicalId: null };
   }
   return { rigId: null, podName: null, logicalId: null };
 }
@@ -68,11 +79,14 @@ function SeatLeaf({ rigId, logicalId, label, runtime, isActive }: {
   runtime?: string | null;
   isActive: boolean;
 }) {
+  const linkSource = useKnownSelectedHost();
   return (
     <li className="px-2 py-0.5 hover:bg-surface-low">
-      <Link
-        to="/topology/seat/$rigId/$logicalId"
-        params={{ rigId, logicalId: encodeURIComponent(logicalId) }}
+      <TopologyLink
+        // Raw params via the shared builder; qualified once the selected host
+        // is confirmed, otherwise a legacy link bound on arrival.
+        target={topologyTarget({ scope: { kind: "seat", rigId, logicalId }, sourceHost: linkSource })}
+        from={null}
         data-testid={`topology-seat-${rigId}-${logicalId}`}
         data-active={isActive}
         className={cn(
@@ -84,7 +98,7 @@ function SeatLeaf({ rigId, logicalId, label, runtime, isActive }: {
       >
         <RuntimeMark runtime={runtime} size="xs" />
         <span className="truncate">{label}</span>
-      </Link>
+      </TopologyLink>
     </li>
   );
 }
@@ -98,6 +112,7 @@ function PodBranch({ rigId, podName, seats, activeRigId, activePodName, activeLo
   activeLogicalId: string | null;
 }) {
   const [open, setOpen] = useState(false);
+  const linkSource = useKnownSelectedHost();
   // P5.1-2 auto-expand: when current route is on this pod (via pod URL
   // OR via a seat URL whose pod resolves to this pod), force-expand.
   const shouldAutoExpand =
@@ -113,14 +128,15 @@ function PodBranch({ rigId, podName, seats, activeRigId, activePodName, activeLo
         className="w-full flex items-center gap-1 px-2 py-0.5 hover:bg-surface-low text-left"
       >
         {open ? <ChevronDown className="h-3 w-3 text-on-surface-variant" /> : <ChevronRight className="h-3 w-3 text-on-surface-variant" />}
-        <Link
-          to="/topology/pod/$rigId/$podName"
-          params={{ rigId, podName }}
-          onClick={(e) => e.stopPropagation()}
-          className="font-mono text-[11px] text-on-surface flex-1 truncate hover:underline"
-        >
-          {displayPodName(podName)}
-        </Link>
+        <span onClick={(e) => e.stopPropagation()} className="flex-1 min-w-0 truncate">
+          <TopologyLink
+            target={topologyTarget({ scope: { kind: "pod", rigId, podName }, sourceHost: linkSource })}
+            from={null}
+            className="font-mono text-[11px] text-on-surface truncate hover:underline"
+          >
+            {displayPodName(podName)}
+          </TopologyLink>
+        </span>
         <span className="font-mono text-[9px] text-on-surface-variant">{seats.length}</span>
       </button>
       {open ? (
@@ -158,7 +174,8 @@ function RigBranch({ rigId, rigName, activeRigId, activePodName, activeLogicalId
   // When auto-expanded, fetch nodes eagerly so the pod tree resolves
   // even if user lands on a deep URL without manually expanding the rig.
   const eagerFetch = open || shouldAutoExpand;
-  const { data: nodes } = useNodeInventory(eagerFetch ? rigId : null);
+  const { data: nodes, isError: nodesFailed } = useNodeInventory(eagerFetch ? rigId : null);
+  const linkSource = useKnownSelectedHost();
   const podsMap = new Map<string, Array<{ logicalId: string; label: string; runtime?: string | null }>>();
   for (const n of nodes ?? []) {
     const pod = inferPodName(n.logicalId) ?? "default";
@@ -179,20 +196,24 @@ function RigBranch({ rigId, rigName, activeRigId, activePodName, activeLogicalId
         className="w-full flex items-center gap-1 px-2 py-1 hover:bg-surface-low text-left"
       >
         {open ? <ChevronDown className="h-3 w-3 text-on-surface-variant" /> : <ChevronRight className="h-3 w-3 text-on-surface-variant" />}
-        <Link
-          to="/topology/rig/$rigId"
-          params={{ rigId }}
-          onClick={(e) => e.stopPropagation()}
-          className="font-mono text-[11px] uppercase text-on-surface flex-1 truncate hover:underline"
-        >
-          {rigName}
-        </Link>
+        <span onClick={(e) => e.stopPropagation()} className="flex-1 min-w-0 truncate">
+          <TopologyLink
+            target={topologyTarget({ scope: { kind: "rig", rigId }, sourceHost: linkSource })}
+            from={null}
+            className="font-mono text-[11px] uppercase text-on-surface truncate hover:underline"
+          >
+            {rigName}
+          </TopologyLink>
+        </span>
       </button>
       {open ? (
         <ul className="ml-4 border-l border-outline-variant">
           {pods.length === 0 ? (
-            <li className="px-2 py-1 font-mono text-[10px] text-on-surface-variant italic">
-              Loading…
+            <li
+              data-testid={nodesFailed && nodes === undefined ? `topology-rig-error-${rigId}` : undefined}
+              className={cn("px-2 py-1 font-mono text-[10px] italic", nodesFailed && nodes === undefined ? "text-error" : "text-on-surface-variant")}
+            >
+              {nodesFailed && nodes === undefined ? "Seats unavailable — the rig inventory could not be read." : nodes ? "No seats." : "Loading…"}
             </li>
           ) : (
             pods.map(([pod, seats]) => (
@@ -285,6 +306,7 @@ function HostBranch({ hostId, label, chip, isSelected, isLocal, onSelect, rigs, 
   rigsLoading: boolean;
   children?: ReactNode;
 }) {
+  const knownHost = useKnownSelectedHost();
   return (
     <li data-testid={isLocal ? "topology-host-localhost" : `topology-host-${hostId}`} data-selected={isSelected}>
       <button
@@ -295,13 +317,15 @@ function HostBranch({ hostId, label, chip, isSelected, isLocal, onSelect, rigs, 
         {isSelected ? <ChevronDown className="h-3 w-3 text-on-surface-variant" /> : <ChevronRight className="h-3 w-3 text-on-surface-variant" />}
         <Globe className="h-3 w-3 text-on-surface-variant" />
         {isSelected ? (
-          <Link
-            to="/topology"
-            onClick={(e) => e.stopPropagation()}
-            className="font-mono text-[11px] uppercase text-on-surface flex-1 truncate hover:underline"
-          >
-            {label}
-          </Link>
+          <span onClick={(e) => e.stopPropagation()} className="flex-1 min-w-0 truncate">
+            <TopologyLink
+              target={topologyTarget({ scope: { kind: "host" }, sourceHost: knownHost === hostId ? hostId : null })}
+              from={null}
+              className="font-mono text-[11px] uppercase text-on-surface truncate hover:underline"
+            >
+              {label}
+            </TopologyLink>
+          </span>
         ) : (
           <span className="font-mono text-[11px] uppercase text-on-surface flex-1 truncate">{label}</span>
         )}
@@ -317,7 +341,9 @@ function HostBranch({ hostId, label, chip, isSelected, isLocal, onSelect, rigs, 
           </span>
         ) : null}
         {isSelected ? (
-          <span className="font-mono text-[9px] text-on-surface-variant">{rigs?.length ?? 0}</span>
+          <span className="font-mono text-[9px] text-on-surface-variant" title={rigs ? undefined : "rig count unknown"}>
+            {rigs ? rigs.length : "?"}
+          </span>
         ) : null}
       </button>
       {isSelected ? (
@@ -329,7 +355,9 @@ function HostBranch({ hostId, label, chip, isSelected, isLocal, onSelect, rigs, 
               data-testid={`topology-host-error-${hostId}`}
               className="px-2 py-1 font-mono text-[10px] text-error"
             >
-              Host unreachable — its rigs can&apos;t be listed. See the page for retry.
+              {isLocal
+                ? `Rig inventory unavailable (${rigsError}) — rigs can't be listed.`
+                : "Host unreachable — its rigs can't be listed. See the page for retry."}
             </li>
           ) : rigsLoading && (rigs === undefined || rigs.length === 0) ? (
             <li className="px-2 py-1 font-mono text-[10px] text-on-surface-variant italic">
@@ -345,7 +373,7 @@ function HostBranch({ hostId, label, chip, isSelected, isLocal, onSelect, rigs, 
 }
 
 export function TopologyTreeView() {
-  const { data: rigs, error: rigsQueryError, isFetching: rigsFetching } = useRigSummary();
+  const { data: rigs, error: rigsQueryError, isFetching: rigsFetching, isError: rigsFailed } = useRigSummary();
   const { data: hostsData } = useHosts();
   const selectHost = useSelectHost();
   // OPR.0.4.6.MH1 FR-4: the own-host display name (one stored name, every
@@ -361,9 +389,15 @@ export function TopologyTreeView() {
   const selected = hostsData?.selected ?? LOCAL_HOST_ID;
   const remoteHosts = hostsData?.hosts ?? [];
   const rigList = rigs ?? [];
+  const rigsErrorText = rigsFailed && rigsQueryError ? String((rigsQueryError as Error).message ?? rigsQueryError) : null;
 
   const rigTree = (
     <>
+      {rigs !== undefined && rigsFailed ? (
+        <li data-testid="topology-rigs-stale" className="px-2 py-1 font-mono text-[10px] text-error">
+          Refresh failed; showing the last successful rig list.
+        </li>
+      ) : null}
       {rigList.length > 0 ? (
         rigList.map((r) => (
           <RigBranch
@@ -375,9 +409,14 @@ export function TopologyTreeView() {
             activeLogicalId={activeLogicalId}
           />
         ))
-      ) : (
+      ) : rigs !== undefined ? (
+        // Only a successful read that returned zero rigs is "No rigs".
         <li className="px-2 py-1 font-mono text-[10px] text-on-surface-variant italic">
           No rigs.
+        </li>
+      ) : (
+        <li data-testid="topology-rigs-pending" className="px-2 py-1 font-mono text-[10px] text-on-surface-variant italic">
+          Reading rigs…
         </li>
       )}
       {/* OPR.0.3.3.19 - archived rigs nest under the LOCAL host only: the
@@ -408,8 +447,9 @@ export function TopologyTreeView() {
           onSelect={() => {
             if (selected !== LOCAL_HOST_ID) selectHost.mutate({ hostId: LOCAL_HOST_ID });
           }}
-          rigs={rigList}
-          rigsError={null}
+          rigs={rigs}
+          // Local reads fail too (malformed/hung/HTTP): never "No rigs" then.
+          rigsError={selected === LOCAL_HOST_ID && rigs === undefined ? rigsErrorText : null}
           rigsLoading={rigsFetching}
         >
           {rigTree}
@@ -425,7 +465,7 @@ export function TopologyTreeView() {
             onSelect={() => {
               if (selected !== h.id) selectHost.mutate({ hostId: h.id });
             }}
-            rigs={rigList}
+            rigs={rigs}
             rigsError={selected === h.id && rigsQueryError ? String((rigsQueryError as Error).message ?? rigsQueryError) : null}
             rigsLoading={rigsFetching}
           >

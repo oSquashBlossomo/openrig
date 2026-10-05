@@ -9,6 +9,7 @@ import { render, screen, fireEvent, waitFor, act, within } from "@testing-librar
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import SpatialTopologyView from "../src/components/topology/spatial/SpatialTopologyView.js";
+import { parseTopologySearch, stringifyTopologySearch } from "../src/lib/topology-search.js";
 import type { SpatialScope } from "../src/lib/spatial-topology.js";
 
 const controller = vi.hoisted(() => ({
@@ -96,6 +97,9 @@ function renderView(scope: SpatialScope = { kind: "host" }, opts: { selected?: s
   const router = createRouter({
     routeTree: rootRoute.addChildren([viewRoute, seatRoute, catchAll]),
     history: createMemoryHistory({ initialEntries: ["/topology"] }),
+    // Production search contract: raw topology identities, never coerced.
+    parseSearch: parseTopologySearch,
+    stringifySearch: stringifyTopologySearch,
   });
   const result = render(<RouterProvider router={router} />);
   return { ...result, router };
@@ -112,7 +116,8 @@ beforeEach(() => {
 });
 
 async function ready() {
-  await screen.findByTestId("stub-renderer");
+  // The first mount transforms the lazy spatial chunk; allow for a loaded host.
+  await screen.findByTestId("stub-renderer", {}, { timeout: 5000 });
   await waitFor(() => expect((screen.getByTestId("spatial-camera-fit") as HTMLButtonElement).disabled).toBe(false));
 }
 
@@ -218,16 +223,27 @@ describe("SpatialTopologyView", () => {
     expect(screen.getByTestId("stub-renderer").getAttribute("data-matches")).toBe("none");
   });
 
+  // Navigation contract change: the selection is exact URL intent. A seat
+  // removed on refresh drops out of the inspector (nothing stale is shown as
+  // current) and the inspector says it is absent instead of silently
+  // forgetting the selection or substituting another seat.
   it("selection follows current data: a seat removed on refresh drops out of the inspector", async () => {
-    renderView();
+    const { router } = renderView();
     await ready();
     fireEvent.click(rowFor("reviewer"));
     await screen.findByTestId("spatial-inspector");
     act(() => {
       qc.setQueryData(["rig", "ra", "graph", "local"], { ...graphA, nodes: graphA.nodes.filter((n) => n.id !== "n3") });
     });
-    expect(await screen.findByTestId("spatial-inspector-empty")).toBeTruthy();
+    const notice = await screen.findByTestId("spatial-selection-notice");
+    expect(notice.getAttribute("data-state")).toBe("absent");
+    expect(notice.textContent).toContain("Graph node n3 is not in rig ra's current graph");
+    expect(screen.queryByTestId("spatial-inspector")).toBeNull();
     expect(screen.getByTestId("spatial-counts").textContent).toContain("2 seats");
+    expect(router.state.location.search).toMatchObject({ selectedRig: "ra", selectedNode: "n3" });
+    fireEvent.click(screen.getByTestId("spatial-selection-clear"));
+    expect(await screen.findByTestId("spatial-inspector-empty")).toBeTruthy();
+    expect(router.state.location.search).not.toHaveProperty("selectedNode");
   });
 
   it("a host switch resets selection and never shows the previous host's seats", async () => {
