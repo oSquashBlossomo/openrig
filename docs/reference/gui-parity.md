@@ -6,9 +6,38 @@ The inventory follows the eight entries in `packages/tui/src/sections.ts`, the c
 
 `ARCHITECTURE.md` describes the upstream UI as maintenance-only. This reference supports GUI modernization in this fork. Existing daemon contracts remain the source of truth; a visually richer surface must not turn unknown evidence into success, treat receipts as acceptance, or perform writes while browsing.
 
-## Current acceptance — October 5, 2026
+## Human-style review follow-up — October 5, 2026
 
-The implementation and its bounded acceptance are complete at checkpoint `c2961dea2524506e3b965125023660834d7b9849` on draft [PR #11](https://github.com/oSquashBlossomo/openrig/pull/11). It includes the eight frontend cohorts and the final exact-seat work/activity follow-up. The integrated candidate passed workspace build/type checks, the twin build, the production UI build, and **3,554 UI tests across 335 files, with one existing skip**. All eight [required GitHub test jobs](https://github.com/oSquashBlossomo/openrig/actions/runs/37252911396) and its [portability report](https://github.com/oSquashBlossomo/openrig/actions/runs/37252911357) passed. The acceptance update below changes documentation only; application bytes remain those tested at c296.
+Astra independently explored the actual GUI through computer use before the
+user's visual review. The finite pass covered desktop and narrow 3D navigation,
+search/List/camera controls, exact seat-work-item round trips, Markdown
+save/discard and retained drafts, Health/Attention evidence, Library provenance,
+and an explicitly approved fictional workflow resume.
+
+One medium functional defect was found and repaired: clicking a seat in a rig
+whose graph loaded after the first scene could retain the previous selection.
+The index callback now uses the current selection handler. Sol's mounted
+regression reproduced the delayed-arrival failure before the Opus repair and
+passed afterward; the search-field Enter control passed in both cases. Astra
+then verified the corrected seat, inspector and URL through the browser. The
+browser retest proves the final user flow; the deterministic regression provides
+the exact load-order proof. No confirmed defect remains in the covered journeys.
+
+The repaired frozen candidate passed workspace build/type checks, the full UI
+suite (**3,556 passed across 335 files, one existing skip**), twin build and final
+production UI build without source or dependency drift. The workflow test
+resolved only the selected fictional occurrence, retained the other failure,
+and preserved its receipt through navigation. That test used in-memory demo
+data, not a real workflow backend or native wake.
+
+The interactive preview and private computer-use evidence are separate from the
+installed fleet. PR media is held for the user's review preference. This pass
+does not establish exhaustive device, remote-host, native-runtime, workflow
+abort, or backend-persistence coverage; earlier acceptance retains its own scope.
+
+## Completed baseline acceptance — October 5, 2026
+
+The implementation and its bounded baseline acceptance completed at checkpoint `c2961dea2524506e3b965125023660834d7b9849` on draft [PR #11](https://github.com/oSquashBlossomo/openrig/pull/11). It includes the eight frontend cohorts and the final exact-seat work/activity follow-up. That integrated candidate passed workspace build/type checks, the twin build, the production UI build, and **3,554 UI tests across 335 files, with one existing skip**. All eight [required GitHub test jobs](https://github.com/oSquashBlossomo/openrig/actions/runs/37252911396) and its [portability report](https://github.com/oSquashBlossomo/openrig/actions/runs/37252911357) passed. The following baseline acceptance record was first published as a documentation-only update; the subsequent selection repair is described above.
 
 The user approved the previously pending isolated viewport, clipboard and exact native-Claude trust checks. Fresh, separate Chrome profiles resolved the earlier in-app browser rendering limitation. New bounded acceptance establishes:
 

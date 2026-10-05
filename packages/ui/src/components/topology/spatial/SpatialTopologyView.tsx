@@ -319,10 +319,13 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
     if (!sceneActive) setRendererReady(false);
   }, [sceneActive]);
 
+  // setSelectedKey closes over the current model and navigation; without it
+  // here, a rig graph arriving later would leave index clicks using an older
+  // model that cannot resolve the new rig's seats.
   const selectFromIndex = useCallback((key: string) => {
     setSelectedKey(key);
     if (sceneActive) controllerRef.current?.focus(key);
-  }, [sceneActive]);
+  }, [sceneActive, setSelectedKey]);
 
   const onRendererFailure = useCallback((reason: SpatialViewFailure) => {
     controllerRef.current = null;

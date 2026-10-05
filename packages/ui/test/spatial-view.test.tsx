@@ -154,6 +154,42 @@ describe("SpatialTopologyView", () => {
     expect(document.querySelector(".xterm, [data-testid*='terminal']")).toBeNull();
   });
 
+  it.each(["index click", "search Enter"] as const)("%s selects a seat from a rig whose graph arrived after the scene became active", async (action) => {
+    let deliverSecondGraph!: (response: Response) => void;
+    const secondGraph = new Promise<Response>(resolve => { deliverSecondGraph = resolve; });
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === "/api/rigs/summary") return json([
+        { id: "ra", name: "acme-build", nodeCount: 3 },
+        { id: "rb", name: "acme-comms", nodeCount: 1 },
+      ]);
+      if (url === "/api/rigs/ra/graph") return json(graphA);
+      if (url === "/api/rigs/rb/graph") return secondGraph;
+      return json({}, 404);
+    });
+    const { router } = renderView();
+    await ready();
+    fireEvent.click(rowFor("coordinator"));
+    await waitFor(() => expect(screen.getByTestId("spatial-inspector-name").textContent).toBe("coordinator"));
+    const earlierLocation = router.history.location.href;
+    await act(async () => {
+      deliverSecondGraph(json({ nodes: [
+        { id: "editor-node", type: "rigNode", data: { logicalId: "desk.editor", canonicalSessionName: "editor@acme-comms", status: "running", startupStatus: "ready" } },
+      ], edges: [] }));
+    });
+    await waitFor(() => expect(rowFor("editor")).toBeTruthy());
+    if (action === "index click") fireEvent.click(rowFor("editor"));
+    else {
+      const input = screen.getByTestId("spatial-search");
+      fireEvent.change(input, { target: { value: "editor" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+    }
+    await waitFor(() => expect(screen.getByTestId("spatial-inspector-name").textContent).toBe("editor"));
+    expect(rowFor("editor").getAttribute("aria-pressed")).toBe("true");
+    expect(router.history.location.href).not.toBe(earlierLocation);
+    expect(router.history.location.href).toContain("editor-node");
+    expect(controller.focus).toHaveBeenLastCalledWith(expect.stringContaining("/agent/editor-node"));
+  });
+
   it("selecting in the scene does not move the camera; clicking empty space clears selection", async () => {
     renderView();
     await ready();
