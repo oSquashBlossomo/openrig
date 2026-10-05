@@ -19,6 +19,9 @@ import type { NodeDetailData } from "../hooks/useNodeDetail.js";
 
 interface SeatOverviewSecondaryProps {
   data: NodeDetailData;
+  /** false when the exact-seat work panel lists current work, so the single
+   *  detail snippet does not compete with it. cwd always stays. */
+  showCurrentWork?: boolean;
 }
 
 function placeholderOrValue(value: ReactNode | null | undefined): ReactNode {
@@ -27,7 +30,7 @@ function placeholderOrValue(value: ReactNode | null | undefined): ReactNode {
   return value;
 }
 
-export function SeatOverviewSecondary({ data }: SeatOverviewSecondaryProps) {
+export function SeatOverviewSecondary({ data, showCurrentWork = true }: SeatOverviewSecondaryProps) {
   const currentQitem = data.currentQitems?.[0] ?? null;
   const currentWorkValue: ReactNode | null = currentQitem ? (
     <span className="flex min-w-0 items-baseline gap-2">
@@ -53,11 +56,13 @@ export function SeatOverviewSecondary({ data }: SeatOverviewSecondaryProps) {
           mono
           titleAttr={data.cwd ?? undefined}
         />
-        <Row
-          fieldKey="current-work"
-          label="current work"
-          value={currentWorkValue}
-        />
+        {showCurrentWork ? (
+          <Row
+            fieldKey="current-work"
+            label="current work"
+            value={currentWorkValue}
+          />
+        ) : null}
       </dl>
     </section>
   );

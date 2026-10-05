@@ -77,12 +77,23 @@ function activityLabelFromVisualState(state: TopologyActivityVisual["state"]): s
 
 export function SeatOverviewTable({ data, activityVisual }: SeatOverviewTableProps) {
   const { state: fallbackActivityState, source: fallbackActivitySource } = getActivityStateWithSource(data.agentActivity, data.terminalActive);
-  const activityState = activityVisual?.state ?? fallbackActivityState;
-  const activityLabel = activityVisual
-    ? activityLabelFromVisualState(activityVisual.state)
+  // The topology ring falls back to a quiet, non-animated "idle" when there is
+  // no observation. That is a visual default, not evidence: when no recent
+  // event backs it and the served facts carry no activity observation, the text
+  // stays "unknown" (null/omitted/explicit-unknown is not "definitely idle").
+  // Observed idle/false, active, recent events and blocked/needs-input rings
+  // keep using the ring state as before.
+  const evidenceFreeIdle = Boolean(activityVisual)
+    && !activityVisual!.recent
+    && activityVisual!.state === "idle"
+    && fallbackActivityState === "unknown";
+  const ringVisual = evidenceFreeIdle ? undefined : activityVisual;
+  const activityState = ringVisual?.state ?? fallbackActivityState;
+  const activityLabel = ringVisual
+    ? activityLabelFromVisualState(ringVisual.state)
     : activityLabelFromState(fallbackActivityState);
-  const activityIsActive = activityVisual
-    ? activityVisual.state === "active"
+  const activityIsActive = ringVisual
+    ? ringVisual.state === "active"
     : fallbackActivityState === "running";
   const usingRecentActivityVisual = Boolean(activityVisual?.recent);
   const timeInState = usingRecentActivityVisual ? null : getTimeInState(data.agentActivity);

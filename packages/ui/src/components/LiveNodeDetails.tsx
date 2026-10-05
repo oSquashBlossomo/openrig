@@ -29,6 +29,7 @@ import { AgentPluginsList } from "./specs/AgentPluginsList.js";
 // same-origin library read for this seat, keyed by its launched binding.
 import { SeatSpecProvenance } from "./specs/SeatSpecProvenance.js";
 import { ScopedHealthPanel, useHealthAdmission } from "./topology/ScopedHealth.js";
+import { SeatWorkPanel } from "./SeatWorkPanel.js";
 // V0.3.1 slice 25 — PreviewPane no longer rendered (Startup section
 // in Details tab drops the preview; the terminal moved up to Overview
 // via SessionPreviewPane). PreviewPane is still owned by other
@@ -485,7 +486,10 @@ function OverviewTab({ data, activityVisual, rigId, logicalId, sourceHost, detai
     <div data-testid="live-overview-section" className="space-y-4">
       <SeatNotificationBanner data={data} />
       <SeatOverviewTable data={data} activityVisual={activityVisual} />
-      <SeatOverviewSecondary data={data} />
+      {/* A local seat's full current work is in the panel below; the single
+          detail snippet stays only where that list cannot be read here. */}
+      <SeatOverviewSecondary data={data} showCurrentWork={sourceHost !== LOCAL_HOST_ID} />
+      <SeatWorkPanel rigId={rigId} logicalId={logicalId} sourceHost={sourceHost} />
       <SeatHealthSection data={data} rigId={rigId} logicalId={logicalId} sourceHost={sourceHost} detailCurrent={detailCurrent} />
       <InlineTerminal data={data} />
       <RecentEventsSection data={data} />

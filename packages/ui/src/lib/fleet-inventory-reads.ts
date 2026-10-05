@@ -28,6 +28,10 @@ export function isNodeInventoryEntry(v: unknown): v is NodeInventoryEntry {
     contextUsage: optional(nullable(contextUsage)), agentActivity: optional(nullable(activity)),
     currentQitems: optional(arrayOf(q => hasShape(q, { qitemId: identity, bodyExcerpt: isText, tier: textOrNull }))),
     terminalActive: optional(nullable(isBoolean)), hasAssignedWork: optional(isBoolean), pendingWorkCount: optional(isInteger),
+    assignedWorkCount: optional(isInteger), inProgressWorkCount: optional(isInteger), blockedWorkCount: optional(isInteger),
+    activityState: optional(nullable(s => hasShape(s, { activity: isText, display: isText,
+      needsInput: n => hasShape(n, { count: isInteger, reason: textOrNull }), decidedBy: textOrNull, seq: isInteger,
+      lastSwap: nullable(swap => hasShape(swap, { generation: isText, at: isText })) }))),
     identityVerdict: optional(nullable(verdict)), agentRef: optional(textOrNull), profile: optional(textOrNull), codexConfigProfile: optional(textOrNull),
     resolvedSpecName: optional(textOrNull), resolvedSpecVersion: optional(textOrNull), resolvedSpecHash: optional(textOrNull),
     lifecycleState: optional(oneOf("running", "detached", "recoverable", "attention_required")) });

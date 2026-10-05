@@ -42,6 +42,17 @@ export interface SeatIdentityVerdictSummary {
   observedAt?: string;
 }
 
+/** Exact server-arbitrated three-axis projection. Strings remain extensible;
+ * consumers display served facts rather than deriving a new arbitration. */
+export interface SeatActivityStateSummary {
+  activity: string;
+  display: string;
+  needsInput: { count: number; reason: string | null };
+  decidedBy: string | null;
+  seq: number;
+  lastSwap: { generation: string; at: string } | null;
+}
+
 export interface NodeInventoryEntry {
   rigId: string;
   rigName: string;
@@ -74,6 +85,12 @@ export interface NodeInventoryEntry {
   terminalActive?: boolean | null;
   hasAssignedWork?: boolean;
   pendingWorkCount?: number;
+  // Daemon totals include its distinct raw/canonical seat address aliases.
+  // Missing fields remain unknown, never inferred from bounded queue rows.
+  assignedWorkCount?: number;
+  inProgressWorkCount?: number;
+  blockedWorkCount?: number;
+  activityState?: SeatActivityStateSummary | null;
   // OPR.0.4.3.19 — liveness identity verdict (third axis). null/absent when
   // never observed; mismatch/pane_missing down-ranks the seat non-green.
   identityVerdict?: SeatIdentityVerdictSummary | null;
