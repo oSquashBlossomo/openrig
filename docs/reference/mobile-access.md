@@ -43,6 +43,18 @@ If the page loads but requests fail, distinguish `untrusted_host`,
 The terminal applies its own origin/authentication guard. An HTTPS proxy needs
 the exact HTTPS origin allowance even when the underlying daemon uses HTTP.
 
+## Connection recovery
+
+The GUI reads current workflow state when its event connection opens or
+reopens. A reconnect also replays retained events after the browser's saved
+sequence, in bounded pages. A fresh connection receives a sequence checkpoint
+without replaying historical workflow outcomes into CLI followers. These are
+read-only recovery steps; they do not resubmit workflow operations.
+
+Event replay cannot recreate deleted history or recover events from a replaced
+database. The canonical readback remains necessary. If an operation's response
+was interrupted, inspect its current state and receipt before retrying it.
+
 ## Device verification
 
 Record the actual iPad model, OS, Safari version and effective viewport. An

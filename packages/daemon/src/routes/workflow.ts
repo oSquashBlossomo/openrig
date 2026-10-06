@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import * as path from "node:path";
 import type { EventBus } from "../domain/event-bus.js";
+import type { PersistedEvent } from "../domain/types.js";
 import { QueueRepositoryError } from "../domain/queue-repository.js";
 import {
   WorkflowInstanceError,
@@ -295,9 +296,13 @@ export function workflowRoutes(): Hono {
   // SSE for workflow.* events. MUST precede /:instance_id (Phase A R1 lesson).
   const sseHandler = (c: Parameters<typeof streamSSE>[0]) => {
     const eventBus = getEventBus(c);
+    const savedId = c.req.header("Last-Event-ID");
+    const parsedSeq = parseInt(savedId ?? "0", 10);
+    let cursor = savedId === undefined ? eventBus.currentSequence()
+      : Number.isSafeInteger(parsedSeq) && parsedSeq >= 0 ? parsedSeq : 0;
+    const replayPageSize = 250;
     return streamSSE(c, async (stream) => {
-      const unsubscribe = eventBus.subscribe((event) => {
-        if (
+      const isWorkflowEvent = (event: PersistedEvent) => !(
           event.type !== "workflow.revised" &&
           event.type !== "workflow.instantiated" &&
           event.type !== "workflow.step_closed" &&
@@ -308,12 +313,45 @@ export function workflowRoutes(): Hono {
           // run/watch followers see the redrive, not a silent gap.
           event.type !== "workflow.resumed" &&
           event.type !== "workflow.routing_table_changed"
-        ) return;
-        const sse = { id: String(event.seq), data: JSON.stringify(event) };
-        stream.writeSSE(sse).catch(() => {});
+        );
+      let replaying = true;
+      let replayThroughSeq = cursor;
+      // Subscribe before reading history. While writes yield, retain only a
+      // sequence watermark: the persisted log supplies the next bounded page.
+      const unsubscribe = eventBus.subscribe((event) => {
+        if (!isWorkflowEvent(event) || event.seq <= cursor) return;
+        if (replaying) {
+          replayThroughSeq = Math.max(replayThroughSeq, event.seq);
+          return;
+        }
+        cursor = event.seq;
+        stream.writeSSE({ id: String(event.seq), data: JSON.stringify(event) }).catch(() => {});
       });
+      const aborted = new Promise<void>((resolve) => stream.onAbort(resolve));
       try {
-        await new Promise<void>((resolve) => stream.onAbort(() => resolve()));
+        // Fresh followers keep live-only payload semantics (the CLI must not
+        // mistake an old workflow failure for its current outcome). An ID-only
+        // checkpoint gives EventSource a resume cursor, including empty-log 0,
+        // without dispatching a message or invalidating the current snapshot.
+        if (savedId === undefined) await stream.write(`id: ${cursor}\n\n`);
+        // Invalid explicit cursors start at zero, like /api/events.
+        // Page the global log: workflow events deliberately have no rig scope.
+        while (!stream.aborted) {
+          const page = eventBus.replayAll(cursor, replayPageSize);
+          for (const event of page) {
+            if (stream.aborted) return;
+            if (isWorkflowEvent(event)) {
+              await stream.writeSSE({ id: String(event.seq), data: JSON.stringify(event) });
+            }
+            cursor = event.seq;
+          }
+          if (page.length < replayPageSize && cursor >= replayThroughSeq) break;
+          // A page containing only unrelated events must still let disconnects
+          // run, without buffering the rest of the database or live payloads.
+          await stream.sleep(0);
+        }
+        replaying = false;
+        await aborted;
       } finally {
         unsubscribe();
       }

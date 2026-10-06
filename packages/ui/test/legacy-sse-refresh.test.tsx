@@ -111,3 +111,36 @@ it('drops pending local workflow work when scope becomes unsupported remote, eve
  expect(reads).toHaveLength(1);expect(reads[0]!.completed).toBe(true);expect(reads[0]!.signal?.aborted).toBe(false);
  expect(owner.result.current.scopeSupported).toBe(false);
 });
+// Workflow SSE open/reopen readback: a workflow query can settle before the
+// stream handshake, so an event in that gap (or during a suspension with no
+// Last-Event-ID yet) would be missed. Each open schedules the same debounced,
+// receipt-coalesced canonical ["workflow"] read — a GET refresh, never a write.
+const workflowListReads=()=>reads.filter(r=>r.url.startsWith('/api/workflow/list'));
+const onlyReadsSent=()=>vi.mocked(fetch).mock.calls.every(([,options])=>!options?.method||options.method==='GET');
+function streamOpen(){act(()=>streams.get('/api/workflow/sse')!('open'))}
+async function settledInstancesRead(wrapper:({children}:{children:React.ReactNode})=>React.ReactNode){
+ renderHook(()=>useWorkflowInstances(),{wrapper});await tick(601);
+ expect(workflowListReads()).toHaveLength(1);expect(workflowListReads()[0]!.completed).toBe(true);
+}
+it('reads workflow state back once when the stream first opens after an earlier canonical query',async()=>{
+ const wrapper=setup();await settledInstancesRead(wrapper);
+ renderHook(()=>useWorkflowSse(),{wrapper});renderHook(()=>useWorkflowSse(),{wrapper});
+ streamOpen();await tick(150);
+ expect(workflowListReads()).toHaveLength(2);await tick(601);
+ expect(workflowListReads()[1]!.completed).toBe(true);expect(reads.every(r=>!r.signal?.aborted)).toBe(true);expect(onlyReadsSent()).toBe(true);
+});
+it('coalesces repeated reopen events across mounted consumers into one readback, with no mutation',async()=>{
+ const wrapper=setup();await settledInstancesRead(wrapper);
+ renderHook(()=>useWorkflowSse(),{wrapper});renderHook(()=>useWorkflowSse(),{wrapper});
+ streamOpen();await tick(150);await tick(601);expect(workflowListReads()).toHaveLength(2);
+ // Browser reconnect after suspension: open fires again (twice, back to back).
+ streamOpen();streamOpen();await tick(150);await tick(601);
+ expect(workflowListReads()).toHaveLength(3);expect(workflowListReads().every(r=>r.completed&&!r.signal?.aborted)).toBe(true);
+ expect(onlyReadsSent()).toBe(true);
+});
+it('an open delivered after every consumer unmounted reads nothing',async()=>{
+ const wrapper=setup();await settledInstancesRead(wrapper);
+ const a=renderHook(()=>useWorkflowSse(),{wrapper});const b=renderHook(()=>useWorkflowSse(),{wrapper});
+ a.unmount();b.unmount();streamOpen();await tick(200);
+ expect(workflowListReads()).toHaveLength(1);
+});

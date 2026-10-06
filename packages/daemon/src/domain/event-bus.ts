@@ -203,10 +203,14 @@ export class EventBus {
     return rows.map((row) => this.rowToPersistedEvent(row));
   }
 
-  replayAll(seq: number): PersistedEvent[] {
-    const rows = this.rowsAfter(seq);
+  replayAll(seq: number, limit?: number): PersistedEvent[] {
+    const rows = this.rowsAfter(seq, limit);
 
     return rows.map((row) => this.rowToPersistedEvent(row));
+  }
+
+  currentSequence(): number {
+    return this.maxSeq();
   }
 
   private drainNotifyRowsToQuiescence(startAfter: number): void {
@@ -256,12 +260,12 @@ export class EventBus {
     return row.seq ?? 0;
   }
 
-  private rowsAfter(seq: number): EventRow[] {
+  private rowsAfter(seq: number, limit = -1): EventRow[] {
     return this.db
       .prepare(
-        "SELECT seq, rig_id, node_id, type, payload, created_at FROM events WHERE seq > ? ORDER BY seq",
+        "SELECT seq, rig_id, node_id, type, payload, created_at FROM events WHERE seq > ? ORDER BY seq LIMIT ?",
       )
-      .all(seq) as EventRow[];
+      .all(seq, limit) as EventRow[];
   }
 
   private rowToPersistedEvent(row: EventRow): PersistedEvent {
