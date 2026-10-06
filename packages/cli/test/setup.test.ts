@@ -169,6 +169,28 @@ describe("rig setup", () => {
     expect(execSpy).not.toHaveBeenCalled();
   });
 
+  it("--dry-run on linux reports the macOS-only steps as skipped with the real run's reasons", async () => {
+    const dry = await runSetup(makeDeps({ platform: "linux" }), { dryRun: true });
+    const real = await runSetup(makeDeps({ platform: "linux", exec: (cmd: string) => {
+      if (cmd === "tmux -V") return "tmux 3.4\n";
+      throw new Error(`not found: ${cmd}`);
+    } }), {});
+
+    for (const id of ["brew", "cmux_install"]) {
+      const dryStep = dry.steps.find((s) => s.id === id);
+      expect(dryStep?.status).toBe("skipped");
+      expect(dryStep?.message).toBe(real.steps.find((s) => s.id === id)?.message);
+    }
+    expect(dry.steps.find((s) => s.id === "brew")?.message).toBe("Skipped: Homebrew setup path is only used on macOS.");
+    expect(dry.steps.find((s) => s.id === "tmux_install")?.message).toBe("Dry run: tmux_install would be attempted.");
+  });
+
+  it("--dry-run on darwin still reports brew and cmux_install as would be attempted", async () => {
+    const dry = await runSetup(makeDeps({ platform: "darwin" }), { dryRun: true });
+    expect(dry.steps.find((s) => s.id === "brew")).toEqual({ id: "brew", status: "skipped", message: "Dry run: brew would be attempted." });
+    expect(dry.steps.find((s) => s.id === "cmux_install")).toEqual({ id: "cmux_install", status: "skipped", message: "Dry run: cmux_install would be attempted." });
+  });
+
   it("core profile execution with all tools present returns pass/applied steps and ready=true", async () => {
     const writeSpy = vi.fn();
     const deps = makeDeps({ writeFile: writeSpy });
@@ -210,23 +232,37 @@ describe("rig setup", () => {
   it("AC-1: goldenPathNextSteps is the ordered sequence over existing verbs, with the durable doc", () => {
     const out = goldenPathNextSteps().join("\n");
     const upIdx = out.indexOf("rig up");
+    const loginIdx = out.indexOf("claude auth status");
+    const daemonIdx = out.indexOf("rig daemon start");
     const statusIdx = out.indexOf("rig status");
+    const offerIdx = out.indexOf("Open the OpenRig view now?");
+    const viewIdx = out.indexOf("rig terminal open saved:kernel");
     const wsIdx = out.indexOf("rig workspace doctor");
     const wfIdx = out.indexOf("rig workflow specs");
     const scopeIdx = out.indexOf("rig scope");
     expect(upIdx).toBeGreaterThan(-1);
-    expect(statusIdx).toBeGreaterThan(upIdx);
+    expect(loginIdx).toBeGreaterThan(-1);
+    expect(daemonIdx).toBeGreaterThan(loginIdx);
+    expect(statusIdx).toBeGreaterThan(daemonIdx);
+    expect(offerIdx).toBeGreaterThan(statusIdx);
+    expect(viewIdx).toBeGreaterThan(offerIdx);
+    expect(upIdx).toBeGreaterThan(viewIdx);
     expect(wsIdx).toBeGreaterThan(statusIdx);
     expect(wfIdx).toBeGreaterThan(wsIdx);
     expect(scopeIdx).toBeGreaterThan(wsIdx);
-    expect(out).toContain("rig up <starter> --cwd . --plan");
-    for (const name of ["first-project", "first-project-claude", "first-project-mixed"]) expect(out).toContain(name);
-    expect(out).toContain("check only selected logins");
-    expect(out).toContain("rig send dev-owner@<starter>");
-    expect(out).toContain("rig queue list --destination dev-owner@<starter>");
+    expect(out).toContain("rig up <team> --cwd . --plan");
+    for (const name of ["starter", "workshop", "factory"]) expect(out).toContain(name);
+    expect(out).not.toContain("first-project-claude");
+    expect(out).not.toContain("first-project-mixed");
+    expect(out).toContain("Check only selected logins");
+    expect(out).toContain("Started is not ready");
+    expect(out).toContain("No: give the command to open it later");
+    expect(out).toContain("Over SSH: give the exact connection/attach command");
+    expect(out).toContain("rig send dev-build@starter");
+    expect(out).toContain("rig queue list --destination dev-build@starter");
     expect(out).not.toContain("rig queue list --rig");
     expect(out).toContain("rig tui --shared");
-    expect(out).toContain("docs/reference/getting-started.md");
+    expect(out).toContain("rig context get reference/getting-started.md");
     // no magic mega-command - the path is existing verbs only
     expect(out).not.toMatch(/rig (journey|onboarding)\b/);
     // built-in discovery surface is `rig workflow specs` (lists registered specs,
@@ -867,7 +903,7 @@ describe("rig setup --policy (onboarding record)", () => {
     const step = result.steps.find((s) => s.id === "policy_record");
     expect(step?.status).toBe("fail");
     // The rejection surfaces the valid set to the operator (message + reason are what they see).
-    expect(`${step?.message ?? ""} ${step?.reason ?? ""}`).toMatch(/locked, standard, open, yolo, none/);
+    expect(`${step?.message ?? ""} ${step?.reason ?? ""}`).toMatch(/locked, standard, open, yolo, auto, none/);
     expect(sink[SPEC]).toBeUndefined();
   });
 

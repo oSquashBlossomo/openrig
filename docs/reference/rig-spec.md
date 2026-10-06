@@ -1,8 +1,8 @@
 # RigSpec Reference
 
 Version: 0.2 (pod-aware)
-Last validated against code: 2026-04-11
-Source of truth: `packages/daemon/src/domain/rigspec-schema.ts`, `packages/daemon/src/domain/types.ts`
+Last validated against code: 2026-10-05, at main `fcaf1f8e`
+Source of truth: `packages/daemon/src/domain/rigspec-schema.ts`, `packages/daemon/src/domain/types.ts`, `packages/daemon/src/domain/startup-validation.ts`, `packages/daemon/src/domain/permission-policy/policy-ref.ts`, `packages/daemon/src/domain/profile-resolver.ts`, `packages/daemon/src/domain/rigspec-preflight.ts`
 
 This is the canonical reference for the pod-aware RigSpec YAML format. Every field, validation rule, and default documented here was traced from the actual parser and validator code, not from prior documentation.
 
@@ -121,7 +121,7 @@ pods:
               applies_on: [fresh_start]
           actions:
             - type: send_text
-              value: "Load the implementation-pair skill and begin."
+              value: "Read your guidance and begin."
               phase: after_ready
               idempotent: true
       - id: qa
@@ -170,15 +170,16 @@ edges:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `version` | string | yes | — | Must be `"0.2"` for pod-aware specs. |
+| `version` | string | yes | — | Use `"0.2"`. Any non-empty string validates; a spec is treated as pod-aware because `pods` is an array. |
 | `name` | string | yes | — | Rig name. Used in session naming (`{pod}-{member}@{name}`), snapshot identification, and spec library lookup. |
-| `summary` | string | no | — | Human-readable description. Shown in spec library, review surfaces, and `rig specs show`. |
+| `summary` | string | no | — | Human-readable description. Shown in the spec library, review surfaces and `rig specs preview` (in `rig specs show` only with `--json`). |
 | `culture_file` | string | no | — | Relative path to a rig-wide culture/constitution file. Must be a safe relative path (no `..`, no absolute). |
-| `permission_policy` | string | no | — | Permission policy attached to the rig. Either a built-in (`builtin:locked`, `builtin:standard`, `builtin:open`, `builtin:yolo`) or a safe relative path to a custom policy file (resolved from this spec's directory; no `..`, no absolute). Absent leaves the default floor. A member may set its own `permission_policy`, which takes precedence over the rig-level one. See "Attaching a permission policy" below. |
-| `managed_blocks` | map | no | `CLAUDE.md` | File that receives OpenRig's managed instruction blocks for Claude Code members. Only the `claude-code` key is accepted, with `CLAUDE.md` or `CLAUDE.local.md`. Codex members always use `AGENTS.md`. See "Choosing the Claude instruction file" below. |
+| `permission_policy` | string | no | — | Permission policy attached to the rig. Either a built-in (`builtin:locked`, `builtin:standard`, `builtin:open`, `builtin:yolo`, `builtin:auto`) or a safe relative path to a custom policy file (resolved from this spec's directory; no `..`, no absolute, no empty segments, each segment `[A-Za-z0-9][A-Za-z0-9._-]*`), or `none`, a recorded choice of the floor. Absent leaves the default floor. A bare built-in name such as `yolo` is refused ("use 'builtin:yolo'"), and so is an explicit `null`. A custom file that is missing, unreadable or invalid isn't a validation error: it resolves to the floor, and preflight warns. A member may set its own `permission_policy` (not on a terminal member), which takes precedence over the rig-level one; there is no pod level. See "Attaching a permission policy" below. |
+| `managed_blocks` | map | no | `CLAUDE.md` | File that receives OpenRig's managed instruction blocks for Claude Code members. Only the `claude-code` key is accepted, with `CLAUDE.md` or `CLAUDE.local.md`. Codex, Pi and OMP members use `AGENTS.md`. See "Choosing the Claude instruction file" below. |
+| `workspace` | object | no | — | The rig's workspace: `workspace_root` (required), `repos[]` of `{name, path, kind}` with `kind` one of `user`, `project`, `knowledge`, `lab` or `delivery` and unique names, an optional `default_repo` naming one of them, and an optional `knowledge_root`. Relative repo paths resolve against `workspace_root`. |
 | `docs` | Doc[] | no | — | Documentation files that should travel with the rig. Included in rig bundles. Each entry has a `path` field (safe relative path). The engine does not consume these — they are for humans and agents setting up the environment before launch. |
 | `startup` | StartupBlock | no | — | Rig-level startup files and actions. Applied to all members via the startup layering model. |
-| `services` | ServicesBlock | no | — | Optional managed services (Docker Compose). When present, services boot before any agent launches. |
+| `services` | ServicesBlock | no | — | Optional managed services (Docker Compose). When present, `rig up` boots them before any agent launches; `rig import` doesn't boot them. |
 | `pods` | Pod[] | yes | — | At least one pod required. Each pod is a bounded context containing members and pod-local edges. |
 | `edges` | CrossPodEdge[] | no | `[]` | Cross-pod edges connecting members in different pods. Must use fully-qualified `pod.member` IDs. |
 
@@ -194,7 +195,7 @@ permission_policy: builtin:standard
 permission_policy: policies/my-cautious-dev.policy.md
 ```
 
-Built-in policies (`locked` / `standard` / `open` / `yolo`) are read-only and are
+Built-in policies (`locked` / `standard` / `open` / `yolo` / `auto`) are read-only and are
 referenced as `builtin:<name>`. A custom policy lives in your own project and is
 referenced by a safe relative path (no `..`, no absolute). A shipped example of the
 custom shape is `packages/daemon/policies/examples/my-cautious-dev.policy.md` — copy it
@@ -210,6 +211,64 @@ An explicit `rig seat set-permissions` choice overrides member/rig policy for
 future managed launches of that stable seat; it does not rewrite this spec or
 its inherited policy provenance. `inherit` removes that override. See
 [per-seat permission mode](getting-started.md#per-seat-permission-mode).
+
+### Built-in permission policies
+
+The five built-ins live in `packages/daemon/policies/builtin/`. Action names are the
+policies' own semantic classes.
+
+| Policy | Surface | Runs without asking | Asks a person | Denied |
+|--------|---------|---------------------|---------------|--------|
+| `builtin:locked` | config | `run_toolchain` (npm, node, tsc, tests, lint), `rig_up`, `rig_down` | nothing | everything else (`default_posture: deny`) |
+| `builtin:standard` | config | everything not listed, including `push_to_remote` (`default_posture: allow`) | `create_pr`, `publish_package`, `merge_or_release`, `force_push`, and the destructive class | nothing |
+| `builtin:open` | config | everything, including PRs, publishing, merges and force pushes (`default_posture: allow`) | the destructive class only | nothing |
+| `builtin:yolo` | flag (`launch_posture: full_bypass`) | everything; the runtime's permission prompts are bypassed at launch | nothing | nothing |
+| `builtin:auto` | flag (`launch_posture: auto`) | Claude runs with `--permission-mode auto`; Codex, Pi and OMP launch at the floor | Claude: decided by auto mode; others: as at the floor | Claude: decided by auto mode; others: as at the floor |
+
+The destructive class is `delete_everything`, `drop_persistent_store` and
+`reset_or_discard_vcs`; `builtin:locked`'s list also names `delete_files` and `force_push`.
+
+**At launch.** `builtin:yolo` selects Claude `--dangerously-skip-permissions`, Codex
+`-s danger-full-access -a never`, and Pi `--approve`. `builtin:auto` selects Claude
+`--permission-mode auto`, while Codex and Pi do not have an auto mode and launch at the floor.
+Every other seat launches at the floor:
+- Claude `--permission-mode acceptEdits`;
+- Codex `-s workspace-write`, or `-p <profile>` when the member sets
+  `codex_config_profile`, in which case the profile governs its own sandbox;
+- Pi `--no-approve` by default.
+
+Seats of the rig named `kernel` are the exception. With no member or rig policy, no
+per-seat choice and (for Codex) no named profile, Claude launches in `acceptEdits` with a
+per-launch `--settings` allow list for its file tools and operational commands, and Codex
+launches with `-s danger-full-access -a never`.
+
+**Config-surface policies are recorded, not applied at launch.** The seat still starts at
+the floor. The `allow`, `ask` and `deny` rules take effect once they are translated into the
+runtime's native settings. The `applying-a-permission-policy` skill in `openrig-core` does
+that translation, with per-runtime limits. For example, Claude's prefix rules can't
+reliably tell `git push --force` from `git push`. An `ask` waits for a person, so it pauses
+an autonomous seat. Standard suits interactive work, and the policy files point
+autonomous teams to Open or YOLO.
+
+**Pi has no permission policy.** `--approve` and `--no-approve` set Pi's resource trust. The
+OMP variant maps that trust to its approval mode: `yolo` under `--approve`, otherwise
+`always-ask`.
+
+**A custom policy file** is Markdown with frontmatter: `policy_schema_version: 1`, `name`,
+`source: custom`, `description`, and `surface`.
+- `surface: flag` adds `launch_posture` (`floor`, `full_bypass` or `auto`).
+- `surface: config` adds `default_posture` (`allow`, `ask` or `deny`) and the `allow`, `ask`,
+  `deny` and `destructive_class` lists (`[]` for none).
+
+**Claude Code's own checks.** The first time Claude Code starts an interactive session
+with permissions bypassed, it shows a warning dialog asking you to accept responsibility;
+declining exits. OpenRig reports such a seat as `attention_required` and holds its startup
+context for `rig seat continue`; `rig up --non-interruptive` or `rig bundle install
+--non-interruptive` accepts the warning with a launch flag instead (see
+[non-interruptive mode](non-interruptive-mode.md)). That choice is saved on the rig, not in
+`rig.yaml`. On Linux and macOS Claude Code refuses that mode when run as root or under `sudo`,
+except inside a recognized sandbox. See Claude Code's
+[Choose a permission mode](https://code.claude.com/docs/en/permission-modes#skip-all-checks-with-bypasspermissions-mode).
 
 ### Choosing the Claude instruction file
 
@@ -250,9 +309,9 @@ directory's `CLAUDE.md`, including blocks written by other rigs.
 | `id` | string | yes | — | Pod identifier. Must not contain dots or `@`. Must be unique within the rig. Used as the first segment of session names and logical IDs. |
 | `label` | string | yes | — | Human-readable pod name. Shown in UI explorer, graph groupings, and detail surfaces. |
 | `summary` | string | no | — | Pod description. |
-| `continuity_policy` | ContinuityPolicy | no | — | Pod-level continuity/restore policy. Controls compaction recovery, artifact management, and peer-driven restoration. |
+| `continuity_policy` | ContinuityPolicy | no | — | Pod-level continuity/restore policy, validated and stored with the pod (see "Continuity Policy"). |
 | `startup` | StartupBlock | no | — | Pod-level startup files and actions. Applied to all members in this pod via the startup layering model. |
-| `members` | Member[] | yes | — | At least one member required (enforced by pods needing content). |
+| `members` | Member[] | yes | — | The pod's members. It must be an array; validation doesn't refuse an empty one. |
 | `edges` | PodLocalEdge[] | no | `[]` | Edges between members within this pod. Must use unqualified member IDs (not `pod.member`). |
 
 ### Pod ID Rules
@@ -274,10 +333,17 @@ directory's `CLAUDE.md`, including blocks written by other rigs.
 | `profile` | string | yes | — | Profile name from the referenced AgentSpec. Use `default` for the default profile. Exception: `none` for terminal nodes. |
 | `codex_config_profile` | string | no | — | Codex-only native profile passed as `-p <name>`; letters, numbers, `_`, `.`, `-`. Separate from the AgentSpec `profile`. With the normal launch mode, this replaces OpenRig's explicit workspace-write sandbox flag. A full-bypass policy instead emits danger-full-access and omits this profile argument. |
 | `runtime` | string | yes | — | Agent runtime. Current supported values: `claude-code`, `codex`, `pi`, `omp`, `terminal`, `stub`. `stub` is a deterministic test harness, not an agent: a Node runner in the seat's tmux pane goes through the normal launch, skill projection, startup-file and readiness path, follows `<cwd>/.openrig/stub/script.json` when present, and calls no model. See "What a stub can and cannot prove" in `docs/as-built/test-layers.md`. |
-| `cwd` | string | yes | — | Working directory for the agent. Resolved relative to the rig root (the directory containing the rig spec). Use `"."` for the rig root itself. Can be overridden at launch time with `rig up --cwd`. |
+| `cwd` | string | yes | — | Working directory for the agent. A relative path resolves against the rig root (the directory containing the rig spec); an absolute path is used as is. Use `"."` for the rig root itself. Can be overridden at launch time with `rig up --cwd`. A cwd inside the OpenRig installation fails preflight unless `--cwd` is given. |
 | `label` | string | no | — | Human-readable member name. Shown in UI when present. |
 | `model` | string | no | — | Model override. Runtime-specific (e.g., `claude-opus-4-6` for Claude Code). |
-| `restore_policy` | string | no | `resume_if_possible` | Restore behavior. One of: `resume_if_possible`, `relaunch_fresh`, `checkpoint_only`. |
+| `effort` | string | no | — | Reasoning effort override, trimmed. A non-string value is ignored with an advisory. |
+| `permission_policy` | string | no | — | Member-level permission policy; overrides the rig's. Not valid on terminal members. |
+| `role` | string | no | — | The seat's role, letters, digits, `_`, `.` and `-`. Not valid on terminal members. |
+| `restore_policy` | string | no | the AgentSpec's | Restore behavior. One of: `resume_if_possible`, `relaunch_fresh`, `checkpoint_only`. The default comes from the AgentSpec's `defaults.lifecycle` (else `resume_if_possible`) as narrowed by its profile; a member value may only narrow it further, in that order. |
+| `compaction_strategy` | string | no | — | `default-compaction`, `managed-compaction`, `handover` or `apprentice-handover`; `harness_native` and `pod_continuity` are accepted as deprecated aliases, and `custom_prompt` is refused. |
+| `mechanic` | string | no | — | A canonical `seat@rig` session address, for `apprentice-handover`. |
+| `session_source` | object | no | — | Start the seat from an existing session: `fork` with `native_id`, `rebuild` with `artifact_set`, or `agent_image` with `image_name`. Not valid on terminal members. |
+| `starter_ref` | object | no | — | `{ name }` of an agent starter (`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`) whose files lead the seat's startup. Not valid on terminal members or with a fork. |
 | `startup` | StartupBlock | no | — | Member-level startup files and actions. Applied only to this member. |
 
 ### Pi (`runtime: pi`)
@@ -286,14 +352,14 @@ directory's `CLAUDE.md`, including blocks written by other rigs.
 
 - **State:** Each seat uses `$OPENRIG_HOME/state/pi/<session>/agent` as its Pi agent directory, with `sessions/` beside it, instead of your default `~/.pi/agent`. The runner sets `PI_CODING_AGENT_DIR` to that directory. `<session>` is the seat's session name, unchanged; for a pod member it is `{podId}-{memberId}@{rigName}`. `$OPENRIG_HOME` defaults to `~/.openrig`. OpenRig creates these directories at launch and does not copy anything from `~/.pi/agent`.
 - **Custom models:** Pi reads `models.json` from its agent directory, so a seat reads `$OPENRIG_HOME/state/pi/<session>/agent/models.json`, not `~/.pi/agent/models.json`. Custom provider and model definitions for a seat go in that file. A seat that uses only providers Pi already includes does not need one. OpenRig does not create or write `models.json`.
-- **Credentials:** The Pi process receives only `PATH`, `HOME`, `TERM`, `LANG`, `LC_ALL`, `SHELL`, `TMPDIR`, a fixed set of OpenRig seat and instance variables, `PI_CODING_AGENT_DIR`, `PI_CODING_AGENT_SESSION_DIR`, and at most one provider key. That key is `OPENROUTER_API_KEY`, `ZAI_API_KEY` or `KIMI_API_KEY`, passed only when it is set in the seat's environment and the seat's `model` is written as `openrouter/<id>`, `zai/<id>` or `kimi-coding/<id>`. Naming that variable in `recovery.provider_auth_env_allowlist` (empty by default) makes the daemon add it, when set in the daemon's environment, to the seat's launch environment. No other variable reaches Pi, including other providers' keys and a custom provider's own key variable.
+- **Credentials:** The Pi process receives only `PATH`, `HOME`, `USER`, `LOGNAME`, `TERM`, `LANG`, `LC_ALL`, `SHELL`, `TMPDIR`, a fixed set of OpenRig seat and instance variables, `PI_CODING_AGENT_DIR`, `PI_CODING_AGENT_SESSION_DIR`, and at most one provider key. That key is `OPENROUTER_API_KEY`, `ZAI_API_KEY` or `KIMI_API_KEY`, passed only when it is set in the seat's environment and the seat's `model` is written as `openrouter/<id>`, `zai/<id>` or `kimi-coding/<id>`. Naming that variable in `recovery.provider_auth_env_allowlist` (empty by default) makes the daemon add it, when set in the daemon's environment, to the seat's launch environment. No other variable reaches Pi, including other providers' keys and a custom provider's own key variable.
 
 ### Oh My Pi (`runtime: omp`)
 
 `runtime: omp` launches Oh My Pi through OpenRig's RPC runner. It is separate from `runtime: pi`; OMP does not use Pi's `--name` or `--approve` flags.
 
 - **State:** Each seat uses `$OPENRIG_HOME/state/omp/<seat>/agent` and `sessions/` instead of your default `~/.omp` profile, and runs with that seat directory as `HOME`. OpenRig does not copy OMP credentials. The runner finds the real `omp` binary before switching `HOME`, so a version-manager shim such as mise on the daemon's `PATH` still works.
-- **Credentials:** Provision each seat separately, or put the provider's key variable in `recovery.provider_auth_env_allowlist` (for example `ANTHROPIC_API_KEY` or `MISTRAL_API_KEY`). The allowlist accepts the key variable of every provider in OpenRig's OMP provider map, from `anthropic` through `litellm`. A seat receives a key only when its `model` is written as `provider/id`, such as `anthropic/claude-sonnet-4-5`. Short names such as `opus` pass no key. OMP also reads the launch directory's `.env`, so use a trusted working directory.
+- **Credentials:** Provision each seat separately, or put the provider's key variable in `recovery.provider_auth_env_allowlist` (for example `ANTHROPIC_API_KEY` or `MISTRAL_API_KEY`). The allowlist accepts the key variable of every provider in OpenRig's OMP provider map, from `anthropic` through `litellm`. A seat receives a key only when its `model` is written as `provider/id`, such as `anthropic/claude-sonnet-4-5`. Short names such as `opus` pass no key. A provider whose key is scoped to one endpoint also accepts that endpoint's variable: `anthropic`, `openai` and `litellm` each take their `<PROVIDER>_BASE_URL` — `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `LITELLM_BASE_URL`. The allowlist admits each variable on its own, so an endpoint named without its key is admitted too, which suits a keyless local proxy. The launch gate admits these endpoint names for OMP seats; the match against the seat's declared `provider/id` happens at the OMP child, which forwards a matching endpoint already in the runner's environment just as it forwards a key. OMP also reads the launch directory's `.env`, so use a trusted working directory.
 - **Approval posture:** The default floor is `--approval-mode always-ask`. Because the runner is headless, OMP approval requests are cancelled and the seat stays in needing-attention after the turn ends, until the next agent run starts. A `full_bypass` permission policy selects `--approval-mode yolo`.
 - **Model errors:** A rejected prompt, a provider or authentication error during a turn, or exhausted automatic retries is printed in the pane and keeps the seat in needing-attention until the next agent run starts.
 - **Restore:** OMP creates its session file after the first persisted turn. A new seat with no persisted turn has no resume token; restoring it requires `rig up --existing <rig> --fresh <seat>`. After that file exists, OpenRig restores that exact session file. If a full rig restore leaves an OMP seat in `attention_required` or `failed`, `rig seat clear-attention` cannot yet reconcile it to `operator_recovered`, even with `--reason`, because restore reconciliation only verifies Claude Code and Codex processes ([#41](https://github.com/mvschwarz/openrig/issues/41)). Relaunch that seat with `rig up --existing <rig> --fresh <seat>`, or restore it manually.
@@ -342,7 +408,7 @@ This is human-authored (you choose the pod/member IDs) and system-validated (the
 | Kind | Meaning | Use When |
 |------|---------|----------|
 | `delegates_to` | Source delegates work to target. Constrains launch order. | Orchestrator → implementer, lead → worker |
-| `spawned_by` | Target was spawned by source. Constrains launch order. | Parent → child in hierarchical topologies |
+| `spawned_by` | Source was spawned by target; the target launches first. Constrains launch order. | Child → parent in hierarchical topologies |
 | `can_observe` | Source can observe target's output. Does NOT constrain launch order. | Reviewer → implementer, monitor → worker |
 | `collaborates_with` | Peer collaboration relationship. Does NOT constrain launch order. | Co-equal peers working together |
 | `escalates_to` | Source escalates to target for decisions. Does NOT constrain launch order. | Worker → lead for escalation |
@@ -384,7 +450,7 @@ Cross-pod edges must reference different pods. An edge where both `from` and `to
 
 ## Startup Block
 
-Startup blocks can appear at three levels: rig, pod, and member. They are merged additively via the startup layering model (see `docs/reference/startup-layering.md`).
+Startup blocks can appear at three levels: rig, pod, and member. They are merged additively via the startup layering model (see [the layering model](agent-startup-guide.md#the-layering-model)). The rig's `culture_file` joins as a required file with the `auto` hint in the culture layer, on both fresh start and restore.
 
 ### Files
 
@@ -401,7 +467,7 @@ Startup blocks can appear at three levels: rig, pod, and member. They are merged
 | Hint | Behavior |
 |------|----------|
 | `auto` | System chooses based on file type and context. |
-| `guidance_merge` | Merged into the runtime's guidance file (`CLAUDE.md` or `AGENTS.md`) as a managed block. Delivered before harness boot. |
+| `guidance_merge` | Merged as a managed block into the runtime's guidance file: for Claude, the `managed_blocks` file (`CLAUDE.md` or `CLAUDE.local.md`); for Codex, Pi and OMP, `AGENTS.md`. Delivered before harness boot. |
 | `skill_install` | Installed as a skill in the runtime's skill directory. Delivered before harness boot. |
 | `send_text` | Sent as text to the agent's terminal after the harness is ready. Requires the agent TUI to be active. |
 
@@ -454,6 +520,13 @@ the current proof; resume/adoption also preserves existing proof history.
 The effective selection is recorded on `node.startup_pending`; actions are
 persisted in startup context for restore and fresh relaunch.
 
+The harness readiness window defaults to 30 seconds. On a loaded machine, set
+`rig config set runtime.readiness_timeout_seconds 60` to give new seats and
+handover successors longer to become interactive. The setting accepts 1–600
+seconds, applies to the next launch without a daemon restart, and can also be
+set with `OPENRIG_RUNTIME_READINESS_TIMEOUT_SECONDS`. It does not change the
+time spent by the runtime adapter before readiness polling starts.
+
 ---
 
 ## Services Block
@@ -464,7 +537,7 @@ The services block is optional. When present, services boot before any agent nod
 |-------|------|----------|---------|-------------|
 | `kind` | string | yes | — | Service backend. Only `compose` is supported in v1. |
 | `compose_file` | string | yes | — | Relative path to the Docker Compose file. Must be a safe relative path. Resolved relative to rig root. |
-| `project_name` | string | no | derived from rig name | Docker Compose project name. Must match `[a-z0-9][a-z0-9_-]*`. If omitted, derived by sanitizing the rig name. |
+| `project_name` | string | no | stored predecessor project or unique rig-ID default | Docker Compose project name. Must match `[a-z0-9][a-z0-9_-]*`. An explicit value takes precedence. A new rig uses a stable, unique rig-ID-derived name. A same-name replacement inherits the stored project of the exact generations it replaces; conflicting predecessor projects require an explicit value. Existing stored names remain unchanged. |
 | `profiles` | string[] | no | — | Compose profiles to activate. |
 | `down_policy` | string | no | `down` | What happens on `rig down`. One of: `leave_running`, `down`, `down_and_volumes`. |
 | `wait_for` | WaitTarget[] | no | — | Health targets that must pass before agent launch. |
@@ -508,7 +581,7 @@ surfaces:
       command: "vault status -address=http://127.0.0.1:8200"
 ```
 
-Surfaces are metadata only. They are displayed in the UI and in `rig env status` output but are NOT executed by OpenRig.
+Surfaces are metadata only. They are displayed in the UI and in `rig env status --json` output (the text output lists only services) but are NOT executed by OpenRig.
 
 ### Checkpoint Hooks
 
@@ -522,10 +595,10 @@ checkpoints:
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `id` | string | yes | Unique identifier for this checkpoint. |
-| `export` | string | yes | Shell command to export state. `{{artifacts_dir}}` is replaced with a daemon-managed path. |
+| `export` | string | yes | Shell command to export state. |
 | `import` | string | no | Shell command to import state on restore. |
 
-Checkpoint hooks are shell commands run by the daemon. They are best-effort — a failed export does not block snapshot, but continuity is classified as `receipt_only` instead of `checkpointed`.
+Checkpoint hooks are validated and stored with the spec. In this version the daemon doesn't run them during snapshot or restore, and doesn't substitute `{{artifacts_dir}}`.
 
 ---
 
@@ -556,9 +629,19 @@ continuity_policy:
 | `restore_protocol.peer_driven` | boolean | no | — | Whether peers drive the restore process. |
 | `restore_protocol.verify_via_quiz` | boolean | no | — | Whether to verify restoration via quiz. |
 
+These fields are validated, stored on the pod and written back on export. In this version nothing acts on
+`sync_triggers`, `artifacts` or `restore_protocol`.
+
 ---
 
 ## Validation Rules Summary
+
+Unknown keys at the rig, pod, member and edge levels are refused ("unknown key … refusing the spec because
+normalization would otherwise discard it"). Keys inside `startup`, `services`, `continuity_policy` and `workspace` are
+not checked this way. Some rules are enforced at preflight rather than validation: the runtime must be one of the
+supported values, rig, pod and member names may use only letters, digits, `-`, `_`, `.` and `@` where allowed above,
+each `agent_ref` must have an `agent.yaml`, Codex profiles must load, and a cwd may not be inside the OpenRig
+installation.
 
 Schema validation checks the structural rules below. Pod and member IDs containing
 `@` are additionally rejected during preflight and member creation or launch; a
@@ -600,8 +683,13 @@ These are the built-in specs shipped with OpenRig. Read them as worked examples.
 
 | Spec | Location | Pods | Members | Services |
 |------|----------|------|---------|----------|
-| `product-team` | `packages/daemon/specs/rigs/preview/product-team/rig.yaml` | orch1, dev1, rev1 | 7 (lead, peer, impl, qa, design, r1, r2) | no |
-| `implementation-pair` | `packages/daemon/specs/rigs/launch/implementation-pair/rig.yaml` | dev | 2 (impl, qa) | no |
-| `adversarial-review` | `packages/daemon/specs/rigs/focused/adversarial-review/rig.yaml` | orch, review | 3 (lead, r1, r2) | no |
-| `research-team` | `packages/daemon/specs/rigs/focused/research-team/rig.yaml` | orch, research | 3 (lead, analyst, synthesizer) | no |
+| `starter` | `packages/daemon/specs/rigs/launch/starter/rig.yaml` | dev | 2 (build, review) | no |
+| `factory` | `packages/daemon/specs/rigs/launch/factory/rig.yaml` | orch, dev, review | 7 (lead, advisor, build, qa, design, r1, r2) | no |
+| `code-review` | `packages/daemon/specs/rigs/focused/code-review/rig.yaml` | orch, review | 3 (lead, r1, r2) | no |
+| `research` | `packages/daemon/specs/rigs/focused/research/rig.yaml` | orch, research | 3 (lead, analyst, synthesizer) | no |
+| `pm` | `packages/daemon/specs/rigs/focused/pm/rig.yaml` | pm, dev | 3 (lead, researcher, build) | no |
 | `secrets-manager` | `packages/daemon/specs/rigs/launch/secrets-manager/rig.yaml` | vault | 1 (specialist) | yes (Vault) |
+
+Also shipped, in the same tree: `launch/kernel`, OpenRig's own team, which starts automatically. `first-project` is
+starter's old name and still resolves to it. `workshop`, the four-agent middle team, is a rig bundle rather than a
+built-in. List the built-ins with `rig specs ls --kind rig`.

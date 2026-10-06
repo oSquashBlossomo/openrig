@@ -44,9 +44,15 @@ not fill in; if so, follow the form.
    SLACK_APP_TOKEN=xapp-...
    ```
 
-8. Run `rig slack setup --channel <channel-id> --secrets-env-file <path>`, then
-   `rig slack verify`, then `rig slack enable`.
-9. Invite the bot to the channel you configured (`/invite @OpenRig` in that channel).
+8. Invite the bot to the channel you will use (`/invite @OpenRig` in that channel).
+   `rig slack verify` reports NOT ready until the app is a member.
+9. Register yourself as the human the connector delivers to, with a Slack binding that names
+   your Slack user ID (`rig gateway human add`; its `--help` shows the binding format).
+   Messages from Slack users who are not registered are not delivered. `rig slack enable`
+   needs a readable human registry: on a fresh install with no registry, or with an invalid
+   one, it is refused.
+10. Run `rig slack setup --channel <channel-id> --secrets-env-file <path>`, then
+    `rig slack verify`, then `rig slack enable`.
 
 ## What the app asks for
 
@@ -58,8 +64,8 @@ groups:
   `rig slack verify` checks these.
 - **Feature scopes**: `files:read` (download attachments people send), `files:write` (upload
   attachments to Slack), and `app_mentions:read` (receive @-mentions of the app). `rig slack verify`
-  does **not** check these, so a READY from verify does not prove attachments or mentions will
-  work.
+  warns when one of these is missing (if Slack returns the granted scopes) but does not require
+  them, so a READY from verify does not prove attachments or mentions will work.
 
 If a feature scope was not granted, the effect differs by feature:
 
@@ -67,8 +73,8 @@ If a feature scope was not granted, the effect differs by feature:
   message with an attachment that could not be downloaded is still delivered, with the failed
   file named in it. A post whose attachment could not be uploaded still delivers its text, and
   the failure appears only in the daemon log (`rig daemon logs`).
-- **Mentions** (`app_mentions:read`): Slack does not deliver `app_mention` events to the app, and
-  nothing in OpenRig reports that they are missing.
+- **Mentions** (`app_mentions:read`): Slack does not deliver `app_mention` events to the app.
+  Only `rig slack verify` warns that the scope is missing; nothing reports the missing events.
 
 So after installing, compare the granted scopes Slack shows for the app with all six scopes that
 `rig slack manifest --json` lists.
@@ -94,3 +100,42 @@ part of OpenRig.
 
 - `rig slack status` shows what is still missing, without contacting Slack.
 - `rig slack verify` checks the granted baseline scopes and channel membership with Slack.
+
+## Reconnect recovery and status
+
+The daemon scans available top-level messages in the configured channel after a
+Socket Mode connection and on its existing five-minute retry cadence. Recovered
+queue rows say **Recovered after a gap** and show the original Slack posting time.
+They use the same sender admission, routing, attachment handling, fixed identity
+and dead-letter path as live messages. A durable dead letter is custody of a
+failed delivery, not successful delivery.
+
+Recovery keeps a per-channel checkpoint across reconnects, restarts and channel
+switches. On upgrade it initializes once from the newest retained accepted
+channel landing; without such evidence it starts at feature adoption. **Older
+history is unknown.** New live messages never move the recovery checkpoint. A
+partial scan resumes its saved interval; only an exhausted interval advances the
+covered boundary. Each new interval ends five seconds before the local clock to
+allow recent messages to become visible; larger clock skew or visibility lag is
+not covered by that margin. A corrupt or unreadable checkpoint leaves recovery unavailable
+and preserves the existing file; live inbound continues.
+
+Each pass admits at most four pages, 100 entries and 15 seconds of work, with a
+five-second history-request ceiling. An already admitted attachment/landing keeps
+its owner until it settles. Rate limits retain Slack's Retry-After across restart.
+Transport and server failures use a five-second backoff unless Slack supplies Retry-After.
+When Slack reports a plan history limit, recovery still lands the available page
+and advances normally, retaining an older-history limitation in status across restarts.
+Missing bot credentials, history scope, membership, retention limits and API
+failures appear as recovery limitations. No additional scope is required to keep
+live delivery working. Thread-reply catch-up and dead-connection detection remain
+outside this recovery scope; global chronological order is not promised.
+
+`rig slack status` retains local configuration checks and adds a bounded daemon
+snapshot: socket state/generation, last event, recovery interval/state/reason,
+retry time and accepted/dead-lettered recovery counts since the connector last
+started (they reset when it is enabled or disabled, and when the daemon restarts).
+Human-readable coverage and pending bounds use ISO timestamps; JSON keeps Slack timestamps.
+The status read calls no Slack API and starts no scan. If the daemon cannot be
+observed, local configuration remains visible and live state is unknown. A
+connected socket or valid configuration alone does not prove end-to-end delivery.
