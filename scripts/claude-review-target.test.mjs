@@ -138,6 +138,7 @@ test("review turn budget fits a large PR and stays bounded", () => {
   // The prompt must spend turns on reading once, post once, and stop after posting.
   assert.match(review.with.prompt, /get_pull_request_files \(perPage 100\)/);
   assert.match(review.with.prompt, /together, once each/);
+  assert.match(review.with.prompt, /get_issue_comments \(perPage 100\)/);
   assert.match(review.with.prompt, /add_issue_comment exactly once/);
   assert.match(review.with.prompt, /After the comment is posted, stop/);
 });
