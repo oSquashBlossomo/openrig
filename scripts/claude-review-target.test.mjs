@@ -139,6 +139,7 @@ test("review turn budget fits a large PR and stays bounded", () => {
   assert.match(review.with.prompt, /get_pull_request_files \(perPage 100\)/);
   assert.match(review.with.prompt, /together, once each/);
   assert.match(review.with.prompt, /get_issue_comments \(perPage 100\)/);
+  assert.match(review.with.prompt, /Review comments \(100\) and reviews \(30\) cannot be paged/);
   assert.match(review.with.prompt, /add_issue_comment exactly once/);
   assert.match(review.with.prompt, /After the comment is posted, stop/);
 });
