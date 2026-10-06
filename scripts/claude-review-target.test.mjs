@@ -133,7 +133,9 @@ test("review turn budget fits a large PR and stays bounded", () => {
   const review = job.steps.find(step => step.name === "Review pull request");
   const turns = review.with.claude_args.match(/(?:^|\s)--max-turns (\d+)(?:\s|$)/);
   assert.ok(turns, "claude_args must set --max-turns");
-  assert.ok(Number(turns[1]) >= 40 && Number(turns[1]) <= 60, `unexpected --max-turns ${turns[1]}`);
+  assert.ok(Number(turns[1]) >= 60 && Number(turns[1]) <= 80, `unexpected --max-turns ${turns[1]}`);
+  // The action counts each tool result against --max-turns, so the prompt's budget must match.
+  assert.match(review.with.prompt, new RegExp(`tool results plus one exceed ${turns[1]}`));
   assert.equal(job["timeout-minutes"], 20);
   // The prompt must spend turns on reading once, post once, and stop after posting.
   assert.match(review.with.prompt, /get_pull_request_files \(perPage 100\)/);
