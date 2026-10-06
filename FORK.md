@@ -118,9 +118,8 @@ of 25-40 file PRs ended red with `error_max_turns`, sometimes after the review h
 already been posted ([#21](https://github.com/oSquashBlossomo/openrig/issues/21)).
 The prompt lists the tools available, reads the PR, diff and conversation once
 in the first turn, batches extra file reads, posts one comment by turn 30, and
-then stops. A
-review that still runs out of turns fails the job; check whether its comment
-was posted before treating the review as missing.
+then stops. A review that still runs out of turns fails the job; check whether
+its comment was posted before treating the review as missing.
 The workflow uses the temporary repository GitHub token with read-only code
 access and permission to post PR comments. This avoids the Claude app's
 `pull_request_target` OIDC exchange issue. Comments are posted by
@@ -129,10 +128,12 @@ uses the GitHub connector's structured tools; built-in shell/file tools are
 disabled, because the runner holds the Claude token. Its GitHub tools are
 read-only apart from posting the comment. It reads the PR conversation, review
 threads and reviews so it does not repeat findings that were already resolved,
-and uses code search to trace callers instead of guessing. It treats all of this
-as untrusted evidence. Anyone who can comment could try to steer it that way;
-the worst outcome is a misleading advisory comment. Merge workflow updates into
-main before testing the automatic path.
+and treats all of this as untrusted evidence. Anyone who can comment could try
+to steer it through a comment; the worst outcome is a misleading advisory
+comment. GitHub code search does not index this fork (a fork needs more stars
+than its parent), so the reviewer traces callers with `get_file_contents` and
+labels what it cannot confirm. Merge workflow updates into main before testing
+the automatic path.
 
 For a manual Claude review after activation, use the CLI:
 
