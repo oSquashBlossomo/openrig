@@ -82,7 +82,7 @@ export function Fact({ label, children, testId }: { label: string; children: Rea
 export function Evidence({ summary, children, testId }: { summary: ReactNode; children: ReactNode; testId?: string }) {
   return (
     <details data-testid={testId} className="border border-outline-variant bg-surface-lowest">
-      <summary className="touch-target flex cursor-pointer items-center px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-on-surface-variant focus-visible:outline focus-visible:outline-2 focus-visible:outline-on-surface">
+      <summary className="touch-target cursor-pointer content-center px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-on-surface-variant focus-visible:outline focus-visible:outline-2 focus-visible:outline-on-surface">
         {summary}
       </summary>
       <div className="border-t border-outline-variant px-3 py-2">{children}</div>
