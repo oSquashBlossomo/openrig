@@ -41,6 +41,24 @@ private test daemon, or use the daemon-free twin described in
 6. Record release or upgrade evidence separately. Production rollout needs its
    own selected revision, backup, rehearsal, rollback plan, and authorization.
 
+## Stacked PRs
+
+When a change depends on another unmerged PR, branch from that PR's branch and
+open the new PR with the parent branch as its base, not `main`. Name the parent in
+the description (for example, "Stacked on #16") and keep `Closes #N` for its own
+issue. Keep each stacked PR a draft until its parent merges.
+
+`Tests` and `Portability report` run on PRs against any base branch, so a stacked
+PR gets checks on every push without a manual dispatch. Those checks test the PR
+merged into its parent branch, not into `main`. The Claude review runs only on
+PRs based on `main`, so a stacked PR gets its Claude review once it targets
+`main` and is ready.
+
+After the parent merges, retarget the stacked PR to `main` if GitHub has not done
+so, then merge `main` into its branch and push. That push re-runs CI against
+`main` and drops the parent's commits from the diff, which squash merging would
+otherwise leave behind. Mark it ready only after those checks pass.
+
 ## Local source setup
 
 Prerequisites: Node 24, npm, Git, and tmux. Use the committed npm lockfile.

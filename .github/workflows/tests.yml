@@ -5,9 +5,10 @@ name: Tests
 # hide the others. No provider credentials or operator configuration are supplied.
 # Package suites deny external networking; scenario runtime has no external route.
 
+# Runs for pull requests against any base branch, so stacked PRs are tested too. Safe for
+# external forks: pull_request gets no secrets and this workflow only has read access.
 on:
   pull_request:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
