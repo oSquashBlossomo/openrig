@@ -1,13 +1,10 @@
-import { useQueryClient } from "@tanstack/react-query";
-import { useSelectedHostId, type HostsResponse } from "../../hooks/useHosts.js";
+import { useConfirmedFilesHost } from "../../hooks/useFiles.js";
 import { fileOriginAdmission, type FileOriginAdmission } from "./file-source.js";
 
-/** The selected host only when the shared hosts read has actually landed.
- * Re-renders on selection changes through the shared hosts observer. */
+/** The selected host only while the shared hosts read confirms authority.
+ * Failed refreshes retain data, so observe query status as well as selection. */
 export function useKnownSelectedHost(): string | undefined {
-  const hostId = useSelectedHostId();
-  const known = useQueryClient().getQueryData<HostsResponse>(["hosts"])?.selected === hostId;
-  return known ? hostId : undefined;
+  return useConfirmedFilesHost();
 }
 
 export function useFileOriginAdmission(originInstance: string | null | undefined): FileOriginAdmission {

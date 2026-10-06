@@ -21,6 +21,11 @@ import type { TmuxResult, TmuxCursorPosition } from "../adapters/tmux.js";
 const PIPE_PANE_POLL_MS = 50;
 const MAX_OUTPUT_BUFFER = 64 * 1024;
 const DEFAULT_LIVENESS_MS = 2000;
+const MAX_DISPLAY_ATTEMPTS = 3;
+const GEOMETRY_UNAVAILABLE = "terminal geometry unavailable or outside supported bounds";
+const SCREEN_BUSY = "terminal screen remained busy; reopen to retry";
+
+class BusyScreenError extends Error {}
 
 /**
  * Bounded size of the broker-owned recent-output history ring (AC-5 / FR-4).
@@ -159,6 +164,8 @@ export class TerminalSessionBroker {
   private lastGeometryRead = 0;
   private displayQueue: Promise<void> = Promise.resolve();
   private tickPending = false;
+  private displayFailures = 0;
+  private attaching = 0;
   private readonly pendingRepaints = new Set<TerminalSubscriber>();
   private settleTimer: ReturnType<typeof setTimeout> | null = null;
   private settleResolve: (() => void) | null = null;
@@ -226,6 +233,16 @@ export class TerminalSessionBroker {
    * it sees coherent state immediately and does not depend on a resize message.
    */
   async attach(sub: TerminalSubscriber): Promise<void> {
+    this.attaching++;
+    try { await this.attachSubscriber(sub); } finally {
+      this.attaching--;
+      // An unsuccessful seed must clean up a first/last viewer's pipe without
+      // disposing another viewer or a concurrent attachment still being seeded.
+      if (!this.torndown && !this.attaching && !this.subscribers.size) this.dispose();
+    }
+  }
+
+  private async attachSubscriber(sub: TerminalSubscriber): Promise<void> {
     if (this.torndown) {
       this.closeTorndown(sub);
       return;
@@ -259,9 +276,8 @@ export class TerminalSessionBroker {
 
     // Open succeeded: seed this subscriber (ring replay + current screen) BEFORE
     // it joins the fanout.
-    try { await this.enqueueDisplay(() => this.seed(sub)); } catch {
-      await this.failGeometry();
-      this.closeTorndown(sub);
+    try { await this.enqueueDisplay(() => this.seed(sub)); } catch (error) {
+      await this.closeFailedSeed(sub, error);
       return;
     }
     // RECHECK after the async seed: liveness/dispose may have torn the broker
@@ -311,7 +327,7 @@ export class TerminalSessionBroker {
    */
   async scroll(sub: TerminalSubscriber, offset: number): Promise<void> {
     if (!Number.isFinite(offset)) return;
-    try { await this.enqueueDisplay(() => this.paintScroll(sub, Math.min(100_000, offset))); } catch { await this.failGeometry(); }
+    try { await this.enqueueDisplay(() => this.paintScroll(sub, Math.min(100_000, offset))); } catch { await this.recoverDisplay(); }
   }
 
   private async paintScroll(sub: TerminalSubscriber, offset: number): Promise<void> {
@@ -436,6 +452,22 @@ export class TerminalSessionBroker {
     } catch { /* transient tail failures; geometry/liveness own availability */ }
   }
 
+  private async closeFailedSeed(sub: TerminalSubscriber, error: unknown): Promise<void> {
+    if (!this.torndown) {
+      try { if (!await this.tmux.hasSession(this.sessionName)) this.handleSessionDeath(); } catch { /* unavailable read */ }
+    }
+    if (this.torndown) { this.closeTorndown(sub); return; }
+    try { sub.close(1011, error instanceof BusyScreenError ? SCREEN_BUSY : GEOMETRY_UNAVAILABLE); } catch { /* dead socket */ }
+  }
+
+  private async recoverDisplay(): Promise<void> {
+    if (this.torndown) return;
+    // Keep the consumed pipe cursor and decoder intact. A later valid native
+    // geometry sample drains every unread byte, then repairs the visible screen.
+    for (const sub of this.subscribers) this.pendingRepaints.add(sub);
+    if (++this.displayFailures >= MAX_DISPLAY_ATTEMPTS) await this.failGeometry();
+  }
+
   private async failGeometry(): Promise<void> {
     if (this.torndown) return;
     let alive = true;
@@ -444,7 +476,7 @@ export class TerminalSessionBroker {
     if (!alive) { this.handleSessionDeath(); return; }
     const subs = [...this.subscribers];
     this.dispose();
-    this.lastClose = { code: 1011, reason: "terminal geometry unavailable or outside supported bounds" };
+    this.lastClose = { code: 1011, reason: GEOMETRY_UNAVAILABLE };
     for (const sub of subs) { try { sub.close(this.lastClose.code, this.lastClose.reason); } catch { /* dead socket */ } }
   }
 
@@ -510,18 +542,39 @@ export class TerminalSessionBroker {
   }
 
   private async seed(sub: TerminalSubscriber): Promise<void> {
-    const screen = await this.readScreen();
-    this.applyGeometry(screen.cursor);
-    if (this.torndown) return;
-    try { sub.geometry?.(this.cols, this.rows); } catch { /* dead subscriber */ }
-    if (this.historyBytes > 0) {
-      const history = this.history.join("");
-      if (isSafeHistoryReplay(history)) { try { sub.send(history); } catch { /* dead socket */ } }
+    let sentCols = 0, sentRows = 0;
+    let historySent = false;
+    for (let attempt = 0; attempt < MAX_DISPLAY_ATTEMPTS; attempt++) {
+      let screen: Awaited<ReturnType<TerminalSessionBroker["readScreen"]>>;
+      try { screen = await this.readScreen(); } catch (error) {
+        if (this.torndown || attempt + 1 === MAX_DISPLAY_ATTEMPTS) throw error;
+        await this.settlePipe();
+        continue;
+      }
+      this.applyGeometry(screen.cursor);
+      if (this.torndown) return;
+      if (sentCols !== this.cols || sentRows !== this.rows) {
+        try { sub.geometry?.(this.cols, this.rows); } catch { /* dead subscriber */ }
+        sentCols = this.cols; sentRows = this.rows;
+      }
+      if (!historySent) {
+        historySent = true;
+        if (this.historyBytes > 0) {
+          const history = this.history.join("");
+          if (isSafeHistoryReplay(history)) { try { sub.send(history); } catch { /* dead socket */ } }
+        }
+      }
+      this.readTail(sub);
+      if (screen.stable && screen.position === this.lastSize && screen.position === this.pipeSize()) {
+        if (screen.snapshot !== null) { try { sub.send(screenSnapshotEscape(screen.snapshot, screen.cursor)); } catch { /* dead socket */ } }
+        return;
+      }
+      // The capture and pipe have no atomic watermark. Retry a bounded sample,
+      // never acknowledge unread bytes or paint a known-outdated snapshot. A
+      // permanently busy fresh viewer must fail honestly instead of going live
+      // indefinitely with only cursor deltas and no authoritative screen seed.
     }
-    this.readTail(sub);
-    if (screen.stable && screen.position === this.lastSize && screen.position === this.pipeSize()) {
-      if (screen.snapshot !== null) { try { sub.send(screenSnapshotEscape(screen.snapshot, screen.cursor)); } catch { /* dead socket */ } }
-    } else this.pendingRepaints.add(sub);
+    throw new BusyScreenError(SCREEN_BUSY);
   }
 
   private startTail(): void {
@@ -543,7 +596,8 @@ export class TerminalSessionBroker {
           this.applyGeometry(screen.cursor);
           await this.repaintPending(screen);
         }
-      }).catch(() => this.failGeometry()).finally(() => { this.tickPending = false; });
+        this.displayFailures = 0;
+      }).catch(() => this.recoverDisplay()).finally(() => { this.tickPending = false; });
     }, this.pollMs);
   }
 

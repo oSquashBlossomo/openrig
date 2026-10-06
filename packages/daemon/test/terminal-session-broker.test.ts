@@ -841,3 +841,207 @@ it("serializes concurrent late attaches and resize capture without duplicate tai
     expect(viewer.indexOf("geometry:100:27")).toBeLessThan(viewer.indexOf("CONCURRENT-LATE"));
   }
 });
+
+// Review regressions: read-only sampling faults must not replace or terminate
+// an otherwise healthy native session or its shared pipe.
+describe("bounded display recovery", () => {
+  it.each(["unavailable", "throw"])("recovers a transient %s geometry sample without dropping either viewer or pipe bytes", async failure => {
+    let fault = false;
+    const stopPipePane = vi.fn(async () => ({ ok: true }));
+    const broker = track(new TerminalSessionBroker("recover@fixture", makeTmux({
+      capturePaneScreen: async () => "CURRENT",
+      stopPipePane,
+      getPaneCursorPosition: async () => {
+        if (fault) {
+          fault = false;
+          if (failure === "throw") throw Error("temporary tmux read failure");
+          return null;
+        }
+        return { x: 0, y: 0, width: 90, height: 27 };
+      },
+    }), { pollMs: 5, geometryMs: 5 }));
+    const a = makeSub(), b = makeSub();
+    await broker.attach(a); await broker.attach(b);
+    const pipe = broker.pipeOutputPath!;
+    fault = true;
+    fs.appendFileSync(pipe, "OUTPUT_DURING_READ_FAILURE");
+    await vi.waitFor(() => expect(fault).toBe(false));
+    await vi.waitFor(() => expect(a.received.join("")).toContain("OUTPUT_DURING_READ_FAILURE"));
+    expect(b.received.join("")).toContain("OUTPUT_DURING_READ_FAILURE");
+    expect(a.closed).toEqual([]); expect(b.closed).toEqual([]);
+    expect(broker.pipeOutputPath).toBe(pipe);
+    expect(stopPipePane).not.toHaveBeenCalled();
+  });
+
+  it.each(["geometry", "capture"])("isolates an unsuccessful late %s seed from a connected viewer", async failure => {
+    let broken = false;
+    const stopPipePane = vi.fn(async () => ({ ok: true }));
+    const broker = track(new TerminalSessionBroker("late-fault@fixture", makeTmux({
+      stopPipePane,
+      capturePaneScreen: async () => {
+        if (broken && failure === "capture") throw Error("temporary capture failure");
+        return "CURRENT";
+      },
+      getPaneCursorPosition: async () => broken && failure === "geometry" ? null : ({ x: 0, y: 0, width: 90, height: 27 }),
+    }), { pollMs: 1000, geometryMs: 1000 }));
+    const a = makeSub(), b = makeSub();
+    await broker.attach(a);
+    const pipe = broker.pipeOutputPath!;
+    broken = true;
+    await broker.attach(b);
+    broken = false;
+    expect(b.closed[0]?.code).toBe(1011);
+    expect(a.closed).toEqual([]);
+    expect(broker.subscriberCount).toBe(1);
+    expect(broker.pipeOutputPath).toBe(pipe);
+    expect(stopPipePane).not.toHaveBeenCalled();
+    fs.appendFileSync(pipe, "STILL_LIVE");
+    await vi.waitFor(() => expect(a.received.join("")).toContain("STILL_LIVE"), { timeout: 2000 });
+  });
+
+  it("bounds a fresh viewer's continuously busy seed and preserves the already seeded viewer", async () => {
+    let busy = false, count = 0;
+    const stopPipePane = vi.fn(async () => ({ ok: true }));
+    let broker: TerminalSessionBroker;
+    broker = track(new TerminalSessionBroker("busy-seed@fixture", makeTmux({
+      stopPipePane,
+      capturePaneScreen: async () => {
+        if (busy) fs.appendFileSync(broker.pipeOutputPath!, `\x1b[2;1HLIVE-${++count}`);
+        return busy ? "UNSAFE_STALE_SNAPSHOT" : "BASELINE";
+      },
+    }), { pollMs: 5, geometryMs: 5 }));
+    const a = makeSub(), b = makeSub();
+    await broker.attach(a);
+    const pipe = broker.pipeOutputPath!;
+    busy = true;
+    await broker.attach(b);
+    await vi.waitFor(() => expect(b.closed[0]).toEqual({ code: 1011, reason: "terminal screen remained busy; reopen to retry" }), { timeout: 500 });
+    expect(b.received.join("")).not.toContain("UNSAFE_STALE_SNAPSHOT");
+    expect(a.closed).toEqual([]);
+    expect(broker.subscriberCount).toBe(1);
+    expect(broker.pipeOutputPath).toBe(pipe);
+    expect(stopPipePane).not.toHaveBeenCalled();
+    expect(count).toBeLessThan(10);
+    busy = false;
+    fs.appendFileSync(pipe, "AFTER_BUSY_SEED");
+    await vi.waitFor(() => expect(a.received.join("")).toContain("AFTER_BUSY_SEED"));
+  });
+});
+
+it("retries a transient busy seed to an authoritative current screen without losing or duplicating pipe bytes", async () => {
+  let transientBusy = false, appended = false;
+  let broker: TerminalSessionBroker;
+  broker = track(new TerminalSessionBroker("briefly-busy@fixture", makeTmux({
+    capturePaneScreen: async () => {
+      if (transientBusy && !appended) {
+        appended = true;
+        fs.appendFileSync(broker.pipeOutputPath!, "\x1b[2;1HNEW_ROW");
+        return "STALE_BEFORE_NEW_ROW";
+      }
+      return appended ? "CURRENT_WITH_NEW_ROW" : "BASELINE";
+    },
+  }), { pollMs: 5, geometryMs: 5 }));
+  const a = makeSub(), b = makeSub();
+  const geometry: string[] = [];
+  b.geometry = (cols, rows) => geometry.push(`${cols}:${rows}`);
+  await broker.attach(a);
+  transientBusy = true;
+  await broker.attach(b);
+  expect(b.closed).toEqual([]);
+  expect(b.received.at(-1)).toContain("CURRENT_WITH_NEW_ROW");
+  expect(b.received.join("")).not.toContain("STALE_BEFORE_NEW_ROW");
+  expect(geometry).toEqual(["90:27"]);
+  for (const viewer of [a, b]) expect(viewer.received.filter(frame => frame === "\x1b[2;1HNEW_ROW")).toHaveLength(1);
+});
+
+it("cleans up a continuously busy first seed and permits a fresh quiet attachment to the same native session", async () => {
+  let busy = true, outputPath = "";
+  const startPipePane = vi.fn(async (_name: string, file: string) => { outputPath = file; return { ok: true }; });
+  const stopPipePane = vi.fn(async () => ({ ok: true }));
+  const tmux = makeTmux({
+    startPipePane, stopPipePane,
+    capturePaneScreen: async () => {
+      if (busy) fs.appendFileSync(outputPath, "\x1b[2;1HCONTINUOUS");
+      return busy ? "UNSAFE_SNAPSHOT" : "QUIET_CURRENT_SCREEN";
+    },
+  });
+  const registry = new TerminalBrokerRegistry(tmux, { pollMs: 5 });
+  const a = makeSub();
+  const failed = track(await registry.attach("first-busy@fixture", a));
+  expect(a.closed).toEqual([{ code: 1011, reason: "terminal screen remained busy; reopen to retry" }]);
+  expect(failed.subscriberCount).toBe(0);
+  expect(failed.pipeOutputPath).toBeNull();
+  expect(registry.size).toBe(0);
+  expect(fs.existsSync(outputPath)).toBe(false);
+  expect(stopPipePane).toHaveBeenCalledTimes(1);
+  busy = false;
+  const b = makeSub();
+  const admitted = track(await registry.attach("first-busy@fixture", b));
+  expect(admitted).not.toBe(failed);
+  expect(b.closed).toEqual([]);
+  expect(b.received.at(-1)).toContain("QUIET_CURRENT_SCREEN");
+  expect(admitted.subscriberCount).toBe(1);
+  expect(startPipePane).toHaveBeenCalledTimes(2); // one pipe per broker, first was stopped
+});
+
+it("closes every viewer honestly after persistent geometry failure instead of keeping stale geometry live indefinitely", async () => {
+  let unavailable = false;
+  const broker = track(new TerminalSessionBroker("persistent-fault@fixture", makeTmux({
+    capturePaneScreen: async () => "BASELINE",
+    getPaneCursorPosition: async () => unavailable ? null : ({ x: 0, y: 0, width: 90, height: 27 }),
+  }), { pollMs: 5, geometryMs: 5 }));
+  const a = makeSub(), b = makeSub();
+  await broker.attach(a); await broker.attach(b);
+  unavailable = true;
+  await vi.waitFor(() => expect(a.closed).toEqual([{ code: 1011, reason: "terminal geometry unavailable or outside supported bounds" }]));
+  expect(b.closed).toEqual(a.closed);
+  expect(broker.pipeOutputPath).toBeNull();
+  expect(broker.subscriberCount).toBe(0);
+});
+
+it.each(["unavailable", "throw"])("bounds persistent %s display faults with the default slower geometry cadence", async failure => {
+  let broken = false, failedReads = 0;
+  const broker = track(new TerminalSessionBroker("slow-cadence@fixture", makeTmux({
+    capturePaneScreen: async () => "BASELINE",
+    getPaneCursorPosition: async () => {
+      if (broken) {
+        failedReads++;
+        if (failure === "throw") throw Error("temporary cursor probe failure");
+        return null;
+      }
+      return { x: 0, y: 0, width: 90, height: 27 };
+    },
+  }), { pollMs: 5 })); // geometryMs deliberately omitted: native reads default to 250ms
+  const a = makeSub(), b = makeSub();
+  await broker.attach(a); await broker.attach(b);
+  broken = true;
+  await vi.waitFor(() => expect(a.closed[0]?.code).toBe(1011), { timeout: 1500 });
+  expect(b.closed).toEqual(a.closed);
+  expect(failedReads).toBe(3); // pending repaint revalidates even on intervening tail ticks
+  expect(broker.subscriberCount).toBe(0);
+  expect(broker.pipeOutputPath).toBeNull();
+});
+
+it("resets the display failure budget after successful recovery between separated faults", async () => {
+  let unavailableReads = 0, captures = 0;
+  const broker = track(new TerminalSessionBroker("separated-faults@fixture", makeTmux({
+    capturePaneScreen: async () => `CURRENT-${++captures}`,
+    getPaneCursorPosition: async () => {
+      if (unavailableReads > 0) { unavailableReads--; return null; }
+      return { x: 0, y: 0, width: 90, height: 27 };
+    },
+  }), { pollMs: 5 })); // exercise the default 250ms geometry cadence
+  const a = makeSub(), b = makeSub();
+  await broker.attach(a); await broker.attach(b);
+  const pipe = broker.pipeOutputPath!;
+  for (let cycle = 0; cycle < 3; cycle++) {
+    unavailableReads = 2; // two consecutive faults, then valid native geometry
+    fs.appendFileSync(pipe, `RECOVERED_OUTPUT-${cycle}`);
+    await vi.waitFor(() => expect(unavailableReads).toBe(0), { timeout: 1500 });
+    await vi.waitFor(() => expect([a, b].every(sub => sub.received.at(-1)?.includes(`CURRENT-${captures}`))).toBe(true));
+    expect(a.closed).toEqual([]); expect(b.closed).toEqual([]);
+    for (const sub of [a, b]) expect(sub.received.filter(frame => frame === `RECOVERED_OUTPUT-${cycle}`)).toHaveLength(1);
+  }
+  expect(broker.pipeOutputPath).toBe(pipe);
+  expect(broker.subscriberCount).toBe(2);
+});

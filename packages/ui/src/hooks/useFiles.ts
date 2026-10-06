@@ -10,17 +10,45 @@
 // the `unavailable` shape so the UI renders a setup hint when no
 // allowlist is configured.
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useSelectedHostId, type HostsResponse } from "./useHosts.js";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import type { HostsResponse } from "./useHosts.js";
+import { readHosts } from "../lib/hosts-read.js";
 import { filesReadScope, readFilesRoots, readFilesList, readFilesFile } from "../lib/files-read.js";
 export { FilesReadError } from "../lib/files-read.js";
 
+function confirmedFilesHost(qc: QueryClient): string | undefined {
+  const state = qc.getQueryState<HostsResponse>(["hosts"]);
+  // A failed refresh retains data, but no longer confirms its authority.
+  // A normal background poll keeps success until it actually fails.
+  return state?.status === "success" ? state.data?.selected : undefined;
+}
+
+/** Current Files authority on the shared host query, with no fetching of its own. */
+export function useConfirmedFilesHost(): string | undefined {
+  // Subscribe to status as well as data: a failed refresh can keep exactly
+  // the same local payload. This observer adds no hosts fetch or polling.
+  const { data, status } = useQuery<HostsResponse>({
+    queryKey: ["hosts"], queryFn: ({ signal }) => readHosts({ signal }),
+    enabled: false, retry: false, placeholderData: undefined,
+  });
+  return status === "success" ? data?.selected : undefined;
+}
+
 function useFilesReadScope(enabled = true) {
-  const hostId = useSelectedHostId();
-  const selectionKnown = useQueryClient().getQueryData<HostsResponse>(["hosts"])?.selected === hostId;
-  const selectedHostId = selectionKnown ? hostId : undefined;
+  const qc = useQueryClient();
+  const selectedHostId = useConfirmedFilesHost();
+  const selectionKnown = selectedHostId !== undefined;
   const scope = filesReadScope(selectedHostId);
-  return { ...scope, selectedHostId, selectionKnown, readEnabled: enabled && scope.scopeSupported };
+  // Re-check at invocation too, including retained/manual refetch callbacks
+  // invoked before a host-state change has reached React's next render.
+  const admittedHost = () => {
+    const current = confirmedFilesHost(qc);
+    if (current === selectedHostId || scope.scopeSupported) return current;
+    // A disabled scope must not fill its distinct cache key with local bytes
+    // if authority recovers before this observer has rendered again.
+    return undefined;
+  };
+  return { ...scope, selectedHostId, selectionKnown, readEnabled: enabled && scope.scopeSupported, admittedHost };
 }
 
 export interface FilesUnavailable {
@@ -45,7 +73,7 @@ export function useFilesRoots(opts?: { enabled?: boolean }) {
     // Preserve exact local keys: the editor reads its newest cache snapshot
     // synchronously before Save. Disabled scopes use separate identities.
     queryKey: scope.scopeSupported ? ["files", "roots"] : ["files", "roots", "scope", scope.selectedHostId ?? null],
-    queryFn: ({ signal }) => readFilesRoots(scope.selectedHostId, { signal, enabled: opts?.enabled }),
+    queryFn: ({ signal }) => readFilesRoots(scope.admittedHost(), { signal, enabled: opts?.enabled }),
     staleTime: 60_000, enabled: scope.readEnabled, retry: false, placeholderData: undefined,
   });
   return { ...query, ...scope, data: scope.readEnabled ? query.data : undefined };
@@ -71,7 +99,7 @@ export function useFilesList(root: string | null, path: string | null, opts?: { 
   const readEnabled = scope.readEnabled && !!root;
   const query = useQuery({
     queryKey: scope.scopeSupported ? ["files", "list", root, path] : ["files", "list", root, path, "scope", scope.selectedHostId ?? null],
-    queryFn: ({ signal }) => readFilesList(scope.selectedHostId, root, path ?? "", { signal, enabled: opts?.enabled }),
+    queryFn: ({ signal }) => readFilesList(scope.admittedHost(), root, path ?? "", { signal, enabled: opts?.enabled }),
     enabled: readEnabled, staleTime: 15_000,
     // Preserve Explorer's refocus refresh even within the stale-time window.
     refetchOnWindowFocus: "always", retry: false, placeholderData: undefined,
@@ -106,7 +134,7 @@ export function useFilesRead(root: string | null, path: string | null, opts?: { 
   const readEnabled = scope.readEnabled && !!root && !!path;
   const query = useQuery({
     queryKey: scope.scopeSupported ? ["files", "read", root, path] : ["files", "read", root, path, "scope", scope.selectedHostId ?? null],
-    queryFn: ({ signal }) => readFilesFile(scope.selectedHostId, root, path, { signal, enabled: opts?.enabled }),
+    queryFn: ({ signal }) => readFilesFile(scope.admittedHost(), root, path, { signal, enabled: opts?.enabled }),
     enabled: readEnabled,
     staleTime: 0, // always re-read for edit-mode mtime/contentHash freshness
     retry: false, placeholderData: undefined,
@@ -171,7 +199,7 @@ export function useFilesWrite() {
     mutationFn: (req: FileWriteRequest) => {
       // Retained editors can outlive a host switch. Read current authority at
       // admission, not a host captured when this hook/component mounted.
-      const selected = qc.getQueryData<HostsResponse>(["hosts"])?.selected;
+      const selected = confirmedFilesHost(qc);
       const error = filesReadScope(selected).scopeError;
       if (error) throw error;
       return postWrite(req);

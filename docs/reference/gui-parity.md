@@ -6,6 +6,34 @@ The inventory follows the eight entries in `packages/tui/src/sections.ts`, the c
 
 `ARCHITECTURE.md` describes the upstream UI as maintenance-only. This reference supports GUI modernization in this fork. Existing daemon contracts remain the source of truth; a visually richer surface must not turn unknown evidence into success, treat receipts as acceptance, or perform writes while browsing.
 
+## Ready-review repairs — October 5, 2026
+
+After the owner approved the interactive preview, Claude and Codex reviewed the
+ready PR. Their actionable findings were reproduced and repaired:
+
+- Files now require the shared hosts query to remain successful at read/write
+  admission. A failed refresh can retain a local payload without retaining its
+  authority. Current file bodies, facts and source-aware inline assets are
+  withheld; in-flight file reads are cancelled. Healthy background polls remain
+  usable, and failed saves preserve drafts and conflict tokens for explicit
+  recovery.
+- Transient terminal display sampling failures receive bounded recovery without
+  losing unread bytes or disconnecting healthy viewers. Failed new-viewer seeds
+  close only that viewer, and rejected early input cannot reach the shared native
+  session. If continuous output prevents a stable initial screen after three
+  samples, the new viewer receives an explicit retry message; no stale snapshot
+  or indefinite baseline-free session is substituted.
+- The [identity migration guide](gui-identity-migration.md) explains exact spec
+  and image IDs, legacy reselection, and the matching browser-terminal protocol.
+
+Independent Sol review found no material issue in these bounded repairs. The
+frozen candidate passed workspace build/type checks, all **3,570 UI tests across
+336 files (one existing skip)**, and **91 targeted daemon terminal tests**,
+including private real-tmux geometry, process, shared-pipe and UTF-8 fixtures.
+Regression cases failed before the corresponding repairs. Existing retained
+media and legacy raw-URL rendering are not claimed to be globally redesigned.
+Physical Safari/Tailscale acceptance and installed-fleet rollout remain separate.
+
 ## Human-style review follow-up — October 5, 2026
 
 Astra independently explored the actual GUI through computer use before the

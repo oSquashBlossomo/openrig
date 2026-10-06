@@ -159,7 +159,15 @@ export function registerTerminalWs(
           const sub: TerminalSubscriber = {
             send: (data: string) => { try { ws.send(JSON.stringify({ type: "output", data })); } catch { /* closed socket */ } },
             geometry: (cols, rows) => { ws.send(JSON.stringify({ type: "geometry", cols, rows })); },
-            close: (code: number, reason: string) => { try { ws.close(code, reason); } catch { /* already closed */ } },
+            close: (code: number, reason: string) => {
+              // Broker admission can fail while onOpen is awaiting the seed.
+              // WebSocket onClose is asynchronous: reject input immediately so
+              // this viewer cannot drain queued frames into a surviving broker.
+              closed = true;
+              earlyFrames.length = 0;
+              earlyFrameBytes = 0;
+              try { ws.close(code, reason); } catch { /* already closed */ }
+            },
           };
           subscriber = sub;
           const b = await getRegistry(tmux as unknown as BrokerTmux).attach(sessionName, sub);
