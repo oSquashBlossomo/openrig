@@ -1339,3 +1339,107 @@ it("cancels the busy return budget when the viewer explicitly stays in history",
   await vi.waitFor(() => expect(sub.received.at(-1)).toContain("LIVE"));
   expect(sub.closed).toEqual([]);
 });
+
+it("bounds a fresh seed during valid geometry changes without painting an old-size snapshot or disposing healthy viewers", async () => {
+  let changing = false, reads = 0;
+  const broker = track(new TerminalSessionBroker("changing-seed@fixture", makeTmux({
+    getPaneCursorPosition: async () => ({ x: 0, y: 0, width: changing && ++reads % 2 === 0 ? 91 : 90, height: 27 }),
+    capturePaneScreen: async () => changing ? "OLD_SIZE_SNAPSHOT" : "BASELINE",
+  }), { pollMs: 1000 }));
+  const healthy = makeSub(), fresh = makeSub(); await broker.attach(healthy);
+  changing = true; await broker.attach(fresh);
+  expect(fresh.closed).toEqual([{ code: 1011, reason: "terminal screen remained busy; reopen to retry" }]);
+  expect(fresh.received.join("")).not.toContain("OLD_SIZE_SNAPSHOT");
+  expect(reads).toBe(18); // three bounded readScreen attempts, each with three before/after samples
+  expect(healthy.closed).toEqual([]);
+  expect(broker.subscriberCount).toBe(1);
+});
+
+it.each([
+  ["null", null, "terminal geometry unavailable or outside supported bounds"],
+  ["invalid", { x: 92, y: 0, width: 91, height: 27 }, "terminal geometry unavailable or outside supported bounds"],
+  ["oversized", { x: 0, y: 0, width: 520, height: 60 }, "terminal geometry exceeds browser display limits (520x60; max 500x300, 100000 cells)"],
+] as const)("does not mask a final %s cursor with an earlier valid changing-geometry sample", async (_label, bad, reason) => {
+  let changing = false, reads = 0;
+  const broker = track(new TerminalSessionBroker("mixed-changing@fixture", makeTmux({
+    getPaneCursorPosition: async () => {
+      if (!changing) return { x: 0, y: 0, width: 90, height: 27 };
+      if (++reads % 6 === 0) return bad;
+      return { x: 0, y: 0, width: reads % 2 === 0 ? 91 : 90, height: 27 };
+    },
+    capturePaneScreen: async () => "BASELINE",
+  }), { pollMs: 1000 }));
+  const healthy = makeSub(), fresh = makeSub(); await broker.attach(healthy);
+  changing = true; await broker.attach(fresh);
+  expect(fresh.closed).toEqual([{ code: 1011, reason }]);
+  expect(fresh.received).toEqual([]);
+  expect(reads).toBe(18);
+  expect(healthy.closed).toEqual([]);
+});
+
+it("does not mask a failed capture following valid changing-geometry samples", async () => {
+  let changing = false, reads = 0, captures = 0;
+  const broker = track(new TerminalSessionBroker("mixed-capture@fixture", makeTmux({
+    getPaneCursorPosition: async () => ({ x: 0, y: 0, width: changing && ++reads % 2 === 0 ? 91 : 90, height: 27 }),
+    capturePaneScreen: async () => changing && ++captures % 3 === 0 ? null : "BASELINE",
+  }), { pollMs: 1000 }));
+  const healthy = makeSub(), fresh = makeSub(); await broker.attach(healthy);
+  changing = true; await broker.attach(fresh);
+  expect(fresh.closed).toEqual([{ code: 1011, reason: "terminal screen capture unavailable; reopen to retry" }]);
+  expect(fresh.received).toEqual([]);
+  expect(captures).toBe(9);
+  expect(healthy.closed).toEqual([]);
+});
+
+it.each(["null", "oversized", "capture"] as const)("keeps the shared hard-failure bound after changing geometry ends in persistent %s failure", async failure => {
+  let changing = false, failed = false, width = 90, captures = 0;
+  const broker = track(new TerminalSessionBroker("changing-failure@fixture", makeTmux({
+    getPaneCursorPosition: async () => failed && failure !== "capture"
+      ? failure === "null" ? null : { x: 0, y: 0, width: 520, height: 60 }
+      : { x: 0, y: 0, width, height: 27 },
+    capturePaneScreen: async () => {
+      if (changing && ++captures <= 3) {
+        if (captures < 3) width++;
+        else failed = true;
+      }
+      return failed && failure === "capture" ? null : "BASELINE";
+    },
+  }), { pollMs: 5, geometryMs: 5 }));
+  const a = makeSub(), b = makeSub(); await broker.attach(a); await broker.attach(b);
+  changing = true; width = 91;
+  const reason = failure === "oversized"
+    ? "terminal geometry exceeds browser display limits (520x60; max 500x300, 100000 cells)"
+    : failure === "capture" ? "terminal screen capture unavailable; reopen to retry" : "terminal geometry unavailable or outside supported bounds";
+  await vi.waitFor(() => expect(a.closed).toEqual([{ code: 1011, reason }]));
+  expect(b.closed).toEqual(a.closed);
+  expect(captures).toBe(failure === "capture" ? 5 : 3);
+  expect(broker.subscriberCount).toBe(0);
+});
+
+it("bounds only a history-return viewer while geometry keeps changing and healthy output continues", async () => {
+  let changing = false, reads = 0, captures = 0, capturesAtClose = 0;
+  let broker: TerminalSessionBroker;
+  broker = track(new TerminalSessionBroker("changing-history@fixture", makeTmux({
+    getPaneCursorPosition: async () => ({ x: 0, y: 0, width: changing && ++reads % 2 === 0 ? 91 : 90, height: 27 }),
+    capturePaneScreen: async () => {
+      if (changing) fs.appendFileSync(broker.pipeOutputPath!, `CHANGE_${++captures};`);
+      return changing ? "OLD_SIZE_SNAPSHOT" : "BASELINE";
+    },
+    capturePaneContent: async () => "HISTORY\n",
+  }), { pollMs: 5, geometryMs: 5 }));
+  const healthy = makeSub(), history = makeSub();
+  const close = history.close;
+  history.close = (code, reason) => { capturesAtClose = captures; close(code, reason); };
+  await broker.attach(healthy); await broker.attach(history);
+  await broker.scroll(history, 1); history.received.length = 0; healthy.received.length = 0;
+  changing = true; await broker.scroll(history, 0);
+  await vi.waitFor(() => expect(history.closed).toEqual([{ code: 1011, reason: "terminal screen remained busy; reopen to retry" }]));
+  expect(healthy.closed).toEqual([]);
+  expect(history.received).toEqual([]);
+  expect(broker.subscriberCount).toBe(1);
+  expect(capturesAtClose).toBe(9);
+  changing = false; fs.appendFileSync(broker.pipeOutputPath!, "AFTER_CHANGE");
+  await vi.waitFor(() => expect(healthy.received.join("")).toContain("AFTER_CHANGE"));
+  for (let index = 1; index <= captures; index++) expect(healthy.received.join("").split(`CHANGE_${index};`)).toHaveLength(2);
+  expect(healthy.received.join("")).not.toContain("OLD_SIZE_SNAPSHOT");
+});

@@ -60,12 +60,29 @@ across ten suites passed on the frozen repair, including real tmux-to-xterm
 pending-wrap fixtures. Independent review also checked unchanged native
 readiness, startup and handover consumers.
 
-The final busy-return follow-up also bounds a history viewer's wait for a stable
+The busy-return follow-up also bounds a history viewer's wait for a stable
 live repaint: after three unsafe samples, only that waiting viewer receives an
 explicit reopen notice. Already-live viewers keep streaming. Five regressions
 cover recovery, repeated requests, cancellation, cleanup and unaffected live
 viewers; the resulting ten terminal/adapter suites passed **290 tests**, with
 daemon build/type checks and independent review.
+
+The final review repairs distinguish valid ongoing native resizing from a failed
+display sample. Existing viewers continue receiving every pipe byte while an
+old-size snapshot is withheld; fresh seeds and history returns retain their
+bounded viewer-only retry behavior. Real-tmux resizing for more than 600 ms
+preserved both viewers, exact final xterm screen/cursor, the shared pipe and the
+native pane process. Invalid geometry, oversized panes and failed captures retain
+their hard-failure bounds.
+
+Broker retirement now also waits for any in-flight pipe open and the old
+session-scoped pipe stop before a replacement may open. Concurrent reopens share
+one replacement; delayed shutdown, stop rejection, failed display, last-viewer
+detach, session death and a viewer closing during the wait have regression
+coverage. Independent Sol probes reproduced both defects before repair and
+verified the corrected behavior. The final repair passed **309 terminal/adapter
+tests across twelve suites**, daemon build/type checks and whitespace checks.
+UI code is unchanged from the full 3,571-test pass above.
 
 ## Human-style review follow-up — October 5, 2026
 

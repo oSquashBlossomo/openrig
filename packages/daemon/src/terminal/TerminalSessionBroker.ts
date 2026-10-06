@@ -227,6 +227,7 @@ export class TerminalSessionBroker {
   private openPromise: Promise<{ ok: true } | { ok: false; code: number; reason: string }> | null = null;
   private tailStarted = false;
   private torndown = false;
+  private shutdownPromise: Promise<void> = Promise.resolve();
   // The honest close reason a subscriber should get if it resumes (after an
   // async open/seed) to find the broker already torn down. Set on every
   // teardown path so a late/racing attach never goes silently live.
@@ -241,6 +242,10 @@ export class TerminalSessionBroker {
     this.maxHistoryBytes = opts.maxHistoryBytes ?? MAX_HISTORY_BYTES;
     this.onEmpty = opts.onEmpty;
   }
+
+  get isClosing(): boolean { return this.torndown; }
+
+  waitForShutdown(): Promise<void> { return this.shutdownPromise; }
 
   get subscriberCount(): number {
     return this.subscribers.size;
@@ -268,7 +273,7 @@ export class TerminalSessionBroker {
       this.attaching--;
       // An unsuccessful seed must clean up a first/last viewer's pipe without
       // disposing another viewer or a concurrent attachment still being seeded.
-      if (!this.torndown && !this.attaching && !this.subscribers.size) this.dispose();
+      if (!this.attaching && !this.subscribers.size) await this.teardown();
     }
   }
 
@@ -296,10 +301,7 @@ export class TerminalSessionBroker {
       // Open failed: remember the reason and tear down ONCE, then close THIS
       // subscriber. Every co-waiter takes a torndown branch and closes with the
       // same remembered reason - none is left live.
-      this.lastClose = { code: open.code, reason: open.reason };
-      this.torndown = true;
-      this.teardownResources();
-      this.onEmpty?.(this.sessionName);
+      await this.teardown({ code: open.code, reason: open.reason });
       sub.close(open.code, open.reason);
       return;
     }
@@ -429,6 +431,7 @@ export class TerminalSessionBroker {
     // sequence with capture-pane: use a bounded quiet sample, never skip bytes
     // to make a snapshot look current. Busy output defers repaint, not delivery.
     let failure = new Error(GEOMETRY_UNAVAILABLE);
+    let changingScreen: { snapshot: string; cursor: TmuxCursorPosition; position: number; stable: false } | undefined;
     for (let attempt = 0; attempt < 3; attempt++) {
       const before = await this.tmux.getPaneCursorPosition(this.sessionName);
       if (!validCursor(before)) throw geometryError(before);
@@ -441,8 +444,17 @@ export class TerminalSessionBroker {
         return { snapshot, cursor, position, stable: position === this.lastSize && position === this.pipeSize()
           && before.x === cursor.x && before.y === cursor.y };
       }
-      failure = geometryError(cursor);
+      if (validCursor(cursor)) {
+        // Both native sizes are valid, but this capture belongs to the old
+        // size. Keep the latest geometry without painting this snapshot or
+        // treating an owner's ongoing resize as a shared display failure.
+        changingScreen = { snapshot, cursor, position, stable: false };
+      } else {
+        changingScreen = undefined;
+        failure = geometryError(cursor);
+      }
     }
+    if (changingScreen) return changingScreen;
     throw failure;
   }
 
@@ -548,24 +560,14 @@ export class TerminalSessionBroker {
     this.scrollOffsets.delete(sub);
     this.returningToLive.delete(sub);
     this.pendingRepaints.delete(sub);
-    if (this.subscribers.size === 0) {
+    if (this.subscribers.size === 0 && this.attaching === 0) {
       void this.teardown();
     }
   }
 
   /** Force teardown (used by the registry/route on shutdown and by tests). */
   dispose(): void {
-    if (this.torndown) return;
-    this.lastClose = { code: 1011, reason: "terminal broker unavailable" };
-    this.torndown = true;
-    this.subscribers.clear();
-    this.scrollOffsets.clear();
-    if (this.pipeActive) {
-      this.pipeActive = false;
-      void this.tmux.stopPipePane(this.sessionName).catch(() => {});
-    }
-    this.teardownResources();
-    this.onEmpty?.(this.sessionName);
+    void this.teardown();
   }
 
   private async openPipe(): Promise<{ ok: true } | { ok: false; code: number; reason: string }> {
@@ -709,38 +711,35 @@ export class TerminalSessionBroker {
   /** FR-5: a dead session closes ALL subscribers honestly - never silent stale-live. */
   private handleSessionDeath(): void {
     if (this.torndown) return;
-    this.lastClose = { code: 1001, reason: "tmux session terminated" };
-    this.torndown = true;
     const subs = [...this.subscribers];
-    this.subscribers.clear();
-    if (this.pipeActive) {
-      this.pipeActive = false;
-      void this.tmux.stopPipePane(this.sessionName).catch(() => {});
-    }
-    this.teardownResources();
+    void this.teardown({ code: 1001, reason: "tmux session terminated" });
     for (const sub of subs) {
-      try {
-        sub.close(1001, "tmux session terminated");
-      } catch {
-        // already-closed subscriber is fine
-      }
+      try { sub.close(1001, "tmux session terminated"); } catch { /* dead socket */ }
     }
-    this.onEmpty?.(this.sessionName);
   }
 
-  private async teardown(): Promise<void> {
-    if (this.torndown) return;
-    this.lastClose = { code: 1011, reason: "terminal broker unavailable" };
+  private teardown(reason = { code: 1011, reason: "terminal broker unavailable" }): Promise<void> {
+    if (this.torndown) return this.shutdownPromise;
+    this.lastClose = reason;
     this.torndown = true;
-    if (this.pipeActive) {
-      this.pipeActive = false;
-      await this.tmux.stopPipePane(this.sessionName).catch(() => {});
-    }
-    this.teardownResources();
-    this.onEmpty?.(this.sessionName);
+    this.subscribers.clear();
+    this.scrollOffsets.clear();
+    this.stopTimers();
+    // A session-scoped stop must settle before the registry permits another
+    // pipe to open. An in-flight open may still succeed after closing begins.
+    this.shutdownPromise = (async () => {
+      await this.openPromise?.catch(() => {});
+      if (this.pipeActive) {
+        this.pipeActive = false;
+        await this.tmux.stopPipePane(this.sessionName).catch(() => {});
+      }
+      this.teardownResources();
+      this.onEmpty?.(this.sessionName);
+    })();
+    return this.shutdownPromise;
   }
 
-  private teardownResources(): void {
+  private stopTimers(): void {
     this.pendingRepaints.clear();
     this.returningToLive.clear();
     if (this.settleTimer) { clearTimeout(this.settleTimer); this.settleTimer = null; }
@@ -754,6 +753,10 @@ export class TerminalSessionBroker {
       clearInterval(this.livenessInterval);
       this.livenessInterval = null;
     }
+  }
+
+  private teardownResources(): void {
+    this.stopTimers();
     if (this.outputPath) {
       try {
         fs.unlinkSync(this.outputPath);
@@ -797,14 +800,19 @@ export class TerminalBrokerRegistry {
   /** Get-or-create the broker for a session, attach the subscriber, return the broker. */
   async attach(sessionName: string, sub: TerminalSubscriber): Promise<TerminalSessionBroker> {
     let broker = this.brokers.get(sessionName);
+    while (broker?.isClosing) {
+      await broker.waitForShutdown();
+      broker = this.brokers.get(sessionName);
+    }
     if (!broker) {
-      broker = new TerminalSessionBroker(sessionName, this.tmux, {
+      const created = new TerminalSessionBroker(sessionName, this.tmux, {
         ...this.opts,
         onEmpty: (name) => {
-          this.brokers.delete(name);
+          if (this.brokers.get(name) === created) this.brokers.delete(name);
           this.opts.onEmpty?.(name);
         },
       });
+      broker = created;
       this.brokers.set(sessionName, broker);
     }
     await broker.attach(sub);
