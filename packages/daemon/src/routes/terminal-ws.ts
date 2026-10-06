@@ -2,6 +2,7 @@ import type { Hono } from "hono";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import { constantTimeEqual } from "../middleware/auth-bearer-token.js";
 import { hostHeaderHostname } from "../middleware/origin-guard.js";
+import { startTerminalHeartbeat, type TerminalHeartbeatSocket } from "../terminal/terminal-heartbeat.js";
 import {
   TerminalBrokerRegistry,
   type BrokerTmux,
@@ -91,7 +92,7 @@ export function registerTerminalWs(
 export function registerTerminalWs(
   app: Hono,
   upgradeWebSocket: (createHandler: (c: unknown) => unknown) => unknown,
-  opts: { bearerToken: string | null; livenessIntervalMs?: number },
+  opts: { bearerToken: string | null; livenessIntervalMs?: number; heartbeatIntervalMs?: number },
 ): void {
   const terminalAuth = terminalAuthMiddleware(opts);
 
@@ -116,6 +117,7 @@ export function registerTerminalWs(
       const sessionName = c.req.param("sessionName")!;
       let broker: TerminalSessionBroker | null = null;
       let subscriber: TerminalSubscriber | null = null;
+      let stopHeartbeat: (() => void) | undefined;
       // The WebSocket can close DURING the async attach (before the broker
       // reference resolves). Without this flag, onClose would find broker===null
       // and skip detach, leaving a phantom subscriber + a leaked pipe once attach
@@ -128,6 +130,10 @@ export function registerTerminalWs(
       // pre-populated CHAT frame every time attach is slower than the client.
       const earlyFrames: string[] = [];
       let earlyFrameBytes = 0;
+      // Keep new arrivals behind buffered frames until their async drain has
+      // completed. Publishing the broker alone must not let fresh input jump
+      // ahead of earlier keystrokes still waiting for tmux.
+      let drainingEarlyFrames = true;
 
       const handleFrame = async (data: string): Promise<void> => {
         if (!broker) return;
@@ -148,12 +154,13 @@ export function registerTerminalWs(
       };
 
       return {
-        async onOpen(_evt: unknown, ws: { send(data: string): void; close(code: number, reason: string): void }) {
+        async onOpen(_evt: unknown, ws: { send(data: string): void; close(code: number, reason: string): void; raw?: TerminalHeartbeatSocket }) {
           if (c.req.query("protocol") !== "2") {
             ws.close(1008, "terminal protocol update required; reload the web UI"); return;
           }
           const tmux = c.get("tmuxAdapter") as TmuxAdapter | undefined;
           if (!tmux) { ws.close(1011, "tmux adapter unavailable"); return; }
+          if (ws.raw) stopHeartbeat = startTerminalHeartbeat(ws.raw, { intervalMs: opts.heartbeatIntervalMs });
           // Adapt the WebSocket to a broker subscriber. The broker owns the pipe,
           // the seed, the fanout, honest session-death close, and cleanup.
           const sub: TerminalSubscriber = {
@@ -181,13 +188,14 @@ export function registerTerminalWs(
             earlyFrameBytes -= Buffer.byteLength(next, "utf8");
             await handleFrame(next);
           }
+          drainingEarlyFrames = false;
         },
 
         async onMessage(evt: { data: unknown }, ws: { close(code: number, reason: string): void }) {
           if (closed) return;
           const data = typeof evt.data === "string" ? evt.data : "";
           if (!data) return;
-          if (!broker) {
+          if (!broker || drainingEarlyFrames) {
             const bytes = Buffer.byteLength(data, "utf8");
             if (
               earlyFrames.length >= MAX_EARLY_TERMINAL_FRAMES
@@ -206,6 +214,7 @@ export function registerTerminalWs(
 
         async onClose() {
           closed = true;
+          stopHeartbeat?.();
           if (broker && subscriber) {
             broker.detach(subscriber);
           }
