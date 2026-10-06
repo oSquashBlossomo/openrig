@@ -63,16 +63,18 @@ export function WorkflowInstanceRow({ instance }: { instance: WorkflowInstanceWi
         to="/workflow/instance/$instanceId"
         params={{ instanceId: instance.instanceId }}
         data-testid={`workflow-instance-row-${instance.instanceId}`}
-        className="flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-surface-variant/50"
+        // Narrow: status · id · age on the first line, the position wrapping
+        // whole on its own line; from sm the single dense row.
+        className="touch-target flex w-full flex-wrap items-center gap-x-2 gap-y-0.5 px-2 py-1.5 text-left hover:bg-surface-variant/50 sm:flex-nowrap"
       >
         <span className={cn("font-mono text-[11px]", chip.cls)} aria-hidden>
           {chip.glyph}
         </span>
-        <span className={cn("font-mono text-[9px] uppercase w-32 shrink-0", chip.cls)}>{chip.label}</span>
+        <span className={cn("font-mono text-[9px] uppercase sm:w-32 sm:shrink-0", chip.cls)}>{chip.label}</span>
         <span className="font-mono text-[11px] text-on-surface" title={instance.instanceId}>
           {shortUlid(instance.instanceId)}
         </span>
-        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-on-surface">
+        <span className="order-last min-w-0 basis-full font-mono text-[11px] text-on-surface [overflow-wrap:anywhere] sm:order-none sm:flex-1 sm:truncate">
           {positionLabel(instance)}
           <span className="text-on-surface-variant"> · hop {instance.hopCount}</span>
           {instance.resumeCount > 0 ? (
@@ -84,7 +86,7 @@ export function WorkflowInstanceRow({ instance }: { instance: WorkflowInstanceWi
             {instance.deadline.evidence.ownerSession} · {Math.floor(instance.deadline.evidence.overdueBySeconds / 60)}m over
           </span>
         ) : null}
-        <span className="font-mono text-[10px] text-on-surface-variant">{ageLabel(instance.createdAt)}</span>
+        <span className="ml-auto font-mono text-[10px] text-on-surface-variant sm:ml-0">{ageLabel(instance.createdAt)}</span>
         <span className="font-mono text-[10px] text-on-surface-variant" aria-hidden>
           →
         </span>

@@ -13,6 +13,38 @@
   }
 }
 
+/* === SHELL VIEWPORT & SAFE AREAS ===
+   The single source for the shell's edges. index.html opts into
+   viewport-fit=cover so the page may paint under the notch / Dynamic Island /
+   home indicator; these insets keep controls out of them (all 0 on desktop).
+   Fixed overlays (detail drawer, phone explorer + rail tray, bottom nav) read
+   --shell-top / --shell-bottom instead of hardcoding the top bar and nav.
+   The shell is sized to the dynamic viewport so Safari's expanded toolbar
+   never hides the bottom of the shell; 100vh is the pre-dvh fallback. */
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --shell-topbar-height: 3.5rem;
+  --shell-bottom-nav-height: 3.5rem;
+  --shell-viewport-height: 100vh;
+  /* Below the top bar. */
+  --shell-top: calc(var(--shell-topbar-height) + var(--safe-top));
+  /* Above the phone/tablet-portrait bottom nav and the home indicator. */
+  --shell-bottom: calc(var(--shell-bottom-nav-height) + var(--safe-bottom));
+  /* Centered dialogs keep a 1rem gutter inside the safe area. */
+  --shell-dialog-max-width: calc(100vw - 2rem - var(--safe-left) - var(--safe-right));
+  --shell-dialog-max-height: calc(var(--shell-viewport-height) - 2rem - var(--safe-top) - var(--safe-bottom));
+}
+@supports (height: 100dvh) {
+  :root { --shell-viewport-height: 100dvh; }
+}
+/* The bottom nav is lg:hidden; from lg up only the home indicator remains. */
+@media (min-width: 1024px) {
+  :root { --shell-bottom: var(--safe-bottom); }
+}
+
 @layer base {
   :root {
     /* Vellum Paper — "The Tactical Dossier" */
@@ -571,6 +603,23 @@
     animation: none;
     opacity: 1;
     transform: none;
+  }
+}
+
+/* === COARSE POINTER (touch) ===
+   Keyed to the input, not the width: an iPad at desktop width still gets
+   finger-sized targets, a narrow desktop window keeps the dense layout.
+   Unlayered and after the Tailwind output on purpose, so these win over a
+   component's dense min-size / text-size utilities at equal specificity.
+   .touch-text keeps editable text at 16px so iOS Safari does not zoom the
+   page on focus; pinch zoom stays enabled (no maximum-scale). */
+@media (pointer: coarse) {
+  .touch-target {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  .touch-text {
+    font-size: 16px;
   }
 }
 

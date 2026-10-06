@@ -273,7 +273,9 @@ export function FileEditor({ root, path, read, originInstance }: {
 
   return (
     <div data-testid="files-editor" data-dirty={dirty} data-composing={composing} className="flex h-full flex-col">
-      <div className="flex flex-wrap items-center gap-2 border-b border-outline-variant bg-amber-50 px-3 py-1.5 font-mono text-[10px]">
+      {/* Sticky so Save / Discard stay reachable while a long draft (or an
+          on-screen keyboard) scrolls the content pane. */}
+      <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-outline-variant bg-amber-50 px-3 py-1.5 font-mono text-[10px]">
         <span className="font-bold text-amber-900" data-testid="files-editor-status" role="status">
           {dirty ? "draft (unsaved)" : "no changes"}
         </span>
@@ -282,7 +284,7 @@ export function FileEditor({ root, path, read, originInstance }: {
           data-testid="files-editor-save"
           disabled={!dirty || write.isPending || composing}
           onClick={save}
-          className="border border-emerald-500 bg-emerald-50 px-2 py-0.5 uppercase tracking-[0.10em] text-emerald-900 disabled:cursor-not-allowed disabled:opacity-50"
+          className="touch-target border border-emerald-500 bg-emerald-50 px-2 py-0.5 uppercase tracking-[0.10em] text-emerald-900 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {write.isPending ? "saving…" : "save"}
         </button>
@@ -292,7 +294,7 @@ export function FileEditor({ root, path, read, originInstance }: {
           disabled={!draft}
           onClick={discard}
           title="Discard this draft and show the file as last read"
-          className="border border-outline bg-surface-lowest px-2 py-0.5 uppercase tracking-[0.10em] text-on-surface disabled:cursor-not-allowed disabled:opacity-50"
+          className="touch-target border border-outline bg-surface-lowest px-2 py-0.5 uppercase tracking-[0.10em] text-on-surface disabled:cursor-not-allowed disabled:opacity-50"
         >
           discard
         </button>
@@ -319,7 +321,7 @@ export function FileEditor({ root, path, read, originInstance }: {
           <div className="mb-1 font-bold">For this edited draft, save all line endings as:</div>
           <div className="flex flex-wrap gap-3">
             {(["lf", "crlf", "cr"] as const).map((ending) => (
-              <label key={ending} className="inline-flex items-center gap-1">
+              <label key={ending} className="touch-target inline-flex items-center gap-1">
                 <input
                   type="radio"
                   name={`files-editor-mixed-${key}`}
@@ -351,7 +353,7 @@ export function FileEditor({ root, path, read, originInstance }: {
               store.delete(key);
               qc.invalidateQueries({ queryKey: ["files", "read", root, path] });
             }}
-            className="border border-red-500 bg-surface-lowest px-2 py-0.5 uppercase tracking-[0.10em] text-red-900"
+            className="touch-target border border-red-500 bg-surface-lowest px-2 py-0.5 uppercase tracking-[0.10em] text-red-900"
           >
             refresh
           </button>
@@ -363,7 +365,7 @@ export function FileEditor({ root, path, read, originInstance }: {
             The file changed on disk after this draft started (draft base {draft!.base.contentHash.slice(0, 12)}…, current {read.contentHash.slice(0, 12)}…). Save is blocked; copy what you need, then discard to load the current file.
           </span>
           <button type="button" data-testid="files-editor-discard-stale" onClick={discard}
-            className="border border-red-500 bg-surface-lowest px-2 py-0.5 uppercase tracking-[0.10em] text-red-900">
+            className="touch-target border border-red-500 bg-surface-lowest px-2 py-0.5 uppercase tracking-[0.10em] text-red-900">
             discard draft
           </button>
         </div>
@@ -386,7 +388,8 @@ export function FileEditor({ root, path, read, originInstance }: {
         onChange={(e) => commit(e.target.value)}
         onCompositionStart={() => setComposing(true)}
         onCompositionEnd={(e) => { setComposing(false); commit(e.currentTarget.value); }}
-        className="min-h-[16rem] flex-1 resize-none border-0 bg-background p-3 font-mono text-[12px] leading-relaxed text-on-surface outline-none"
+        // touch-text: 16px on coarse pointers so iOS does not zoom on focus.
+        className="touch-text min-h-[16rem] flex-1 resize-none border-0 bg-background p-3 font-mono text-[12px] leading-relaxed text-on-surface outline-none"
         spellCheck={false}
       />
     </div>
@@ -402,11 +405,11 @@ export function RetainedDraftNotice({ draft, onResume, onDiscard }: { draft: Fil
         An unsaved draft of this file is kept in this browser tab (started from {draft.base.mtime}). It is never saved or discarded without your action.
       </span>
       {onResume && (
-        <button type="button" data-testid="files-draft-resume" onClick={onResume} className="border border-amber-500 bg-surface-lowest px-2 py-0.5 uppercase tracking-[0.10em]">
+        <button type="button" data-testid="files-draft-resume" onClick={onResume} className="touch-target border border-amber-500 bg-surface-lowest px-2 py-0.5 uppercase tracking-[0.10em]">
           resume editing
         </button>
       )}
-      <button type="button" data-testid="files-draft-discard" onClick={onDiscard} className="border border-outline bg-surface-lowest px-2 py-0.5 uppercase tracking-[0.10em] text-on-surface">
+      <button type="button" data-testid="files-draft-discard" onClick={onDiscard} className="touch-target border border-outline bg-surface-lowest px-2 py-0.5 uppercase tracking-[0.10em] text-on-surface">
         discard draft
       </button>
     </div>

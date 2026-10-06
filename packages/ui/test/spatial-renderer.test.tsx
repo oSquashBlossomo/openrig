@@ -352,6 +352,181 @@ describe("SpatialRenderer reliability regressions", () => {
   });
 });
 
+// jsdom has no PointerEvent: a MouseEvent carrying the pointer fields is what
+// both the renderer and the real OrbitControls read. Events bubble so the
+// controls' document-level move/up listeners see the same sequence.
+interface PointerInit { id: number; x: number; y: number; pointerType?: "touch" | "mouse" | "pen"; isPrimary?: boolean; button?: number }
+function pointerEvent(type: string, init: PointerInit): MouseEvent {
+  const released = type === "pointerup" || type === "pointercancel";
+  const event = new MouseEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    clientX: init.x,
+    clientY: init.y,
+    button: type === "pointermove" ? -1 : init.button ?? 0,
+    buttons: released ? 0 : (init.button ?? 0) === 2 ? 2 : 1,
+  });
+  Object.defineProperties(event, {
+    pointerId: { value: init.id },
+    pointerType: { value: init.pointerType ?? "touch" },
+    isPrimary: { value: init.isPrimary ?? true },
+  });
+  return event;
+}
+
+describe("SpatialRenderer tap selection (touch, multi-touch and cancellation)", () => {
+  async function mountPickable() {
+    const { Raycaster } = await import("three");
+    // Every ray hits the first seat, so any selection the renderer emits is a seat key.
+    vi.spyOn(Raycaster.prototype, "intersectObjects").mockImplementation(
+      (objects) => [{ object: objects[0] }] as unknown as ReturnType<InstanceType<typeof Raycaster>["intersectObjects"]>,
+    );
+    const { props, onSelect } = setup();
+    render(<SpatialRenderer {...props} />);
+    flushFrames();
+    const canvas = gl.instances[0]!.domElement;
+    vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue({
+      x: 0, y: 0, left: 0, top: 0, width: 800, height: 500, right: 800, bottom: 500, toJSON: () => ({}),
+    });
+    // OrbitControls captures the pointer on down; jsdom has no capture API.
+    Object.assign(canvas, { setPointerCapture: vi.fn(), releasePointerCapture: vi.fn(), hasPointerCapture: () => false });
+    const send = (type: string, init: PointerInit) => act(() => { canvas.dispatchEvent(pointerEvent(type, init)); flushFrames(); });
+    // A terminal event that lands outside the canvas (uncaptured release elsewhere).
+    const sendOutside = (type: string, init: PointerInit) => act(() => { document.body.dispatchEvent(pointerEvent(type, init)); flushFrames(); });
+    return { send, sendOutside, onSelect, canvas };
+  }
+
+  it("a single-finger tap selects the seat under it exactly once", async () => {
+    const { send, onSelect } = await mountPickable();
+    send("pointerdown", { id: 11, x: 200, y: 200 });
+    send("pointerup", { id: 11, x: 202, y: 201 });
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(typeof onSelect.mock.calls[0]![0]).toBe("string");
+  });
+
+  it("a pinch whose second finger stays still selects nothing", async () => {
+    const { send, onSelect } = await mountPickable();
+    send("pointerdown", { id: 11, x: 200, y: 200 });
+    send("pointerdown", { id: 12, x: 400, y: 260, isPrimary: false });
+    send("pointermove", { id: 11, x: 120, y: 180 });
+    send("pointermove", { id: 11, x: 60, y: 160 });
+    send("pointerup", { id: 12, x: 400, y: 260, isPrimary: false });
+    send("pointerup", { id: 11, x: 60, y: 160 });
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("a stationary two-finger tap selects nothing", async () => {
+    const { send, onSelect } = await mountPickable();
+    send("pointerdown", { id: 11, x: 200, y: 200 });
+    send("pointerdown", { id: 12, x: 260, y: 220, isPrimary: false });
+    send("pointerup", { id: 12, x: 260, y: 220, isPrimary: false });
+    send("pointerup", { id: 11, x: 200, y: 200 });
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("a cancelled touch leaves no tap candidate for a later stray release", async () => {
+    const { send, onSelect } = await mountPickable();
+    send("pointerdown", { id: 11, x: 200, y: 200 });
+    send("pointercancel", { id: 11, x: 200, y: 200 });
+    // A release whose press began elsewhere (never seen by the canvas).
+    send("pointerup", { id: 1, x: 201, y: 200, pointerType: "mouse" });
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("a release from a different pointer than the one pressed does not select", async () => {
+    const { send, onSelect } = await mountPickable();
+    send("pointerdown", { id: 11, x: 200, y: 200 });
+    send("pointerup", { id: 99, x: 200, y: 200 });
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("a drag that wanders past the slop and returns to its origin selects nothing", async () => {
+    const { send, onSelect } = await mountPickable();
+    send("pointerdown", { id: 11, x: 200, y: 200 });
+    send("pointermove", { id: 11, x: 260, y: 230 });
+    send("pointermove", { id: 11, x: 201, y: 200 });
+    send("pointerup", { id: 11, x: 201, y: 200 });
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("a primary mouse press while a primary touch is held selects nothing (each pointer type has its own primary)", async () => {
+    const { send, onSelect } = await mountPickable();
+    send("pointerdown", { id: 11, x: 200, y: 200 });
+    send("pointerdown", { id: 1, x: 300, y: 250, pointerType: "mouse" });
+    send("pointerup", { id: 1, x: 300, y: 250, pointerType: "mouse" });
+    expect(onSelect).not.toHaveBeenCalled();
+    send("pointerup", { id: 11, x: 200, y: 200 });
+    expect(onSelect).not.toHaveBeenCalled();
+    // Both pointers ended: the next tap is a genuine single-pointer tap again.
+    send("pointerdown", { id: 13, x: 210, y: 210 });
+    send("pointerup", { id: 13, x: 210, y: 210 });
+    expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+
+  it("a non-primary touch (its first finger began outside the canvas) never starts a tap", async () => {
+    const { send, onSelect } = await mountPickable();
+    send("pointerdown", { id: 12, x: 200, y: 200, isPrimary: false });
+    send("pointerup", { id: 12, x: 200, y: 200, isPrimary: false });
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("a pointer released outside the canvas does not stay active and block later taps", async () => {
+    const { send, sendOutside, onSelect } = await mountPickable();
+    send("pointerdown", { id: 11, x: 200, y: 200 });
+    sendOutside("pointerup", { id: 11, x: 900, y: 700 });
+    expect(onSelect).not.toHaveBeenCalled();
+    send("pointerdown", { id: 1, x: 300, y: 300, pointerType: "mouse" });
+    sendOutside("pointerup", { id: 1, x: 900, y: 700, pointerType: "mouse" });
+    expect(onSelect).not.toHaveBeenCalled();
+    send("pointerdown", { id: 14, x: 220, y: 210 });
+    send("pointerup", { id: 14, x: 220, y: 210 });
+    expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+
+  it("unmount drops the document release listeners and a remount starts with no held pointer", async () => {
+    const removeSpy = vi.spyOn(document, "removeEventListener");
+    const first = await mountPickable();
+    first.send("pointerdown", { id: 11, x: 200, y: 200 });
+    cleanup();
+    for (const type of ["pointerup", "pointercancel"]) {
+      expect(removeSpy.mock.calls.some(([t, , capture]) => t === type && capture === true)).toBe(true);
+    }
+    // An event after unmount reaches no renderer.
+    act(() => { document.body.dispatchEvent(pointerEvent("pointerup", { id: 11, x: 200, y: 200 })); });
+    expect(first.onSelect).not.toHaveBeenCalled();
+
+    gl.instances = [];
+    const second = await mountPickable();
+    second.send("pointerdown", { id: 15, x: 200, y: 200 });
+    second.send("pointerup", { id: 15, x: 200, y: 200 });
+    expect(second.onSelect).toHaveBeenCalledTimes(1);
+  });
+
+  it("a valid tap after a pinch and a cancel still selects, and the mouse keeps working", async () => {
+    const { send, onSelect } = await mountPickable();
+    send("pointerdown", { id: 11, x: 200, y: 200 });
+    send("pointerdown", { id: 12, x: 300, y: 200, isPrimary: false });
+    send("pointerup", { id: 11, x: 200, y: 200 });
+    send("pointerup", { id: 12, x: 300, y: 200, isPrimary: false });
+    send("pointerdown", { id: 13, x: 200, y: 200 });
+    send("pointercancel", { id: 13, x: 200, y: 200 });
+    expect(onSelect).not.toHaveBeenCalled();
+
+    send("pointerdown", { id: 14, x: 220, y: 210 });
+    send("pointerup", { id: 14, x: 220, y: 210 });
+    expect(onSelect).toHaveBeenCalledTimes(1);
+
+    send("pointerdown", { id: 1, x: 300, y: 300, pointerType: "mouse" });
+    send("pointerup", { id: 1, x: 303, y: 300, pointerType: "mouse" });
+    expect(onSelect).toHaveBeenCalledTimes(2);
+
+    // A secondary-button click is not a selection.
+    send("pointerdown", { id: 1, x: 300, y: 300, pointerType: "mouse", button: 2 });
+    send("pointerup", { id: 1, x: 300, y: 300, pointerType: "mouse", button: 2 });
+    expect(onSelect).toHaveBeenCalledTimes(2);
+  });
+});
+
 
 function hslToHex(h: number, s: number, l: number): string {
   // CSS Color 4 hsl() → sRGB, independent of three.

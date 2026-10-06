@@ -218,7 +218,7 @@ function ReturnLink({ href, label }: { href: string; label?: string }) {
         e.preventDefault();
         router.history.push(href);
       }}
-      className="border border-outline-variant px-2 py-1 font-mono text-[10px] uppercase tracking-[0.10em] text-on-surface hover:bg-surface-low"
+      className="touch-target inline-flex items-center border border-outline-variant px-2 py-1 font-mono text-[10px] uppercase tracking-[0.10em] text-on-surface hover:bg-surface-low"
     >
       ← {label ?? "return"}
     </a>
@@ -237,7 +237,7 @@ function DraftsMenu({ origin, onOpen }: { origin: string | null; onOpen: (draft:
         data-testid="files-drafts-toggle"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        className="border border-amber-400 bg-amber-50 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.10em] text-amber-900"
+        className="touch-target border border-amber-400 bg-amber-50 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.10em] text-amber-900"
       >
         {drafts.length} unsaved draft{drafts.length === 1 ? "" : "s"}
       </button>
@@ -246,7 +246,7 @@ function DraftsMenu({ origin, onOpen }: { origin: string | null; onOpen: (draft:
           {drafts.map((d) => (
             <li key={d.key}>
               {d.originInstance === origin ? (
-                <button type="button" onClick={() => { setOpen(false); onOpen(d); }} className="block w-full px-2 py-1 text-left font-mono text-[10px] text-on-surface hover:bg-surface-low break-all">
+                <button type="button" onClick={() => { setOpen(false); onOpen(d); }} className="touch-target block w-full px-2 py-1 text-left font-mono text-[10px] text-on-surface hover:bg-surface-low break-all">
                   {d.root}/{d.path}{d.conflict ? " · conflict" : ""}
                 </button>
               ) : (
@@ -293,7 +293,7 @@ function RootSelector({
     return (
       <div data-testid="files-roots-error" role="alert" className="p-3 font-mono text-[10px] text-red-700">
         <div>Could not read file roots: {error.message}</div>
-        <button type="button" onClick={onRetry} className="mt-1 underline">retry</button>
+        <button type="button" onClick={onRetry} className="touch-target mt-1 underline">retry</button>
       </div>
     );
   }
@@ -328,7 +328,7 @@ function RootSelector({
                 data-active={selectedRoot === r.name}
                 aria-current={selectedRoot === r.name ? "true" : undefined}
                 onClick={() => onSelect(r.name)}
-                className={`flex w-full items-center justify-between gap-2 px-2 py-1 text-left font-mono text-[11px] hover:bg-surface-low ${
+                className={`touch-target flex w-full items-center justify-between gap-2 px-2 py-1 text-left font-mono text-[11px] hover:bg-surface-low ${
                   selectedRoot === r.name ? "bg-surface-high/80 text-on-surface" : "text-on-surface"
                 }`}
                 title={r.path}
@@ -348,13 +348,13 @@ function Breadcrumbs({ root, path, onNavigate }: { root: string; path: string; o
   const segments = path ? path.split("/") : [];
   return (
     <nav aria-label="Directory" data-testid="files-breadcrumbs" className="flex flex-wrap items-baseline gap-1 border-b border-outline-variant px-2 py-1 font-mono text-[10px] text-on-surface">
-      <button type="button" onClick={() => onNavigate("")} className="font-bold hover:underline">{root}</button>
+      <button type="button" onClick={() => onNavigate("")} className="touch-target font-bold hover:underline">{root}</button>
       {segments.map((seg, idx) => {
         const accumulated = segments.slice(0, idx + 1).join("/");
         return (
           <span key={accumulated}>
             <span className="mx-0.5 text-on-surface-variant">/</span>
-            <button type="button" onClick={() => onNavigate(accumulated)} className="hover:underline">
+            <button type="button" onClick={() => onNavigate(accumulated)} className="touch-target hover:underline">
               {seg}
             </button>
           </span>
@@ -377,7 +377,7 @@ function DirectoryFilter({ value, onChange }: { value: string; onChange: (value:
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder="name contains…"
-        className="mt-0.5 w-full border border-outline-variant bg-surface-lowest px-2 py-1 font-mono text-[11px] text-on-surface"
+        className="touch-target touch-text mt-0.5 w-full border border-outline-variant bg-surface-lowest px-2 py-1 font-mono text-[11px] text-on-surface"
       />
     </div>
   );
@@ -438,7 +438,7 @@ function DirectoryTree({
               type="button"
               data-testid="files-up"
               onClick={() => onEnterDir(parentPath(path))}
-              className="block w-full px-2 py-1 text-left font-mono text-[11px] text-on-surface-variant hover:bg-surface-low"
+              className="touch-target block w-full px-2 py-1 text-left font-mono text-[11px] text-on-surface-variant hover:bg-surface-low"
             >
               ..
             </button>
@@ -461,7 +461,7 @@ function DirectoryTree({
                 aria-current={isSelected ? "true" : undefined}
                 onClick={() => isFile ? onSelectFile(rel) : entry.type === "dir" ? onEnterDir(rel) : undefined}
                 disabled={entry.type === "other"}
-                className={`block w-full px-2 py-1 text-left font-mono text-[11px] ${
+                className={`touch-target block w-full px-2 py-1 text-left font-mono text-[11px] ${
                   entry.type === "other"
                     ? "text-on-surface-variant"
                     : `hover:bg-surface-low ${isSelected ? "bg-surface-high/80 text-on-surface" : "text-on-surface"}`
@@ -523,7 +523,7 @@ function FileContentPanel({
             disabled={!canEdit}
             title={editability && !editability.editable ? `Read-only: ${editability.detail}` : undefined}
             onClick={() => setEditMode(!editing)}
-            className={`border px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.10em] disabled:cursor-not-allowed disabled:opacity-50 ${
+            className={`touch-target border px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.10em] disabled:cursor-not-allowed disabled:opacity-50 ${
               editing
                 ? "border-amber-400 bg-amber-50 text-amber-900"
                 : "border-outline-variant text-on-surface hover:bg-surface-low"

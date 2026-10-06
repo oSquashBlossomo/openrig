@@ -529,7 +529,18 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
         const key = hit?.object.userData.spatialKey;
         return typeof key === "string" ? key : null;
       };
-      let downAt: { x: number; y: number } | null = null;
+      // A selection belongs to one tap: a primary pointer (isPrimary, primary
+      // button) pressed while no other pointer of ANY type is down on the
+      // canvas, released by that same pointer without ever moving past the
+      // slop. A second pointer (pinch/rotate, or a mouse while a finger is
+      // held), a cancellation or a drag voids the candidate, and a
+      // non-primary pointer (a finger whose first touch began elsewhere)
+      // never starts one, so a gesture never selects or clears a seat.
+      // Every tracked id leaves the set on its own terminal release or
+      // cancel, wherever it lands (document listener below), so an id cannot
+      // stay stuck and block later taps.
+      let tap: { pointerId: number; x: number; y: number } | null = null;
+      const downPointers = new Set<number>();
       let hoverFrame = 0;
       let lastHoverEvent: PointerEvent | null = null;
       let lastHoverKey: string | null = null;
@@ -538,21 +549,36 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
         hoverFrame = 0;
         lastHoverEvent = null;
       };
+      const releasePointer = (pointerId: number) => {
+        downPointers.delete(pointerId);
+        if (tap && tap.pointerId === pointerId) tap = null;
+      };
       const onPointerDown = (e: PointerEvent) => {
-        downAt = { x: e.clientX, y: e.clientY };
+        downPointers.add(e.pointerId);
+        tap = downPointers.size === 1 && e.isPrimary && e.button === 0 ? { pointerId: e.pointerId, x: e.clientX, y: e.clientY } : null;
       };
       const onPointerUp = (e: PointerEvent) => {
-        if (!downAt || e.button !== 0) return;
-        const moved = Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y);
-        downAt = null;
-        if (moved > CLICK_SLOP_PX) return;
+        const candidate = tap && tap.pointerId === e.pointerId ? tap : null;
+        releasePointer(e.pointerId);
+        if (!candidate || e.button !== 0) return;
+        if (Math.hypot(e.clientX - candidate.x, e.clientY - candidate.y) > CLICK_SLOP_PX) return;
         propsRef.current.onSelect(pick(e.clientX, e.clientY));
+      };
+      const onPointerCancel = (e: PointerEvent) => releasePointer(e.pointerId);
+      // A release or cancel that does not target the canvas (pointer not
+      // captured, lifted elsewhere) still ends that pointer. Capture phase so
+      // a stopPropagation elsewhere cannot hide it; canvas-targeted events
+      // are left to the canvas handlers above.
+      const ownerDocument = canvas.ownerDocument;
+      const onDocumentPointerEnd = (e: PointerEvent) => {
+        if (e.target !== canvas) releasePointer(e.pointerId);
       };
       const onDoubleClick = (e: MouseEvent) => {
         const key = pick(e.clientX, e.clientY);
         if (key) controller.focus(key);
       };
       const onPointerMove = (e: PointerEvent) => {
+        if (tap && tap.pointerId === e.pointerId && Math.hypot(e.clientX - tap.x, e.clientY - tap.y) > CLICK_SLOP_PX) tap = null;
         if (e.buttons !== 0) return;
         lastHoverEvent = e;
         if (hoverFrame) return;
@@ -569,10 +595,10 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
           }
         });
       };
-      const onPointerLeave = () => {
+      const onPointerLeave = (e: PointerEvent) => {
         // A pick queued before the pointer left must not resurrect a hover.
         cancelHoverPick();
-        downAt = null;
+        releasePointer(e.pointerId);
         if (lastHoverKey !== null) {
           lastHoverKey = null;
           propsRef.current.onHover(null);
@@ -580,12 +606,18 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
       };
       canvas.addEventListener("pointerdown", onPointerDown);
       canvas.addEventListener("pointerup", onPointerUp);
+      canvas.addEventListener("pointercancel", onPointerCancel);
+      ownerDocument.addEventListener("pointerup", onDocumentPointerEnd, true);
+      ownerDocument.addEventListener("pointercancel", onDocumentPointerEnd, true);
       canvas.addEventListener("pointermove", onPointerMove);
       canvas.addEventListener("pointerleave", onPointerLeave);
       canvas.addEventListener("dblclick", onDoubleClick);
       cleanups.push(() => {
         canvas.removeEventListener("pointerdown", onPointerDown);
         canvas.removeEventListener("pointerup", onPointerUp);
+        canvas.removeEventListener("pointercancel", onPointerCancel);
+        ownerDocument.removeEventListener("pointerup", onDocumentPointerEnd, true);
+        ownerDocument.removeEventListener("pointercancel", onDocumentPointerEnd, true);
         canvas.removeEventListener("pointermove", onPointerMove);
         canvas.removeEventListener("pointerleave", onPointerLeave);
         canvas.removeEventListener("dblclick", onDoubleClick);

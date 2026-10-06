@@ -4,6 +4,9 @@
 The OpenRig daemon answers its API only when a request is addressed to this machine and, if it
 comes from a web page, only when that page is the OpenRig UI or a page you allowed.
 
+For touch-device checks and a same-origin HTTPS setup, see
+[iPhone and iPad access through Tailscale](mobile-access.md).
+
 ### What works with no setup
 
 - The CLI, the TUI and agents on this machine, addressing the daemon by `localhost` or an IP
