@@ -36,6 +36,44 @@ custom clients must implement that protocol before reconnecting; adding the
 parameter alone is not sufficient. The daemon rejects clients that omit it
 rather than send frames they cannot interpret.
 
+Browser terminal snapshots require [tmux 3.1 or newer](https://github.com/tmux/tmux/blob/3.1/CHANGES)
+for `capture-pane -N`,
+which preserves written trailing spaces and the native pending-wrap cursor.
+Check `tmux -V` when planning adoption. Unsupported capture commands produce an
+explicit capture-unavailable notice rather than an invented empty screen.
+
 After updating the daemon and UI, reload older browser tabs to load the matching
 client. This protocol change does not authorize changing native pane geometry,
 permissions, models or conversation identities.
+
+## Previously pinned native window sizes
+
+The old browser terminal could set a tmux window's `window-size` to `manual`
+and resize it to 90×27. That window-local option survives a daemon upgrade.
+The new broker preserves the existing policy; it does not guess whether a
+manual size came from the old broker or from an operator.
+
+If a previously viewed seat remains pinned, inspect the exact window on the
+correct tmux server before changing it. Record its window ID, current geometry,
+local option and inherited default:
+
+```sh
+tmux list-windows -t '=<session>' -F '#{window_id} #{window_width}x#{window_height} #{window_name}'
+tmux show-options -w -t '<window-id>' window-size
+tmux show-options -gw window-size
+```
+
+Use the same `-L` or `-S` server selector as the installation when applicable.
+After confirming the local `manual` override is unwanted, the operator can
+remove only that window's override:
+
+```sh
+tmux set-option -wu -t '<window-id>' window-size
+tmux show-options -wA -t '<window-id>' window-size
+```
+
+The window then inherits its existing global policy. If that is also `manual`,
+unsetting the local option alone does not enable native-client sizing; choose
+the intended policy separately. Attach the intended native client and verify
+the resulting dimensions. This recovery may resize the window and is an
+explicit operator step, never an automatic migration or browser action.

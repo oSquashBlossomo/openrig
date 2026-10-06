@@ -994,24 +994,31 @@ describe("TmuxAdapter", () => {
   // seeds a new subscriber with the CURRENT VISIBLE SCREEN + cursor so a live
   // terminal paints immediately instead of staying blank until next output.
   describe("capturePaneScreen (visible screen, NOT scrollback)", () => {
-    it("calls `tmux capture-pane -p -t <pane>` with NO -S flag (scrollback would reintroduce row drift)", async () => {
+    it("calls `tmux capture-pane -p -N -t <pane>` with NO -S flag (scrollback would reintroduce row drift)", async () => {
       const exec = vi.fn<ExecFn>().mockResolvedValue("row a\nrow b\n");
       const adapter = new TmuxAdapter(exec);
 
-      const out = await adapter.capturePaneScreen("%0");
+      const out = await adapter.capturePaneScreen("%0", true);
 
       expect(out).toBe("row a\nrow b\n");
       expect(exec).toHaveBeenCalledOnce();
-      expect(exec.mock.calls[0]![0]).toBe("tmux capture-pane -p -t '%0'");
+      expect(exec.mock.calls[0]![0]).toBe("tmux capture-pane -p -N -t '%0'");
     });
 
     it("shell-quotes a session-name target safely, as an exact target", async () => {
       const exec = vi.fn<ExecFn>().mockResolvedValue("x");
       const adapter = new TmuxAdapter(exec);
 
-      await adapter.capturePaneScreen("dev-impl@my-rig");
+      await adapter.capturePaneScreen("dev-impl@my-rig", true);
 
-      expect(exec.mock.calls[0]![0]).toBe("tmux capture-pane -p -t '=dev-impl@my-rig:'");
+      expect(exec.mock.calls[0]![0]).toBe("tmux capture-pane -p -N -t '=dev-impl@my-rig:'");
+    });
+
+    it("keeps the default trimmed capture contract for readiness and handover consumers", async () => {
+      const exec = vi.fn<ExecFn>().mockResolvedValue("ready\n");
+      const adapter = new TmuxAdapter(exec);
+      expect(await adapter.capturePaneScreen("%0")).toBe("ready\n");
+      expect(exec.mock.calls[0]![0]).toBe("tmux capture-pane -p -t '%0'");
     });
 
     it("returns null on error (pane gone)", async () => {
@@ -1019,9 +1026,9 @@ describe("TmuxAdapter", () => {
       expect(await adapter.capturePaneScreen("%0")).toBeNull();
     });
 
-    it("returns null on empty output (nothing to seed)", async () => {
+    it("preserves valid empty output separately from failed capture", async () => {
       const adapter = new TmuxAdapter(mockExec({ "capture-pane": { stdout: "" } }));
-      expect(await adapter.capturePaneScreen("%0")).toBeNull();
+      expect(await adapter.capturePaneScreen("%0")).toBe("");
     });
   });
 

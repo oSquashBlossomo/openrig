@@ -14,8 +14,17 @@ import { nodesRoutes } from "../../daemon/src/routes/sessions.js";
 import { readNodeInventory } from "../src/lib/fleet-inventory-reads.js";
 import { readSeatWork } from "../src/lib/seat-work-reads.js";
 import { LOCAL_OPERATOR_INSTANCE as local } from "../src/lib/operator-read.js";
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
-it("filters exact destination/state before SQL limit, separates raw/canonical totals, and retains served activity facts", async () => {
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+it.each([
+  ["2026-10-06T00:36:12.999Z", 1473],
+  ["2026-10-06T00:36:13.001Z", 1474],
+] as const)("filters exact destination/state before SQL limit and retains served facts at %s", async (now, claimedMinutes) => {
+  // Pickup evidence is derived from the clock on every list read. Both the
+  // route and direct repository oracle must observe the same instant, even
+  // when CI scheduling would otherwise cross a claim's minute boundary.
+  // Keep timeout timers real so transport failures remain bounded.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(now));
   const db = createDb();
   try {
     migrate(db, ALL_MIGRATIONS);
@@ -71,6 +80,10 @@ it("filters exact destination/state before SQL limit, separates raw/canonical to
       expect(result.data.totalCount).toBeNull(); expect(result.data.rows.every(q => q.destinationSession === rawSession)).toBe(true);
     }
     expect(reads.pending.state === "available" && reads.pending.data.rows.every(q => q.claimedAt !== null)).toBe(true);
+    if (reads.pending.state !== "available") throw reads.pending.error;
+    expect(reads.pending.data.rows.find(q => q.qitemId === "private-q133")?.pickup).toEqual({
+      state: "stalled-after-claim", evidence: `claimed ${claimedMinutes} min ago, zero substantive transitions since`,
+    });
     expect(fetch.mock.calls.every(([, init]) => init?.method === "GET")).toBe(true);
     expect(native).not.toHaveBeenCalled();
     expect(db.prepare("SELECT COUNT(*) AS n FROM queue_items").get()).toEqual({ n: 552 });

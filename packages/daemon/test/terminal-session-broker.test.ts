@@ -36,7 +36,7 @@ function makeTmux(overrides: Partial<BrokerTmux> = {}): BrokerTmux {
     stopPipePane: async () => ({ ok: true }),
     sendKeys: async () => ({ ok: true }),
     sendText: async () => ({ ok: true }),
-    capturePaneScreen: async () => null,
+    capturePaneScreen: async () => "",
     getPaneCursorPosition: async () => ({ x: 0, y: 0, width: 90, height: 27 }),
     capturePaneContent: async () => null,
     ...overrides,
@@ -251,7 +251,7 @@ describe("TerminalSessionBroker", () => {
     const a = makeSub();
     await broker.attach(a);
 
-    expect(capturePaneScreen).toHaveBeenCalledWith("dev@rig");
+    expect(capturePaneScreen).toHaveBeenCalledWith("dev@rig", true);
     const seed = a.received[0]!;
     expect(seed).toContain("\x1b[1;1Hr1");
     expect(seed).toContain("\x1b[3;1Hr3");
@@ -659,7 +659,7 @@ describe("TerminalSessionBroker - per-subscriber scroll-back (OPR.0.4.0.39)", ()
 
     await broker.scroll(a, 0); // back to the live bottom
 
-    expect(capturePaneScreen).toHaveBeenCalledWith("dev@rig");
+    expect(capturePaneScreen).toHaveBeenCalledWith("dev@rig", true);
     expect(a.received.length).toBe(beforeReturn + 1);
     expect(a.received[a.received.length - 1]!).toContain("LIVE SCREEN");
 
@@ -1103,7 +1103,7 @@ describe("browser geometry limit reporting", () => {
   });
 });
 
-it.each([null, { x: 500, y: 0, width: 500, height: 200 }, { x: 0, y: 0, width: Number.NaN, height: 27 }])("keeps unavailable or malformed cursor information distinct from browser size limits", async cursor => {
+it.each([null, { x: 501, y: 0, width: 500, height: 200 }, { x: 0, y: 0, width: Number.NaN, height: 27 }])("keeps unavailable or malformed cursor information distinct from browser size limits", async cursor => {
   const broker = track(new TerminalSessionBroker("unavailable-size@fixture", makeTmux({
     getPaneCursorPosition: async () => cursor,
   }), { pollMs: 5 }));
@@ -1120,4 +1120,94 @@ it("reports bounds without inventing an exact size for unsafe integer geometry a
   await broker.attach(sub);
   expect(sub.closed).toEqual([{ code: 1011, reason: "terminal geometry exceeds browser display limits (max 500x300, 100000 cells)" }]);
   expect(Buffer.byteLength(sub.closed[0]!.reason)).toBeLessThanOrEqual(123);
+});
+
+it("rejects a failed screen capture for only the fresh viewer and admits a later successful seed", async () => {
+  let failed = false;
+  const broker = track(new TerminalSessionBroker("capture@fixture", makeTmux({
+    capturePaneScreen: async () => failed ? null : "AUTHORITATIVE",
+  }), { pollMs: 1000 }));
+  const healthy = makeSub(); await broker.attach(healthy);
+  failed = true;
+  const rejected = makeSub(); await broker.attach(rejected);
+  expect(rejected.closed).toEqual([{ code: 1011, reason: "terminal screen capture unavailable; reopen to retry" }]);
+  expect(rejected.received).toEqual([]);
+  expect(healthy.closed).toEqual([]);
+  failed = false;
+  const later = makeSub(); await broker.attach(later);
+  expect(later.closed).toEqual([]);
+  expect(later.received.some(frame => frame.includes("AUTHORITATIVE"))).toBe(true);
+});
+
+it("keeps a geometry repaint pending after null capture and paints only a recovered authoritative screen", async () => {
+  let width = 90, failed = false;
+  let captures = 0;
+  const broker = track(new TerminalSessionBroker("capture@fixture", makeTmux({
+    getPaneCursorPosition: async () => ({ x: 0, y: 0, width, height: 27 }),
+    capturePaneScreen: async () => { captures++; return failed ? null : "AUTHORITATIVE"; },
+  }), { pollMs: 100, geometryMs: 100 }));
+  const sub = makeSub(); await broker.attach(sub); sub.received.length = 0;
+  failed = true; width = 100;
+  await vi.waitFor(() => expect(captures).toBeGreaterThan(1), { interval: 5 });
+  expect(sub.received).toEqual([]);
+  failed = false;
+  await vi.waitFor(() => expect(sub.received.some(frame => frame.includes("AUTHORITATIVE"))).toBe(true));
+  expect(sub.closed).toEqual([]);
+});
+
+it("does not replace a scroll-back screen with empty content when scroll-to-live capture fails", async () => {
+  let failed = false;
+  const broker = track(new TerminalSessionBroker("capture@fixture", makeTmux({
+    capturePaneScreen: async () => failed ? null : "LIVE_AUTHORITATIVE",
+    capturePaneContent: async () => "OLD\nHISTORY\n",
+  }), { pollMs: 1000 }));
+  const sub = makeSub(); await broker.attach(sub); await broker.scroll(sub, 1);
+  sub.received.length = 0; failed = true;
+  await broker.scroll(sub, 0);
+  expect(sub.received).toEqual([]);
+  failed = false;
+  await vi.waitFor(() => expect(sub.received.some(frame => frame.includes("LIVE_AUTHORITATIVE"))).toBe(true), { timeout: 3000 });
+  expect(sub.closed).toEqual([]);
+});
+
+it("recovers a transient null capture during fresh seed without an empty-screen acknowledgement", async () => {
+  let calls = 0;
+  const broker = track(new TerminalSessionBroker("capture@fixture", makeTmux({
+    capturePaneScreen: async () => ++calls === 1 ? null : "RECOVERED",
+  }), { pollMs: 5 }));
+  const sub = makeSub(); await broker.attach(sub);
+  expect(calls).toBe(2);
+  expect(sub.closed).toEqual([]);
+  expect(sub.received).toEqual([screenSnapshotEscape("RECOVERED", { x: 0, y: 0, width: 90, height: 27 })]);
+});
+
+it("holds a failed scroll-to-live viewer out of raw delta fanout until its authoritative repaint", async () => {
+  let failed = false;
+  const broker = track(new TerminalSessionBroker("capture@fixture", makeTmux({
+    capturePaneScreen: async () => failed ? null : "LIVE_AFTER_DELTA",
+    capturePaneContent: async () => "OLD\nHISTORY\n",
+  }), { pollMs: 1000 }));
+  const healthy = makeSub(), scrolled = makeSub();
+  await broker.attach(healthy); await broker.attach(scrolled);
+  await broker.scroll(scrolled, 1); scrolled.received.length = 0; healthy.received.length = 0;
+  failed = true; await broker.scroll(scrolled, 0);
+  fs.appendFileSync(broker.pipeOutputPath!, "LIVE_DELTA");
+  failed = false;
+  await vi.waitFor(() => expect(scrolled.received.some(frame => frame.includes("LIVE_AFTER_DELTA"))).toBe(true), { timeout: 4000 });
+  expect(healthy.received).toContain("LIVE_DELTA");
+  expect(scrolled.received).not.toContain("LIVE_DELTA");
+  expect(scrolled.closed).toEqual([]);
+});
+
+it("bounds persistent null captures without ever emitting an empty authoritative repaint", async () => {
+  let failed = false, captures = 0;
+  const broker = track(new TerminalSessionBroker("capture@fixture", makeTmux({
+    capturePaneScreen: async () => { captures++; return failed ? null : "AUTHORITATIVE"; },
+  }), { pollMs: 5 }));
+  const sub = makeSub(); await broker.attach(sub); sub.received.length = 0;
+  failed = true;
+  await broker.scroll(sub, 0);
+  await vi.waitFor(() => expect(sub.closed).toEqual([{ code: 1011, reason: "terminal screen capture unavailable; reopen to retry" }]));
+  expect(captures).toBe(4); // initial success, then exactly three failed display samples
+  expect(sub.received).toEqual([]);
 });

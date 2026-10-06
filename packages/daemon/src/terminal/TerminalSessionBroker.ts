@@ -26,6 +26,7 @@ const GEOMETRY_UNAVAILABLE = "terminal geometry unavailable or outside supported
 const SCREEN_BUSY = "terminal screen remained busy; reopen to retry";
 
 class BusyScreenError extends Error {}
+class ScreenCaptureError extends Error {}
 
 /**
  * Bounded size of the broker-owned recent-output history ring (AC-5 / FR-4).
@@ -58,7 +59,7 @@ function geometryError(cursor: TmuxCursorPosition | null): Error {
 }
 
 function displayErrorReason(error: unknown): string {
-  if (error instanceof BusyScreenError || error instanceof GeometryLimitError) return error.message;
+  if (error instanceof BusyScreenError || error instanceof GeometryLimitError || error instanceof ScreenCaptureError) return error.message;
   return GEOMETRY_UNAVAILABLE;
 }
 
@@ -66,7 +67,8 @@ function validCursor(cursor: TmuxCursorPosition | null): cursor is TmuxCursorPos
   return !!cursor && [cursor.x, cursor.y, cursor.width, cursor.height].every(Number.isInteger)
     && cursor.width > 0 && cursor.width <= MAX_TERMINAL_COLS && cursor.height > 0 && cursor.height <= MAX_TERMINAL_ROWS
     && cursor.width * cursor.height <= MAX_TERMINAL_CELLS
-    && cursor.x >= 0 && cursor.x < cursor.width && cursor.y >= 0 && cursor.y < cursor.height;
+    // x==width is tmux's legitimate deferred-wrap cursor, not a cell address.
+    && cursor.x >= 0 && cursor.x <= cursor.width && cursor.y >= 0 && cursor.y < cursor.height;
 }
 
 /** A connected viewer of one broker. The route adapts a WebSocket to this. */
@@ -90,7 +92,7 @@ export interface BrokerTmux {
   stopPipePane(name: string): Promise<TmuxResult>;
   sendKeys(name: string, keys: string[]): Promise<TmuxResult>;
   sendText(name: string, text: string): Promise<TmuxResult>;
-  capturePaneScreen(name: string): Promise<string | null>;
+  capturePaneScreen(name: string, preserveTrailingSpaces?: boolean): Promise<string | null>;
   getPaneCursorPosition(name: string): Promise<TmuxCursorPosition | null>;
   /** Capture the last `lines` lines INCLUDING scrollback history (tmux
    *  capture-pane -S -lines). Used for the per-subscriber scroll-back window. */
@@ -130,7 +132,7 @@ export function cursorPositionEscape(x: number, y: number): string {
  */
 export function screenSnapshotEscape(
   snapshot: string,
-  cursor: { x: number; y: number; height?: number } | null,
+  cursor: { x: number; y: number; width?: number; height?: number } | null,
 ): string {
   const normalized = snapshot.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   const withoutTrailingPrintNewline = normalized.endsWith("\n")
@@ -141,11 +143,17 @@ export function screenSnapshotEscape(
     ? rows.slice(rows.length - cursor.height)
     : rows;
 
+  // tmux x==width is the deferred-wrap position after filling the last cell.
+  // CUP to width+1 clamps in xterm and loses that state. Paint this row last,
+  // including its captured trailing spaces, and leave its printing cursor alone.
+  const pendingWrap = cursor?.width !== undefined && cursor.x === cursor.width;
   const paintedRows = visibleRows
-    .map((row, index) => `\x1b[${index + 1};1H${row}`)
+    .map((row, index) => ({ row, index }))
+    .sort((a, b) => pendingWrap ? Number(a.index === cursor!.y) - Number(b.index === cursor!.y) : 0)
+    .map(({ row, index }) => `\x1b[${index + 1};1H${row}`)
     .join("");
 
-  return `\x1b[2J${paintedRows}${cursor ? cursorPositionEscape(cursor.x, cursor.y) : "\x1b[H"}`;
+  return `\x1b[2J${paintedRows}${pendingWrap ? "" : cursor ? cursorPositionEscape(cursor.x, cursor.y) : "\x1b[H"}`;
 }
 
 /**
@@ -200,6 +208,7 @@ export class TerminalSessionBroker {
   // the pane (capture-pane), so every viewer scrolls independently and nobody else's
   // live view is disturbed (multi-subscriber-safe scrollback - vs pane-global copy-mode).
   private readonly scrollOffsets = new Map<TerminalSubscriber, number>();
+  private readonly returningToLive = new Set<TerminalSubscriber>();
   // Broker-owned recent-output ring (AC-5): raw fanned-out bytes, bounded,
   // replayed to late subscribers so their scrollback matches the earlier ones.
   private history: string[] = [];
@@ -355,10 +364,12 @@ export class TerminalSessionBroker {
     if (this.torndown || !this.subscribers.has(sub)) return;
     const clamped = Math.max(0, Math.floor(offset));
     if (clamped === 0) {
-      this.scrollOffsets.delete(sub);
+      // Keep a history viewer out of delta fanout until a valid live seed is sent.
+      this.returningToLive.add(sub);
       await this.repaintScreen(sub);
       return;
     }
+    this.returningToLive.delete(sub);
     this.scrollOffsets.set(sub, clamped);
     // tmux `capture-pane -p -S -(offset+rows)` returns a buffer that ENDS at the live
     // bottom (verified against real tmux: `-S -N` returns ~N history lines above the
@@ -411,7 +422,7 @@ export class TerminalSessionBroker {
     });
   }
 
-  private async readScreen(): Promise<{ snapshot: string | null; cursor: TmuxCursorPosition; position: number; stable: boolean }> {
+  private async readScreen(): Promise<{ snapshot: string; cursor: TmuxCursorPosition; position: number; stable: boolean }> {
     // Native geometry can change between reads. Output has no atomic shared
     // sequence with capture-pane: use a bounded quiet sample, never skip bytes
     // to make a snapshot look current. Busy output defers repaint, not delivery.
@@ -420,7 +431,8 @@ export class TerminalSessionBroker {
       const before = await this.tmux.getPaneCursorPosition(this.sessionName);
       if (!validCursor(before)) throw geometryError(before);
       const position = this.pipeSize();
-      const snapshot = await this.tmux.capturePaneScreen(this.sessionName);
+      const snapshot = await this.tmux.capturePaneScreen(this.sessionName, true);
+      if (snapshot === null) throw new ScreenCaptureError("terminal screen capture unavailable; reopen to retry");
       await this.settlePipe();
       const cursor = await this.tmux.getPaneCursorPosition(this.sessionName);
       if (validCursor(cursor) && before.width === cursor.width && before.height === cursor.height) {
@@ -444,13 +456,17 @@ export class TerminalSessionBroker {
     }
   }
 
-  private async repaintPending(screen: { snapshot: string | null; cursor: TmuxCursorPosition; position: number; stable: boolean }): Promise<void> {
+  private async repaintPending(screen: { snapshot: string; cursor: TmuxCursorPosition; position: number; stable: boolean }): Promise<void> {
     if (this.torndown || !screen.stable || screen.position !== this.lastSize || screen.position !== this.pipeSize()) return;
     for (const sub of [...this.pendingRepaints]) {
       if (!this.subscribers.has(sub)) continue;
       const offset = this.scrollOffsets.get(sub) ?? 0;
-      if (offset > 0) await this.paintScroll(sub, offset);
-      else { try { sub.send(screenSnapshotEscape(screen.snapshot ?? "", screen.cursor)); } catch { this.detach(sub); } }
+      if (offset > 0 && !this.returningToLive.has(sub)) await this.paintScroll(sub, offset);
+      else {
+        try { sub.send(screenSnapshotEscape(screen.snapshot, screen.cursor)); } catch { this.detach(sub); }
+        this.scrollOffsets.delete(sub);
+        this.returningToLive.delete(sub);
+      }
       this.pendingRepaints.delete(sub);
     }
   }
@@ -516,6 +532,7 @@ export class TerminalSessionBroker {
   detach(sub: TerminalSubscriber): void {
     if (!this.subscribers.delete(sub)) return;
     this.scrollOffsets.delete(sub);
+    this.returningToLive.delete(sub);
     this.pendingRepaints.delete(sub);
     if (this.subscribers.size === 0) {
       void this.teardown();
@@ -589,7 +606,7 @@ export class TerminalSessionBroker {
       }
       this.readTail(sub);
       if (screen.stable && screen.position === this.lastSize && screen.position === this.pipeSize()) {
-        if (screen.snapshot !== null) { try { sub.send(screenSnapshotEscape(screen.snapshot, screen.cursor)); } catch { /* dead socket */ } }
+        try { sub.send(screenSnapshotEscape(screen.snapshot, screen.cursor)); } catch { /* dead socket */ }
         return;
       }
       // The capture and pipe have no atomic watermark. Retry a bounded sample,
@@ -711,6 +728,7 @@ export class TerminalSessionBroker {
 
   private teardownResources(): void {
     this.pendingRepaints.clear();
+    this.returningToLive.clear();
     if (this.settleTimer) { clearTimeout(this.settleTimer); this.settleTimer = null; }
     this.settleResolve?.();
     this.settleResolve = null;

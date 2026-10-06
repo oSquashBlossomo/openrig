@@ -46,6 +46,20 @@ viewers; [issue #12](https://github.com/oSquashBlossomo/openrig/issues/12) track
 performance work with its measurement limits. Visible grid seats do not each
 create a live broker; the GUI defaults to two explicitly opened live terminals.
 
+A later review reproduced two further terminal edge cases: tmux's cursor can
+legitimately wait just beyond the last column, and a failed capture must not
+become an empty screen. The repair preserves deferred wrapping and written
+trailing spaces, retries failed captures, and keeps a returning history viewer
+out of live deltas until an authoritative repaint succeeds. The migration guide
+also records tmux's capture requirement and explicit recovery for window sizes
+pinned by an older broker. A CI-only minute-boundary mismatch was reproduced
+and fixed by freezing the contract test's clock; its full DTO assertion remains.
+The updated full UI suite passed **3,571 tests across 336 files**, with one
+existing skip. Workspace build/type checks and **285 terminal/adapter tests**
+across ten suites passed on the frozen repair, including real tmux-to-xterm
+pending-wrap fixtures. Independent review also checked unchanged native
+readiness, startup and handover consumers.
+
 ## Human-style review follow-up — October 5, 2026
 
 Astra independently explored the actual GUI through computer use before the

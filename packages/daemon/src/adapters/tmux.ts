@@ -1073,15 +1073,18 @@ export class TmuxAdapter {
   /**
    * Capture the currently VISIBLE pane screen (no scrollback). Returns null if
    * unavailable. The live-terminal seed (OPR.0.4.0.38) must use the visible
-   * screen, NOT `-S -<lines>` scrollback: scrollback reintroduces the row drift
+   * screen, NOT `-S -<lines>` scrollback. Optional -N preserves written trailing spaces
+   * needed to restore a pending-wrap cursor; successful empty output is distinct
+   * from a failed null capture. Scrollback reintroduces the row drift
    * the absolute-paint seed exists to eliminate.
    */
-  async capturePaneScreen(paneId: string): Promise<string | null> {
+  async capturePaneScreen(paneId: string, preserveTrailingSpaces = false): Promise<string | null> {
     const target = exactTarget(paneId, "pane");
     try {
-      const output = await this.run(["tmux", "capture-pane", "-p", "-t", target],
-        `tmux capture-pane -p -t ${shellQuote(target)}`);
-      return output || null;
+      const flags = preserveTrailingSpaces ? ["-N"] : [];
+      const output = await this.run(["tmux", "capture-pane", "-p", ...flags, "-t", target],
+        `tmux capture-pane -p${preserveTrailingSpaces ? " -N" : ""} -t ${shellQuote(target)}`);
+      return output;
     } catch {
       return null;
     }

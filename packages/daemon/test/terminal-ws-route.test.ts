@@ -17,7 +17,7 @@ beforeAll(async () => {
     c.set("tmuxAdapter" as never, {
       hasSession: async () => true,
       getPaneCursorPosition: async () => ({ x: 0, y: 0, width: 137, height: 43 }),
-      capturePaneScreen: async () => null,
+      capturePaneScreen: async () => "",
       setWindowOption: async () => ({ ok: true }),
       startPipePane: async () => ({ ok: true }),
       stopPipePane: async () => ({ ok: true }),
@@ -111,7 +111,7 @@ describe("terminal WebSocket DNS rebinding and origin protection", () => {
       c.set("tmuxAdapter" as never, {
         hasSession: async () => true,
       getPaneCursorPosition: async () => ({ x: 0, y: 0, width: 137, height: 43 }),
-      capturePaneScreen: async () => null,
+      capturePaneScreen: async () => "",
         setWindowOption: async () => ({ ok: true }),
         startPipePane: async () => ({ ok: true }),
         stopPipePane: async () => ({ ok: true }),
@@ -244,7 +244,7 @@ describe("terminal WebSocket input ordering", () => {
       c.set("tmuxAdapter" as never, {
         hasSession: async () => true,
       getPaneCursorPosition: async () => ({ x: 0, y: 0, width: 137, height: 43 }),
-      capturePaneScreen: async () => null,
+      capturePaneScreen: async () => "",
         setWindowOption: async () => ({ ok: true }),
         startPipePane: async () => ({ ok: true }),
         stopPipePane: async () => ({ ok: true }),
@@ -301,7 +301,7 @@ describe("terminal WebSocket lifecycle (session death)", () => {
       c.set("tmuxAdapter" as never, {
         hasSession: async () => sessionAlive,
         getPaneCursorPosition: async () => ({ x: 0, y: 0, width: 137, height: 43 }),
-        capturePaneScreen: async () => null,
+        capturePaneScreen: async () => "",
         setWindowOption: async () => ({ ok: true }),
         startPipePane: async () => ({ ok: true }),
         stopPipePane: async (name: string) => { stopPipePaneCalls.push(name); return { ok: true }; },
@@ -365,7 +365,7 @@ describe("terminal WebSocket broker (multi-subscriber route)", () => {
       c.set("tmuxAdapter" as never, {
         hasSession: async () => true,
       getPaneCursorPosition: async () => ({ x: 0, y: 0, width: 137, height: 43 }),
-      capturePaneScreen: async () => null,
+      capturePaneScreen: async () => "",
         setWindowOption: async () => ({ ok: true }),
         resizeWindow: async (_n: string, cols: number, rows: number) => {
           resizeWindowCalls.push({ cols, rows });
@@ -458,7 +458,7 @@ describe("terminal WebSocket detach-during-attach race", () => {
       c.set("tmuxAdapter" as never, {
         hasSession: async () => true,
       getPaneCursorPosition: async () => ({ x: 0, y: 0, width: 137, height: 43 }),
-      capturePaneScreen: async () => null,
+      capturePaneScreen: async () => "",
         setWindowOption: async () => ({ ok: true }),
         resizeWindow: async () => ({ ok: true }),
         // Slow pipe-start widens the attach window so the client close lands
@@ -523,7 +523,7 @@ describe("terminal WebSocket send-at-open buffering (initialText race)", () => {
       c.set("tmuxAdapter" as never, {
         hasSession: async () => true,
       getPaneCursorPosition: async () => ({ x: 0, y: 0, width: 137, height: 43 }),
-      capturePaneScreen: async () => null,
+      capturePaneScreen: async () => "",
         setWindowOption: async () => ({ ok: true }),
         resizeWindow: async () => ({ ok: true }),
         // Slow pipe-start widens the attach window so the client's at-open text
