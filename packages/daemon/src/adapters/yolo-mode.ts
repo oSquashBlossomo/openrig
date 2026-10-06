@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 // OPR.0.4.8.2 — OpenRig YOLO mode (opt-in, DEFAULT OFF).
 //
 // A simple deterministic setting that rides the STABLE launch-flag surface only (per the founder's
@@ -33,8 +37,9 @@ export function yoloEnabled(
 // path-dependent. NOTE the ON posture differs by harness: Claude/Codex = permission bypass; Pi =
 // full RESOURCE TRUST (--approve), which is not a permission policy. ──
 
-/** Claude launch posture flag: floor `--permission-mode acceptEdits`, or the full bypass
- *  (global YOLO, or a per-seat resolved full_bypass policy attachment). */
+/** Claude launch posture flag: explicit selection, full bypass, or the usability floor.
+ * An explicitly selected native auto default omits the floor flag so Claude keeps
+ * its own project/managed settings precedence. No native settings are written. */
 export function claudePostureFlag(
   env: NodeJS.ProcessEnv = process.env,
   resolvedPosture?: ResolvedLaunchPosture,
@@ -44,7 +49,15 @@ export function claudePostureFlag(
     if (!/^[A-Za-z][A-Za-z0-9]*$/.test(permissionMode)) throw new Error("Invalid Claude permission mode");
     return `--permission-mode ${permissionMode}`;
   }
-  return yoloEnabled(env, resolvedPosture) ? "--dangerously-skip-permissions" : "--permission-mode acceptEdits";
+  if (yoloEnabled(env, resolvedPosture)) return "--dangerously-skip-permissions";
+  const settingsPath = join(env.CLAUDE_CONFIG_DIR || join(env.HOME || homedir(), ".claude"), "settings.json");
+  try {
+    const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+    if (settings?.permissions?.defaultMode === "auto") return "";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  return "--permission-mode acceptEdits";
 }
 
 /**

@@ -60,6 +60,39 @@ function fixture(token: string | null = null) {
 }
 
 describe("Claude wrapper manual attention recovery", () => {
+  it("clears a rewritten Claude title only with its OS executable mapping", async () => {
+    const f = fixture("review-token");
+    f.tmux.getPaneCommand.mockResolvedValue("2.1.288");
+    f.listProcesses.mockResolvedValue([root, { ...child, executableName: "2.1.288",
+      executablePath: "/fixture/.local/share/claude/versions/2.1.288", command: "claude --model example --resume review-token --name worker@fixture" }]);
+    expect((await f.post()).status).toBe(200);
+    expect(f.store.getForNode(f.node.id)?.evidence.observedPid).toBe(child.pid);
+    expect(f.sendVerify).not.toHaveBeenCalled();
+  });
+
+  it.each(["2.1.288", "claude"])("clears %s labels only with exact saved Claude identity", async command => {
+    const f = fixture("review-token");
+    f.tmux.getPaneCommand.mockResolvedValue(command);
+    expect((await f.post()).status).toBe(200);
+    expect(f.store.getForNode(f.node.id)?.verdict).toBe("verified");
+    expect(f.store.getForNode(f.node.id)?.evidence.observedPid).toBe(child.pid);
+    expect(f.sendVerify).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["wrong native identity", { ...child, command: child.command.replace("review-token", "different-token") }],
+    ["missing identity", { ...child, command: child.command.replace(" --session-id review-token", "") }],
+    ["outside pane lineage", { ...child, ppid: 999 }],
+    ["background process", { ...child, pgid: 999 }],
+    ["wrong OS executable", { ...child, executableName: "python3" }],
+  ])("rejects %s even behind an explicit Claude label", async (_name, observed) => {
+    const f = fixture("review-token");
+    f.tmux.getPaneCommand.mockResolvedValue("claude");
+    f.listProcesses.mockResolvedValue([root, observed]);
+    expect((await f.post()).status).toBe(422);
+    expect(f.store.getForNode(f.node.id)?.verdict).toBe("mismatch");
+    expect(f.sendVerify).not.toHaveBeenCalled();
+  });
+
   it.each([null, "review-token", "different-token"])("batched wrapper proof retains saved-token semantics (%s)", async token => {
     const f = fixture(token);
     const batch = vi.fn(async () => new Map([[f.pane, { pid: 100, command: "bash" }]]));

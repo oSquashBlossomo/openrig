@@ -22,6 +22,22 @@ import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
 import { createFullTestDb } from "./helpers/test-app.js";
 
 describe("agent pane activity classifier", () => {
+  it.each(["›", "»"])("recognizes %s selectors before idle-looking model footers", prompt => {
+    expect(classifyPaneActivity(`${prompt} 1. Yes\n  2. No\n  GPT-6-Astra xhigh · ~/fixture`))
+      .toMatchObject({ state: "attention", reason: "selection_prompt" });
+    expect(classifyPaneActivity(`Would you like to run the following command?\n${prompt} 1. Yes\n  2. No`))
+      .toMatchObject({ state: "attention", reason: "selection_prompt" });
+  });
+  it.each(["›", "»"])("recognizes the %s empty composer without promoting active work", prompt => {
+    expect(classifyPaneActivity(`${prompt} \n  GPT-6-Astra xhigh · ~/fixture`)).toMatchObject({ state: "agent_idle", reason: "idle_prompt" });
+    const composer = `${prompt} Ask Codex to do anything\n  GPT-6-Astra xhigh · ~/fixture`;
+    expect(classifyPaneActivity(composer)).toMatchObject({ state: "agent_idle", reason: "idle_prompt" });
+    expect(classifyPaneActivity(`• Working (11s • esc to interrupt)\n${"output\n".repeat(10)}${composer}`))
+      .toMatchObject({ state: "agent_active", reason: "mid_work_pattern" });
+    expect(classifyPaneActivity(`${prompt} draft command\n  gpt-6.1 xhigh · Context [██ ]`))
+      .toMatchObject({ state: "attention", reason: "prompt_draft" });
+  });
+
   it("classifies active Working pane as agent_active", () => {
     const result = classifyPaneActivity("Working on task...\n⠋ Processing files\nesc to interrupt");
 

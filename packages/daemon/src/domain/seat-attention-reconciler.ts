@@ -79,6 +79,8 @@ export async function rebindAndVerifyPaneIdentity(input: {
     && (input.runtime === "claude-code" || input.runtime === "codex");
   const claudeWrapper = pid !== null && input.runtime === "claude-code"
     && runtimeMatch === "mismatch" && isShellForeground(normalizedCommand);
+  const claudeNativeVerification = claudeWrapper || (input.runtime === "claude-code"
+    && expectedResumeToken !== null && runtimeMatch === "match");
   if (input.runtime === "codex") {
     // A shell/Node label describes the wrapper, not the native occupant.
     runtimeMatch = "match";
@@ -87,7 +89,8 @@ export async function rebindAndVerifyPaneIdentity(input: {
       requireResume: input.requireExactResumeLineage === true });
     const currentPanes = await input.tmux.listPanes(input.sessionName).catch(() => []);
     if (native?.panePid === pid && currentPanes.length === 1 && currentPanes[0]?.id === pane.id) lineageMatch = native.process;
-  } else if (claudeWrapper) {
+  } else if (claudeNativeVerification) {
+    // Numeric and literal Claude labels need the same exact proof as wrappers.
     // A known token always requires exact proof. Only non-strict, tokenless
     // callers may use runtime occupancy; this never proves resume continuity.
     runtimeMatch = "match";
@@ -110,7 +113,7 @@ export async function rebindAndVerifyPaneIdentity(input: {
       // Missing process evidence is ambiguity, never positive identity.
     }
   }
-  const runtimeAmbiguous = input.runtime === "codex" || claudeWrapper ? lineageMatch === null : runtimeMatch === "match" && (strictNativeLineage
+  const runtimeAmbiguous = input.runtime === "codex" || claudeNativeVerification ? lineageMatch === null : runtimeMatch === "match" && (strictNativeLineage
     ? lineageMatch === null
     : input.runtime === "claude-code" && !normalizedCommand.includes("claude"));
   const verdict: SeatIdentityVerdict = {

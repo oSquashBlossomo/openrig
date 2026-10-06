@@ -17,6 +17,9 @@ describe("native resume probe", () => {
     });
     it.each([
       "  ⏵⏵ auto mode on (shift+tab to cycle)",
+      "❯ 1. Continue\n  ⏵⏵ auto mode on (shift+tab to cycle)",
+      `${screen}${"unrelated output\n".repeat(31)}`,
+
       "❯\nThe manual says auto mode on (shift+tab to cycle)",
       "❯\n  ⏵⏵ auto mode on",
     ])("still needs the actual prompt/footer shape: %s", (paneContent) => {
