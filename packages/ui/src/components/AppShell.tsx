@@ -57,6 +57,7 @@ import { useSettings } from "../hooks/useSettings.js";
 import { useActivityFeed } from "../hooks/useActivityFeed.js";
 import { useClearPlacementOnHostSwitch } from "../hooks/useHosts.js";
 import { useGlobalEvents } from "../hooks/useGlobalEvents.js";
+import { useWorkflowSse } from "../hooks/useWorkflowSse.js";
 import { cn } from "../lib/utils.js";
 import { parseSessionName } from "../lib/session-name.js";
 import { HostIndicator } from "./HostIndicator.js";
@@ -512,6 +513,11 @@ function AppShellInner({ children }: AppShellProps) {
 
   // Mount global SSE event listener.
   const proofConnection = useGlobalEvents();
+  // The workflow liveness feed (/api/workflow/sse) lives for the app lifetime
+  // too: one shared stream whose events and opens/reconnects refresh the
+  // canonical ["workflow"] reads. Connected-instance scope, as every workflow
+  // read is (remote workflow scope is unsupported).
+  useWorkflowSse();
 
   const explorerVisible = surface !== "none";
   // Slice 26.D OPT-D3 Topology mobile mount-suppression: rule lives
