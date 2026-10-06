@@ -6,6 +6,7 @@ import { createNodeWebSocket } from "@hono/node-ws";
 import WebSocket from "ws";
 import type { ClientRequest, IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
+import { browserBoundary } from "../src/middleware/browser-boundary.js";
 import { registerTerminalWs } from "../src/routes/terminal-ws.js";
 
 const token = "fictional-terminal-identity-token";
@@ -27,6 +28,8 @@ async function fixture(available = names) {
     resizeWindow: vi.fn(), setWindowOption: vi.fn(),
   };
   app.use("*", async (c, next) => { c.set("tmuxAdapter" as never, tmux as never); await next(); });
+  // Production mounts the browser boundary ahead of the terminal route; it owns Origin admission.
+  app.use("/api/*", browserBoundary({ webUiEnabled: true, bearerTokens: [token], warn: () => {} }));
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
   registerTerminalWs(app, upgradeWebSocket as never, { bearerToken: token });
   // Ephemeral loopback server; no installed daemon, tmux or native processes.
@@ -44,7 +47,7 @@ async function fixture(available = names) {
   });
   function connect(name: string, options: { token?: string; origin?: string; protocol?: string } = {}) {
     const socket = new WebSocket(`ws://127.0.0.1:${port}/api/terminal/${encodeURIComponent(name)}?protocol=${options.protocol ?? "2"}&token=${options.token ?? token}`, {
-      headers: { Origin: options.origin ?? "http://127.0.0.1" },
+      headers: { Origin: options.origin ?? `http://127.0.0.1:${port}` },
     });
     sockets.push(socket);
     const frames: Array<{ type: string; data?: string }> = [];

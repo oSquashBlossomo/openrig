@@ -94,7 +94,7 @@ function getDeps(c: { get: (key: string) => unknown }) {
  *
  * Shared helper used by both /api/up (rig_name) and /api/rigs/:rigId/up (Explorer).
  */
-async function restoreByRigId(rigId: string, rigName: string | null, deps: ReturnType<typeof getDeps>, c: { json: (data: unknown, status?: number) => Response }, freshLogicalIds?: string[], plan?: boolean) {
+async function restoreByRigId(rigId: string, rigName: string | null, deps: ReturnType<typeof getDeps>, c: { json: (data: unknown, status?: number) => Response }, freshLogicalIds?: string[], plan?: boolean, nonInterruptive?: boolean) {
   const { snapshotRepo, restoreOrchestrator } = deps;
 
   const rig = deps.rigRepo.getRig(rigId);
@@ -154,6 +154,7 @@ async function restoreByRigId(rigId: string, rigName: string | null, deps: Retur
     fsOps: { exists: (p: string) => fs.existsSync(p) },
     // OPR.0.3.4.2 — operation B opt-in seats from `rig up --existing --fresh`.
     freshLogicalIds,
+    nonInterruptive,
     snapshotSelection,
   });
   if (!result.ok) {
@@ -202,6 +203,7 @@ upRoutes.post("/", async (c) => {
   const sourceRef = typeof body["sourceRef"] === "string" ? body["sourceRef"] : "";
   const plan = body["plan"] === true;
   const autoApprove = body["autoApprove"] === true;
+  const nonInterruptive = typeof body["nonInterruptive"] === "boolean" ? body["nonInterruptive"] : undefined;
   const cwdOverride = typeof body["cwdOverride"] === "string" ? body["cwdOverride"] : undefined;
   const targetRoot = typeof body["targetRoot"] === "string" ? body["targetRoot"] : undefined;
 
@@ -231,7 +233,7 @@ upRoutes.post("/", async (c) => {
       const freshLogicalIds = Array.isArray(body["freshLogicalIds"])
         ? (body["freshLogicalIds"] as unknown[]).filter((v): v is string => typeof v === "string")
         : undefined;
-      return restoreByRigId(rigs[0]!.id, sourceRef, getDeps(c), c, freshLogicalIds, plan) as any;
+      return restoreByRigId(rigs[0]!.id, sourceRef, getDeps(c), c, freshLogicalIds, plan, nonInterruptive) as any;
     }
 
     // File-based: resolve path now
@@ -309,6 +311,7 @@ upRoutes.post("/", async (c) => {
           sourceRef: entryRef,
           sourceKind: entryKind as "rig_spec" | "rig_bundle",
           autoApprove,
+          nonInterruptive,
         });
         if (result.status === "completed") {
           eventBus.emit({ type: "bootstrap.completed", runId: result.runId, rigId: result.rigId!, sourceRef: entryRef });
@@ -320,7 +323,7 @@ upRoutes.post("/", async (c) => {
       // The SHIPPED remote single-rig leaf (POST {host}/api/up). Path-form
       // refs resolve on the REMOTE daemon's filesystem — the shipped
       // remote-up semantics, unchanged.
-      launchRemote: (source, host) => remoteUpLeaf({ sourceRef: source, autoApprove }, host as HttpHostEntry),
+      launchRemote: (source, host) => remoteUpLeaf({ sourceRef: source, autoApprove, nonInterruptive }, host as HttpHostEntry),
       loadRegistry: () => loadHostRegistry(),
     });
 
@@ -377,6 +380,7 @@ upRoutes.post("/", async (c) => {
         sourceRef: resolvedSourceRef,
         sourceKind,
         autoApprove,
+        nonInterruptive,
         cwdOverride,
         targetRoot,
         runId: run.id,
@@ -455,8 +459,8 @@ upRoutes.post("/", async (c) => {
         const detail = s.detail as { code?: string } | undefined;
         const code = detail?.code;
         if (!code) return false;
-        const isResolveSpec4xx = s.stage === "resolve_spec" && (code === "file_not_found" || code === "parse_error" || code === "validation_failed" || code === "bundle_error" || code === "cycle_error" || code === "invalid_cwd");
-        const isImportRig4xx = s.stage === "import_rig" && (code === "validation_failed" || code === "preflight_failed" || code === "cycle_error" || code === "service_boot_failed");
+        const isResolveSpec4xx = s.stage === "resolve_spec" && (code === "file_not_found" || code === "parse_error" || code === "validation_failed" || code === "bundle_error" || code === "target_conflict" || code === "cycle_error" || code === "invalid_cwd");
+        const isImportRig4xx = s.stage === "import_rig" && (code === "validation_failed" || code === "preflight_failed" || code === "cycle_error" || code === "service_boot_failed" || code === "compose_project_conflict");
         if (isResolveSpec4xx || isImportRig4xx) {
           topLevelCode ??= code;
           return true;

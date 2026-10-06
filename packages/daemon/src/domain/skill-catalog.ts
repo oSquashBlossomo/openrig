@@ -11,6 +11,7 @@ import {
   renameSync,
   rmSync,
   writeFileSync,
+  type Dirent,
 } from "node:fs";
 import nodePath from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -33,6 +34,9 @@ export interface CatalogSkill {
   digest: string;
   files: Record<string, string>;
   selectedBy: SkillSelectionSource[];
+  /** Set when the skill comes from a selected plugin. Such a skill never displaces
+   *  a same-name skill OpenRig does not own (see reconcileSkillLoadout). */
+  pluginId?: string;
 }
 
 export interface SkillLoadout {
@@ -356,6 +360,90 @@ export function resolveSkillLoadout(input: {
   };
 }
 
+/** A selected plugin's skills as loadout entries for one runtime. Neither Claude Code
+ *  nor Codex reads skills from the plugin folder OpenRig projects into a seat's working
+ *  directory, so they travel in the managed loadout instead. A plugin applies to a
+ *  runtime as the adapters decide: an explicit pluginType, otherwise the runtime's own
+ *  manifest (.claude-plugin/ or .codex-plugin/). */
+export function resolvePluginSkills(input: {
+  pluginId: string;
+  pluginRoot: string;
+  runtime: SkillRuntime;
+  pluginType?: "claude" | "codex" | "auto";
+}): { entries: CatalogSkill[]; warnings: string[] } {
+  const entries: CatalogSkill[] = [];
+  const warnings: string[] = [];
+  const pluginRoot = nodePath.resolve(input.pluginRoot);
+  const manifestDir = input.runtime === "claude-code" ? ".claude-plugin" : ".codex-plugin";
+  const pluginType = input.pluginType ?? "auto";
+  const applies = pluginType === "auto"
+    ? existsSync(nodePath.join(pluginRoot, manifestDir, "plugin.json"))
+    : pluginType === (input.runtime === "claude-code" ? "claude" : "codex");
+  if (!applies) return { entries, warnings };
+
+  let manifest: Record<string, unknown> = {};
+  const manifestPath = [manifestDir, ".claude-plugin", ".codex-plugin"]
+    .map((dir) => nodePath.join(pluginRoot, dir, "plugin.json"))
+    .find((path) => existsSync(path));
+  if (manifestPath) {
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(manifestPath, "utf8"));
+      if (isRecord(parsed)) manifest = parsed;
+    } catch { /* the plugin's own projection reports an unreadable manifest */ }
+  }
+  const skillsDir = nodePath.resolve(pluginRoot, typeof manifest["skills"] === "string" ? manifest["skills"] : "skills");
+  if (!isWithin(pluginRoot, skillsDir) || !existsSync(skillsDir)) return { entries, warnings };
+  const revision = `plugin:${input.pluginId}${typeof manifest["version"] === "string" ? `@${manifest["version"]}` : ""}`;
+
+  let listing: Dirent[];
+  try {
+    listing = readdirSync(skillsDir, { withFileTypes: true });
+  } catch (err) {
+    warnings.push(`plugin_skill_skipped: plugin ${input.pluginId} skills at ${skillsDir}: ${(err as Error).message}`);
+    return { entries, warnings };
+  }
+  for (const entry of listing.sort((a, b) => compareBytes(a.name, b.name))) {
+    if (!entry.isDirectory()) continue;
+    const sourceDir = nodePath.join(skillsDir, entry.name);
+    const skillFile = nodePath.join(sourceDir, "SKILL.md");
+    if (!existsSync(skillFile)) continue;
+    try {
+      const parsed = parseSkillFrontmatter(readFileSync(skillFile, "utf8"));
+      if (!parsed.ok) throw new Error(parsed.reason);
+      const id = parsed.frontmatter.name;
+      if (!SAFE_ID.test(id)) throw new Error(`frontmatter name '${id}' is not a bounded skill identity`);
+      if (entries.some((skill) => skill.id === id)) throw new Error(`the plugin has another skill named '${id}'`);
+      const tree = inspectSkillDirectory(sourceDir);
+      entries.push({
+        id,
+        sourceDir,
+        sourceRoot: pluginRoot,
+        revision,
+        digest: tree.digest,
+        files: tree.files,
+        selectedBy: ["topology"],
+        pluginId: input.pluginId,
+      });
+    } catch (err) {
+      warnings.push(`plugin_skill_skipped: plugin ${input.pluginId} skill at ${sourceDir}: ${(err as Error).message}`);
+    }
+  }
+  entries.sort((a, b) => compareBytes(a.id, b.id));
+  return { entries, warnings };
+}
+
+const KEPT_DETAIL = "kept: ";
+
+/** The plugin an owned record came from, from the revision resolvePluginSkills wrote. */
+function pluginIdOf(revision: string): string | undefined {
+  return /^plugin:([^@]+)/.exec(revision)?.[1];
+}
+
+/** A plugin skill left out because a skill OpenRig does not own already has its name. */
+export function isKeptPluginSkill(receipt: SkillProjectionReceipt): boolean {
+  return receipt.status === "shadowed" && receipt.detail.startsWith(KEPT_DETAIL);
+}
+
 function targetRootFor(runtime: SkillRuntime, cwd: string): string {
   return nodePath.join(cwd, runtime === "claude-code" ? ".claude" : ".agents", "skills");
 }
@@ -637,7 +725,7 @@ function classifySkillProjectionTarget(
     const actual = inspectSkillDirectory(target);
     if (actual.digest === skill.digest) {
       return prior
-        ? { status: "current", detail: "owned target matches catalog bytes" }
+        ? { status: "current", detail: "owned target matches selected source bytes" }
         : { status: "shadowed", detail: "equal unowned target already supplies these bytes" };
     }
     if (prior && actual.digest === prior.digest) {
@@ -646,8 +734,8 @@ function classifySkillProjectionTarget(
     return {
       status: "conflicting",
       detail: prior
-        ? "target differs from both the catalog and OpenRig's last owned projection; refusing to overwrite an operator edit"
-        : "unowned target differs from the selected catalog skill; move it aside or reconcile its bytes explicitly",
+        ? "target differs from both the selected source and OpenRig's last owned projection; refusing to overwrite an operator edit"
+        : "unowned target differs from the selected skill source; move it aside or reconcile its bytes explicitly",
     };
   } catch (err) {
     return { status: "conflicting", detail: (err as Error).message };
@@ -678,6 +766,39 @@ export function reconcileSkillLoadout(input: {
   }
   const owned = new Map(manifest.skills.map((skill) => [skill.id, skill]));
 
+  // A plugin's skill never displaces one OpenRig does not own: that target keeps its
+  // bytes, and the selection is not recorded, so no seat sharing this folder later
+  // depends on an ownership record that was never written.
+  // Names that differ only in ASCII letter case count as the same name, because Git may
+  // compare them that way (core.ignorecase) and an ignore entry would then hide the
+  // user's folder.
+  const keptReceipts: SkillProjectionReceipt[] = [];
+  const foldCase = (name: string) => name.replace(/[A-Z]/g, (c) => c.toLowerCase());
+  let existingNames: string[] = [];
+  try { existingNames = readdirSync(targetRoot); } catch { /* no skill folder yet */ }
+  const loadoutEntries = input.loadout.entries.filter((entry) => {
+    if (!entry.pluginId || owned.has(entry.id)) return true;
+    const existing = existingNames.includes(entry.id)
+      ? entry.id
+      : existingNames.find((name) => foldCase(name) === foldCase(entry.id));
+    if (existing === undefined) return true;
+    const target = nodePath.join(targetRoot, existing);
+    const observed = classifySkillProjectionTarget(entry, undefined, target);
+    keptReceipts.push({
+      id: entry.id,
+      selectedBy: entry.selectedBy,
+      sourceRoot: entry.sourceRoot,
+      revision: entry.revision,
+      digest: entry.digest,
+      target,
+      status: "shadowed",
+      detail: observed.status === "shadowed"
+        ? observed.detail
+        : `${KEPT_DETAIL}a skill with this name that OpenRig does not own is already here; plugin ${entry.pluginId}'s copy was not projected`,
+    });
+    return false;
+  });
+
   if (
     input.loadout.catalogRevision === null
     && input.loadout.entries.length === 0
@@ -706,7 +827,7 @@ export function reconcileSkillLoadout(input: {
   for (const owner of Object.keys(manifest.topologySelections).sort(compareBytes)) {
     topologySelections[owner] = [...manifest.topologySelections[owner]!].sort(compareBytes);
   }
-  const currentTopology = input.loadout.entries
+  const currentTopology = loadoutEntries
     .filter((entry) => entry.selectedBy.includes("topology"))
     .map((entry) => entry.id)
     .sort(compareBytes);
@@ -717,7 +838,7 @@ export function reconcileSkillLoadout(input: {
     canonicalTopologySelections[owner] = topologySelections[owner]!;
   }
   const retainedTopology = new Set(Object.values(topologySelections).flat());
-  const effectiveEntries = [...input.loadout.entries];
+  const effectiveEntries = [...loadoutEntries];
   for (const id of [...retainedTopology].sort(compareBytes)) {
     const current = effectiveEntries.find((entry) => entry.id === id);
     if (current) {
@@ -734,6 +855,7 @@ export function reconcileSkillLoadout(input: {
       });
       continue;
     }
+    const pluginId = pluginIdOf(prior.revision);
     effectiveEntries.push({
       id: prior.id,
       sourceDir: prior.sourceDir,
@@ -742,6 +864,7 @@ export function reconcileSkillLoadout(input: {
       digest: prior.digest,
       files: prior.files,
       selectedBy: ["topology"],
+      ...(pluginId ? { pluginId } : {}),
     });
   }
   const projectSelection = (input.loadout.projectSelectionDeclared
@@ -775,10 +898,17 @@ export function reconcileSkillLoadout(input: {
   }
   effectiveEntries.sort((a, b) => compareBytes(a.id, b.id));
 
+  // An edit to OpenRig's own copy of a plugin skill is kept too, under the same record.
+  const keptOwned = new Set<string>();
   for (const skill of effectiveEntries) {
     const target = nodePath.join(targetRoot, skill.id);
     const prior = owned.get(skill.id);
     let { status, detail } = classifySkillProjectionTarget(skill, prior, target);
+    if (status === "conflicting" && skill.pluginId && prior) {
+      keptOwned.add(skill.id);
+      status = "shadowed";
+      detail = `${KEPT_DETAIL}this copy was changed after OpenRig projected it; plugin ${skill.pluginId}'s copy was not projected`;
+    }
     receipts.push({
       id: skill.id,
       selectedBy: skill.selectedBy,
@@ -794,36 +924,56 @@ export function reconcileSkillLoadout(input: {
         const source = inspectSkillDirectory(skill.sourceDir);
         if (source.digest !== skill.digest) {
           status = "conflicting";
-          detail = "catalog source bytes no longer match the resolved loadout; resolve a fresh loadout before applying";
+          detail = "selected source bytes no longer match the resolved loadout; resolve a fresh loadout before applying";
           receipts[receipts.length - 1]!.status = status;
           receipts[receipts.length - 1]!.detail = detail;
         }
       } catch (err) {
         status = "conflicting";
-        detail = `catalog source cannot be projected safely: ${(err as Error).message}`;
+        detail = `selected source cannot be projected safely: ${(err as Error).message}`;
         receipts[receipts.length - 1]!.status = status;
         receipts[receipts.length - 1]!.detail = detail;
       }
     }
     if (status === "conflicting") errors.push({ code: "target_conflict", message: `${skill.id}: ${detail}`, path: target });
   }
+  receipts.push(...keptReceipts);
 
   const selectedIds = new Set(effectiveEntries.map((entry) => entry.id));
   const safeRemovals: OwnedSkill[] = [];
   for (const prior of manifest.skills) {
     if (selectedIds.has(prior.id)) continue;
     if (!pathEntryExists(prior.target)) continue;
+    let failure: SkillCatalogFailure | null = null;
     try {
-      const actual = inspectSkillDirectory(prior.target);
-      if (actual.digest === prior.digest) safeRemovals.push(prior);
-      else errors.push({
+      if (inspectSkillDirectory(prior.target).digest !== prior.digest) failure = {
         code: "stale_target_modified",
         message: `${prior.id}: deselected owned target was modified after projection; refusing to remove it`,
         path: prior.target,
-      });
+      };
     } catch (err) {
-      errors.push({ code: "stale_target_unreadable", message: `${prior.id}: ${(err as Error).message}`, path: prior.target });
+      failure = { code: "stale_target_unreadable", message: `${prior.id}: ${(err as Error).message}`, path: prior.target };
     }
+    if (!failure) {
+      safeRemovals.push(prior);
+      continue;
+    }
+    // A deselected plugin copy that was changed stays where it is and stops being OpenRig's.
+    const pluginId = pluginIdOf(prior.revision);
+    if (!pluginId) {
+      errors.push(failure);
+      continue;
+    }
+    receipts.push({
+      id: prior.id,
+      selectedBy: prior.selectedBy,
+      sourceRoot: prior.sourceRoot,
+      revision: prior.revision,
+      digest: prior.digest,
+      target: prior.target,
+      status: "shadowed",
+      detail: `${KEPT_DETAIL}plugin ${pluginId} is no longer selected and this copy differs from what OpenRig projected; left in place and no longer managed by OpenRig`,
+    });
   }
 
   if (errors.length > 0 || !input.apply) {
@@ -832,8 +982,8 @@ export function reconcileSkillLoadout(input: {
 
   const changed = receipts.filter((receipt) => receipt.status === "missing" || receipt.status === "stale");
   const nextOwned = effectiveEntries
-    .filter((skill) => receipts.find((receipt) => receipt.id === skill.id)?.status !== "shadowed")
-    .map((skill): OwnedSkill => ({
+    .filter((skill) => keptOwned.has(skill.id) || receipts.find((receipt) => receipt.id === skill.id)?.status !== "shadowed")
+    .map((skill): OwnedSkill => keptOwned.has(skill.id) ? owned.get(skill.id)! : ({
       id: skill.id,
       target: nodePath.join(targetRoot, skill.id),
       sourceDir: skill.sourceDir,
@@ -898,7 +1048,7 @@ export function reconcileSkillLoadout(input: {
       renameSync(nodePath.join(staged, receipt.id), receipt.target);
       rollback.push({ target: receipt.target, backup });
       receipt.status = "current";
-      receipt.detail = "projected exact catalog bytes";
+      receipt.detail = "projected exact selected source bytes";
     }
     for (const prior of safeRemovals) {
       const backup = nodePath.join(backups, `removed-${prior.id}`);
