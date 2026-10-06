@@ -34,7 +34,7 @@ export function RigStatusControl({ rigId, rigName }: { rigId: string; rigName: s
         data-testid={`rig-status-control-${rigId}`}
         data-status="unavailable"
         role="status"
-        className="inline-flex items-center gap-2 border border-stone-300 bg-white/60 px-3 py-1.5 font-mono text-[9px] text-secondary"
+        className="inline-flex items-center gap-2 border border-outline-variant bg-surface-lowest px-3 py-1.5 font-mono text-[9px] text-on-surface"
       >
         Rig status unavailable ({error instanceof Error ? error.message : String(error)})
         <button
@@ -42,7 +42,7 @@ export function RigStatusControl({ rigId, rigName }: { rigId: string; rigName: s
           data-testid={`rig-status-retry-${rigId}`}
           onClick={() => void refetch()}
           disabled={isFetching}
-          className="border border-stone-400 px-1.5 py-0.5 uppercase tracking-wide hover:bg-white disabled:opacity-50"
+          className="border border-outline px-1.5 py-0.5 uppercase tracking-wide text-on-surface hover:bg-surface-low disabled:opacity-50"
         >
           {isFetching ? "Retrying…" : "Retry"}
         </button>
@@ -54,7 +54,7 @@ export function RigStatusControl({ rigId, rigName }: { rigId: string; rigName: s
     return (
       <div
         data-testid={`rig-status-control-${rigId}`}
-        className="inline-flex items-center border border-stone-300 bg-white/60 px-3 py-1.5 font-mono text-[9px] text-secondary"
+        className="inline-flex items-center border border-outline-variant bg-surface-lowest px-3 py-1.5 font-mono text-[9px] text-on-surface-variant"
       >
         Loading rig status…
       </div>
