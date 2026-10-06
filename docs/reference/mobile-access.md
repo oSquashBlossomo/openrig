@@ -51,6 +51,11 @@ sequence, in bounded pages. A fresh connection receives a sequence checkpoint
 without replaying historical workflow outcomes into CLI followers. These are
 read-only recovery steps; they do not resubmit workflow operations.
 
+If a saved sequence is ahead of the current log after a database restore or
+replacement, the stream resets it to the current checkpoint so new events can
+arrive. CLI followers also reread canonical state after opening a replacement
+stream, recovering completion, failure or abort that happened while disconnected.
+
 Event replay cannot recreate deleted history or recover events from a replaced
 database. The canonical readback remains necessary. If an operation's response
 was interrupted, inspect its current state and receipt before retrying it.

@@ -65,6 +65,34 @@ describe("workflow SSE reconnect replay", () => {
       expect(await readEvents(response, 1)).toEqual([missed]);
       expect(bus.subscriberCount).toBe(0);
     });
+
+    it(`${endpoint} delivers live events when the saved cursor is ahead of the current log`, async () => {
+      completed("restored-history");
+      const response = await app.request(`/api/workflow/${endpoint}`, { headers: { "Last-Event-ID": String(bus.currentSequence() + 1000) } });
+      bus.emit({ type: "rig.created", rigId: "filtered-live" });
+      const live = completed("after-restore");
+      expect(await readEvents(response, 1)).toEqual([live]);
+      await vi.waitFor(() => expect(bus.subscriberCount).toBe(0));
+    });
+
+    for (const hasHistory of [false, true]) {
+      it(`${endpoint} resets an ahead-of-log cursor to ${hasHistory ? "current history" : "empty-log zero"} for the next reconnect`, async () => {
+        if (hasHistory) completed("restored-history");
+        const currentSeq = bus.currentSequence();
+        const response = await app.request(`/api/workflow/${endpoint}`, { headers: { "Last-Event-ID": String(currentSeq + 1000) } });
+        const reader = response.body!.getReader();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const first = await Promise.race([reader.read(), new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), 500); })]);
+          expect(first && new TextDecoder().decode(first.value)).toBe(`id: ${currentSeq}\n\n`);
+        } finally { clearTimeout(timer); await reader.cancel(); }
+        await vi.waitFor(() => expect(bus.subscriberCount).toBe(0));
+        const missed = completed("missed-after-reset");
+        const reconnected = await app.request(`/api/workflow/${endpoint}`, { headers: { "Last-Event-ID": String(currentSeq) } });
+        expect(await readEvents(reconnected, 1)).toEqual([missed]);
+        await vi.waitFor(() => expect(bus.subscriberCount).toBe(0));
+      });
+    }
   }
 
   it("a fresh stream checkpoints current history without replaying historical workflow payloads", async () => {

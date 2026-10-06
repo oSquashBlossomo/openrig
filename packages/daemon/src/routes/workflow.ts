@@ -298,8 +298,10 @@ export function workflowRoutes(): Hono {
     const eventBus = getEventBus(c);
     const savedId = c.req.header("Last-Event-ID");
     const parsedSeq = parseInt(savedId ?? "0", 10);
-    let cursor = savedId === undefined ? eventBus.currentSequence()
-      : Number.isSafeInteger(parsedSeq) && parsedSeq >= 0 ? parsedSeq : 0;
+    const currentSeq = eventBus.currentSequence();
+    const validCursor = Number.isSafeInteger(parsedSeq) && parsedSeq >= 0;
+    const needsCheckpoint = savedId === undefined || (validCursor && parsedSeq > currentSeq);
+    let cursor = needsCheckpoint ? currentSeq : validCursor ? parsedSeq : 0;
     const replayPageSize = 250;
     return streamSSE(c, async (stream) => {
       const isWorkflowEvent = (event: PersistedEvent) => !(
@@ -331,9 +333,10 @@ export function workflowRoutes(): Hono {
       try {
         // Fresh followers keep live-only payload semantics (the CLI must not
         // mistake an old workflow failure for its current outcome). An ID-only
-        // checkpoint gives EventSource a resume cursor, including empty-log 0,
-        // without dispatching a message or invalidating the current snapshot.
-        if (savedId === undefined) await stream.write(`id: ${cursor}\n\n`);
+        // checkpoint gives EventSource a resume cursor, including empty-log 0.
+        // Reset ahead-of-log cursors after a database restore/replacement too,
+        // so they cannot suppress new events until this log catches up.
+        if (needsCheckpoint) await stream.write(`id: ${cursor}\n\n`);
         // Invalid explicit cursors start at zero, like /api/events.
         // Page the global log: workflow events deliberately have no rig scope.
         while (!stream.aborted) {

@@ -54,6 +54,7 @@ interface HarnessOpts {
 function makeHarness(opts: HarnessOpts) {
   const outLines: string[] = [];
   const errLines: string[] = [];
+  const streamSignals: AbortSignal[] = [];
   let traceCall = 0;
   let streamCall = 0;
   const client = {
@@ -68,14 +69,15 @@ function makeHarness(opts: HarnessOpts) {
     out: (line) => outLines.push(line),
     err: (line) => errLines.push(line),
     sleep: async () => {},
-    fetchImpl: (async () => {
+    fetchImpl: (async (_url, init) => {
+      if (init?.signal) streamSignals.push(init.signal);
       const body = opts.streams[Math.min(streamCall, opts.streams.length - 1)];
       streamCall += 1;
       if (body === null) throw new Error("connect refused");
       return { ok: true, body } as unknown as Response;
     }) as unknown as typeof fetch,
   };
-  return { client, io, outLines, errLines };
+  return { client, io, outLines, errLines, streamSignals };
 }
 
 const ACTIVE_SNAPSHOT = {
@@ -104,6 +106,7 @@ describe("workflow-follow (WF3 FR-1)", () => {
   it("outcome exit codes: completed=0, failed=3, distinct from 1/2", () => {
     expect(outcomeExitCode("completed")).toBe(0);
     expect(outcomeExitCode("failed")).toBe(EXIT_WORKFLOW_FAILED);
+    expect(outcomeExitCode("aborted")).toBe(EXIT_WORKFLOW_FAILED);
     expect(EXIT_WORKFLOW_FAILED).toBe(3);
   });
 
@@ -171,20 +174,115 @@ describe("workflow-follow (WF3 FR-1)", () => {
     expect(h.outLines.join("\n")).not.toContain("OTHER");
   });
 
-  it("attach to an already-terminal instance resolves immediately from the snapshot", async () => {
+  it.each(["failed", "aborted"])("attach to an already-%s instance resolves immediately from the snapshot", async (status) => {
     const h = makeHarness({
       traceResponses: [
-        { status: 200, data: { instance: { instanceId: "WF1", status: "failed" }, trail: [] } },
+        { status: 200, data: { instance: { instanceId: "WF1", status }, trail: [] } },
       ],
       streams: [droppedStream()],
     });
+    h.io.sleep = async () => { throw new Error("already-terminal snapshot reached polling"); };
     const code = await followInstance(h.client, "WF1", { json: false, io: h.io });
     expect(code).toBe(EXIT_WORKFLOW_FAILED);
+  });
+
+  it.each([
+    { status: "completed", code: 0, json: true },
+    { status: "failed", code: EXIT_WORKFLOW_FAILED, json: false },
+    { status: "aborted", code: EXIT_WORKFLOW_FAILED, json: true },
+  ])("reconnect reads back an offline $status outcome while the new stream stays healthy", async ({ status, code, json }) => {
+    let idleController: ReadableStreamDefaultController<Uint8Array>;
+    const idleStream = new ReadableStream<Uint8Array>({ start(controller) { idleController = controller; } });
+    const newRow = { stepId: "build", closureReason: "done", actorSession: "b@r", priorQitemId: "Q2" };
+    const h = makeHarness({
+      traceResponses: [ACTIVE_SNAPSHOT, {
+        status: 200,
+        data: { instance: { instanceId: "WF1", status }, trail: [...ACTIVE_SNAPSHOT.data.trail, newRow] },
+      }],
+      streams: [droppedStream(), idleStream],
+    });
+    h.io.sleep = async () => { throw new Error("unexpected poll fallback"); };
+    const get = vi.spyOn(h.client, "get");
+    const following = followInstance(h.client, "WF1", { json, io: h.io, maxReconnects: 1 });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const result = await Promise.race([following, new Promise<string>(resolve => { timer = setTimeout(() => resolve("still waiting"), 500); })]);
+      expect(result).toBe(code);
+      expect(get).toHaveBeenCalledTimes(2);
+      expect(h.streamSignals).toHaveLength(2);
+      expect(h.streamSignals.every(signal => signal.aborted)).toBe(true);
+      expect(h.errLines.join("\n")).not.toContain("poll fallback");
+      if (json) {
+        const rows = h.outLines.map(line => JSON.parse(line));
+        expect(rows.filter(row => row.type === "snapshot")).toHaveLength(1);
+        expect(rows.filter(row => row.type === "trail")).toEqual([{ type: "trail", row: newRow }]);
+        expect(rows.at(-1)).toEqual({ type: "terminal", status });
+      } else {
+        expect(h.outLines.filter(line => line.includes("plan") && line.includes("handoff"))).toHaveLength(1);
+        expect(h.outLines.filter(line => line.includes("build") && line.includes("done"))).toHaveLength(1);
+        expect(h.outLines.at(-1)).toContain(`workflow ${status}`);
+      }
+    } finally {
+      clearTimeout(timer);
+      idleController!.close();
+      await following.catch(() => {});
+    }
+  });
+
+  it("retry readback renders unseen closures once before consuming buffered live events", async () => {
+    const row = { stepId: "build", closureReason: "done", actorSession: "b@r", priorQitemId: "Q2" };
+    const h = makeHarness({
+      traceResponses: [ACTIVE_SNAPSHOT, {
+        ...ACTIVE_SNAPSHOT,
+        data: { ...ACTIVE_SNAPSHOT.data, trail: [...ACTIVE_SNAPSHOT.data.trail, row] },
+      }],
+      streams: [droppedStream(), sseStream([
+        { type: "workflow.step_closed", instanceId: "WF1", ...row },
+        { type: "workflow.completed", instanceId: "WF1" },
+      ])],
+    });
+    const order: string[] = [];
+    const get = h.client.get.bind(h.client);
+    vi.spyOn(h.client, "get").mockImplementation(async (...args) => { order.push("snapshot"); return get(...args); });
+    const open = h.io.fetchImpl;
+    h.io.fetchImpl = async (...args) => { order.push("stream"); return open(...args); };
+    const code = await followInstance(h.client, "WF1", { json: true, io: h.io, maxReconnects: 1 });
+    expect(code).toBe(0);
+    expect(order).toEqual(["stream", "snapshot", "stream", "snapshot"]);
+    expect(h.outLines.map(line => JSON.parse(line))).toEqual([
+      { type: "snapshot", ...ACTIVE_SNAPSHOT.data },
+      { type: "trail", row },
+      { type: "workflow.completed", instanceId: "WF1" },
+    ]);
+  });
+
+  it.each([404, 503])("retry trace %s preserves its transport exit code and aborts the new stream", async (status) => {
+    const h = makeHarness({
+      traceResponses: [ACTIVE_SNAPSHOT, { status, data: { error: "trace unavailable" } }],
+      streams: [droppedStream(), sseStream([{ type: "workflow.completed", instanceId: "WF1" }])],
+    });
+    const code = await followInstance(h.client, "WF1", { json: true, io: h.io, maxReconnects: 1 });
+    expect(code).toBe(status >= 500 ? 2 : 1);
+    expect(JSON.parse(h.outLines.at(-1)!)).toEqual({ error: "trace unavailable" });
+    expect(h.streamSignals).toHaveLength(2);
+    expect(h.streamSignals.every(signal => signal.aborted)).toBe(true);
+  });
+
+  it("poll fallback resolves a canonical aborted outcome with the live failure exit code", async () => {
+    const h = makeHarness({
+      traceResponses: [ACTIVE_SNAPSHOT, { status: 200, data: { instance: { instanceId: "WF1", status: "aborted" }, trail: [] } }],
+      streams: [droppedStream()],
+    });
+    let polls = 0;
+    h.io.sleep = async () => { if (++polls > 1) throw new Error("polled past terminal abort"); };
+    expect(await followInstance(h.client, "WF1", { json: true, io: h.io, maxReconnects: 0 })).toBe(EXIT_WORKFLOW_FAILED);
+    expect(JSON.parse(h.outLines.at(-1)!)).toEqual({ type: "terminal", status: "aborted" });
   });
 
   it("drop → announced reconnect; exhausted reconnects → announced poll fallback that resolves the outcome", async () => {
     const h = makeHarness({
       traceResponses: [
+        ACTIVE_SNAPSHOT,
         ACTIVE_SNAPSHOT,
         {
           status: 200,
