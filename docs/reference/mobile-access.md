@@ -64,6 +64,24 @@ Event replay cannot recreate deleted history or recover events from a replaced
 database. The canonical readback remains necessary. If an operation's response
 was interrupted, inspect its current state and receipt before retrying it.
 
+## Topology graph on phones and narrow iPads
+
+Below the 1024px layout breakpoint (phones in either orientation, iPad portrait
+and narrow windows) the topology **Graph** tab is a touch graph rather than the
+desktop canvas. Graph, 3D and Table remain separate tabs at every width.
+
+- Rigs, pods and seats open progressively. Dense fleets start as rig tiles with
+  status counts; expand a rig or pod with its chevron or from the details panel.
+  Unreadable, still-loading and not-drawn rigs keep their own tiles.
+- Drag to pan and pinch to zoom inside the bounded canvas. Use Fit, + and − for
+  the same actions. Scroll the page from outside the canvas.
+- A tap selects a rig, pod or seat; it never navigates. Its details panel shows
+  status, exact identity and relationships, with explicit Open, Center and Clear
+  actions. Seat selection is kept in the URL and is shared with 3D, so it survives
+  rotation and Back.
+
+Wider iPad landscape windows keep the desktop graph and Explorer layout.
+
 ## Device verification
 
 Record the actual iPad model, OS, Safari version and effective viewport. An
@@ -81,6 +99,9 @@ Before considering a mobile rollout verified, exercise these on both devices:
   navigate away and back with a draft. Confirm the intended file and text.
 - Tap a spatial seat, orbit with one finger, and pinch/pan with two. Gestures
   and cancellation must not accidentally select a different seat. Check List.
+- In the 2D Graph, pan, pinch and tap a rig, pod and seat; rotate with a seat
+  selected. A pan ending on a node must not open it, and the page must still
+  scroll outside the canvas.
 - Inspect long workflow names, identifiers and history in narrow windows.
 - On an authorized isolated terminal, check focus, text input, native geometry,
   horizontal panning and history. Reconnection must not resend one-shot text.

@@ -5,9 +5,9 @@
 //     Topology). Talk slots are V2-deferred per universal-shell.md L144;
 //     negative-assertion that "talk" / advisor / operator do NOT appear
 //     in the mobile bottom nav.
-//   - Topology graph view-mode degrades to table at <lg viewport per
-//     universal-shell.md L143; tab nav still shows graph as the user's
-//     selected mode (so resize-to-wide reactivates the graph).
+//   - Topology graph view-mode at <lg viewport mounts the touch-first phone
+//     graph (owner requirement, PR14 — supersedes universal-shell.md L143's
+//     table degradation); >= lg keeps the desktop canvas.
 //   - useShellViewport hook reflects window.innerWidth changes.
 //   - Bottom nav is hidden at >= lg viewport (lg:hidden class).
 
@@ -145,17 +145,13 @@ describe("MobileBottomNav P5-9 — universal-shell.md L135 + L144", () => {
   });
 });
 
-describe("Topology graph degradation P5-9 (universal-shell.md L143)", () => {
-  it("at <lg viewport, /topology graph view-mode renders the table view + degraded hint", async () => {
+describe("Topology graph at narrow vs wide viewports", () => {
+  it("at <lg viewport, /topology graph view-mode mounts the phone graph (no table fallback)", async () => {
     const { container, findByTestId } = await renderAt("/topology", 375);
-    // The table view-mode is what actually mounts (graph degraded).
-    expect(await findByTestId("topology-mobile-graph-degraded")).toBeTruthy();
-    // graph placeholder is NOT rendered at mobile.
-    // V1 polish slice Phase 5.2: host graph placeholder REPLACED with
-    // HostMultiRigGraph; the placeholder testid no longer exists at any
-    // viewport, so this negative assertion remains structurally correct
-    // (mobile path renders table view, not the multi-rig canvas).
-    expect(container.querySelector("[data-testid='topology-host-graph-placeholder']")).toBeNull();
+    // The phone graph owns the Graph tab; an empty fleet reads as such.
+    expect(await findByTestId("phone-topology-graph")).toBeTruthy();
+    expect(await findByTestId("phone-graph-empty")).toBeTruthy();
+    expect(container.querySelector("[data-testid='topology-mobile-graph-degraded']")).toBeNull();
     expect(container.querySelector("[data-testid='host-multi-rig-graph']")).toBeNull();
   });
 
@@ -166,8 +162,7 @@ describe("Topology graph degradation P5-9 (universal-shell.md L143)", () => {
     // placeholder card at host scope graph view-mode. At >= lg viewport
     // either the canvas mounts (with rigs) or the empty-state mounts
     // (mock returns []). Either is acceptable proof that the desktop
-    // path is NOT degraded to the table; <lg path would have rendered
-    // the table degradation hint.
+    // path mounts the desktop canvas, not the phone graph.
     // Wait for the read to settle: a pending inventory is "Reading rigs…",
     // not an empty fleet, so the callback must actually retry until mounted.
     const desktopMount = await waitFor(() => {
@@ -178,6 +173,6 @@ describe("Topology graph degradation P5-9 (universal-shell.md L143)", () => {
       return el;
     });
     expect(desktopMount).toBeTruthy();
-    expect(container.querySelector("[data-testid='topology-mobile-graph-degraded']")).toBeNull();
+    expect(container.querySelector("[data-testid='phone-topology-graph']")).toBeNull();
   });
 });

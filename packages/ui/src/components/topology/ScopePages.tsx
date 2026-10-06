@@ -43,11 +43,12 @@ import { LOCAL_HOST_ID } from "../../lib/host-param.js";
 import { useSpecLibrary, useLibraryReview, type LibraryRigReview } from "../../hooks/useSpecLibrary.js";
 import { LiveNodeDetails } from "../LiveNodeDetails.js";
 import { useTopologyOverlay } from "./topology-overlay-context.js";
-// V1 attempt-3 Phase 5 P5-9: graph view-mode degrades to table on
-// narrow viewports per universal-shell.md L143 ("Topology graph view
-// degrades to table view by default on mobile (graph is too dense for
-// phone screens)").
+// Below the 1024px shell breakpoint the Graph tab mounts the touch-first
+// phone graph (PhoneTopologyGraph) instead of the desktop canvas. This
+// supersedes universal-shell.md L143's "graph degrades to table on mobile":
+// Graph and Table stay separate, explicit tabs at every width.
 import { useShellViewport } from "../../hooks/useShellViewport.js";
+import { PhoneTopologyGraph } from "./PhoneTopologyGraph.js";
 import { useNodeInventory } from "../../hooks/useNodeInventory.js";
 import { computeActivityRollup, formatRollupLabel } from "../../lib/activity-visuals.js";
 import type { SpatialScope } from "../../lib/spatial-topology.js";
@@ -101,6 +102,17 @@ function GraphFrame({ children }: { children: React.ReactNode }) {
       style={{ marginLeft: "var(--header-anchor-offset, 0px)" }}
     >
       {children}
+    </div>
+  );
+}
+
+/** Narrow-layout graph frame: the phone graph sizes its own bounded canvas,
+ *  so this frame never stretches or shrinks with the page (shrink-0) and the
+ *  page keeps scrolling around it. */
+function PhoneGraphFrame({ children }: { children: React.ReactNode }) {
+  return (
+    <div data-testid="topology-phone-graph-frame" className="shrink-0">
+      <ErrorBoundary label="Graph view">{children}</ErrorBoundary>
     </div>
   );
 }
@@ -239,10 +251,6 @@ function HostScopeContent({ nav }: { nav: TopologyNavigation }) {
   const isRemote = selectedHost !== LOCAL_HOST_ID;
   const ownName = hostsData?.ownName && hostsData.ownName.trim() !== "" ? hostsData.ownName : "localhost";
 
-  // P5-9 mobile graph degradation: at <lg viewport, treat graph view-mode
-  // as table per universal-shell.md L143. The tab nav still shows graph
-  // selected (operator may resize to wide and the graph reactivates).
-  const effectiveActive = !isWideLayout && active === "graph" ? "table" : active;
   const liveCap = useTerminalCap();
 
   const remoteUnreachable = isRemote && !!rigsError;
@@ -315,29 +323,27 @@ function HostScopeContent({ nav }: { nav: TopologyNavigation }) {
           Pulling {selectedHost}&apos;s workspace over the network… showing the previous view until it arrives.
         </div>
       ) : null}
-      {!remoteUnreachable && effectiveActive === "graph" ? (
-        <GraphFrame>
-          <HostMultiRigGraph />
-        </GraphFrame>
+      {!remoteUnreachable && active === "graph" ? (
+        isWideLayout ? (
+          <GraphFrame>
+            <HostMultiRigGraph />
+          </GraphFrame>
+        ) : (
+          <PhoneGraphFrame>
+            <PhoneTopologyGraph nav={nav} />
+          </PhoneGraphFrame>
+        )
       ) : null}
-      {!remoteUnreachable && effectiveActive === "spatial" ? <SpatialPanel scope={HOST_SPATIAL_SCOPE} /> : null}
-      {effectiveActive === "table" ? (
+      {!remoteUnreachable && active === "spatial" ? <SpatialPanel scope={HOST_SPATIAL_SCOPE} /> : null}
+      {active === "table" ? (
         <div className="px-6 pb-6">
-          {!isWideLayout && active === "graph" ? (
-            <p
-              data-testid="topology-mobile-graph-degraded"
-              className="font-mono text-[9px] text-on-surface-variant italic mb-2"
-            >
-              Graph view degrades to table on narrow viewports.
-            </p>
-          ) : null}
           {/* OPR.0.4.1.13: contain a table render-throw so it can't white-screen the page. */}
           <ErrorBoundary label="Table view">
             <TopologyTableView />
           </ErrorBoundary>
         </div>
       ) : null}
-      {effectiveActive === "terminal" ? <TopologyTerminalView scope="host" /> : null}
+      {active === "terminal" ? <TopologyTerminalView scope="host" /> : null}
       {health.view}
       <RecentPanelFrame>
         <RecentScopePanel instance={recentInstance} filter={{ kind: "instance" }} />
@@ -385,7 +391,6 @@ function RigScopeContent({ nav, rigId }: { nav: TopologyNavigation; rigId: strin
   const { isWideLayout } = useShellViewport();
   useOverlayForActiveTab(active);
 
-  const effectiveActive = !isWideLayout && active === "graph" ? "table" : active;
   const liveCap = useTerminalCap();
 
   return (
@@ -455,29 +460,27 @@ function RigScopeContent({ nav, rigId }: { nav: TopologyNavigation; rigId: strin
         </div>
       )}
       <ActivityRollupBar rigId={rigId} />
-      {effectiveActive === "graph" ? (
-        <GraphFrame>
-          <RigGraph rigId={rigId} rigName={rig?.name ?? null} showDiscovered={false} />
-        </GraphFrame>
+      {active === "graph" ? (
+        isWideLayout ? (
+          <GraphFrame>
+            <RigGraph rigId={rigId} rigName={rig?.name ?? null} showDiscovered={false} />
+          </GraphFrame>
+        ) : (
+          <PhoneGraphFrame>
+            <PhoneTopologyGraph nav={nav} />
+          </PhoneGraphFrame>
+        )
       ) : null}
-      {effectiveActive === "spatial" ? <SpatialPanel scope={{ kind: "rig", rigId }} /> : null}
-      {effectiveActive === "table" ? (
+      {active === "spatial" ? <SpatialPanel scope={{ kind: "rig", rigId }} /> : null}
+      {active === "table" ? (
         <div className="px-6 pb-6">
-          {!isWideLayout && active === "graph" ? (
-            <p
-              data-testid="topology-mobile-graph-degraded"
-              className="font-mono text-[9px] text-on-surface-variant italic mb-2"
-            >
-              Graph view degrades to table on narrow viewports.
-            </p>
-          ) : null}
           {/* OPR.0.4.1.13: contain a table render-throw so it can't white-screen the page. */}
           <ErrorBoundary label="Table view">
             <TopologyTableView rigIdScope={rigId} />
           </ErrorBoundary>
         </div>
       ) : null}
-      {effectiveActive === "terminal" ? <TopologyTerminalView scope="rig" rigId={rigId} /> : null}
+      {active === "terminal" ? <TopologyTerminalView scope="rig" rigId={rigId} /> : null}
       {health.view}
       {active === "overview" ? <RigOverviewTab rigId={rigId} rigName={rig?.name ?? null} /> : null}
       <RecentPanelFrame>
@@ -578,7 +581,6 @@ function PodScopeContent({ nav, rigId, podName }: { nav: TopologyNavigation; rig
   const setActive = (view: TopologyRigPodScopeTab) => nav.replace({ view });
   const { isWideLayout } = useShellViewport();
   useOverlayForActiveTab(active);
-  const effectiveActive = !isWideLayout && active === "graph" ? "table" : active;
 
   return (
     <ScopeShell
@@ -589,22 +591,20 @@ function PodScopeContent({ nav, rigId, podName }: { nav: TopologyNavigation; rig
       panel={topologyTabPanelProps("topology-pod", active)}
       tabsNav={<TopologyViewModeTabs tabs={RIG_POD_SCOPE_TABS} active={active} onSelect={setActive} testIdPrefix="topology-pod" />}
     >
-      {effectiveActive === "graph" ? (
-        <GraphFrame>
-          <RigGraph rigId={rigId} rigName={null} showDiscovered={false} podScope={podName} />
-        </GraphFrame>
+      {active === "graph" ? (
+        isWideLayout ? (
+          <GraphFrame>
+            <RigGraph rigId={rigId} rigName={null} showDiscovered={false} podScope={podName} />
+          </GraphFrame>
+        ) : (
+          <PhoneGraphFrame>
+            <PhoneTopologyGraph nav={nav} />
+          </PhoneGraphFrame>
+        )
       ) : null}
-      {effectiveActive === "spatial" ? <SpatialPanel scope={{ kind: "pod", rigId, podName }} /> : null}
-      {effectiveActive === "table" ? (
+      {active === "spatial" ? <SpatialPanel scope={{ kind: "pod", rigId, podName }} /> : null}
+      {active === "table" ? (
         <div className="px-6 pb-6">
-          {!isWideLayout && active === "graph" ? (
-            <p
-              data-testid="topology-mobile-graph-degraded"
-              className="font-mono text-[9px] text-on-surface-variant italic mb-2"
-            >
-              Graph view degrades to table on narrow viewports.
-            </p>
-          ) : null}
           {/* OPR.0.4.1.13: contain a table render-throw so it can't white-screen the page. */}
           <ErrorBoundary label="Table view">
             <TopologyTableView rigIdScope={rigId} podNameScope={podName} />
@@ -612,7 +612,7 @@ function PodScopeContent({ nav, rigId, podName }: { nav: TopologyNavigation; rig
         </div>
       ) : null}
       {health.view}
-      {effectiveActive === "terminal" ? (
+      {active === "terminal" ? (
         <TopologyTerminalView scope="pod" rigId={rigId} podName={podName} />
       ) : null}
       {active === "overview" ? (
