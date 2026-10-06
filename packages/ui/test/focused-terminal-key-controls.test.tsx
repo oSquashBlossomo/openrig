@@ -8,13 +8,15 @@ import React from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, within } from "@testing-library/react";
 
-const s = vi.hoisted(() => ({ sockets: [] as any[], wheel: null as ((ev: { deltaY: number }) => boolean) | null }));
+const s = vi.hoisted(() => ({ sockets: [] as any[], wheel: null as ((ev: { deltaY: number }) => boolean) | null, onData: null as ((d: string) => void) | null, bottom: 0 }));
 vi.mock("@xterm/xterm", () => ({ Terminal: class {
   options = { fontSize: 12 }; cols = 90; rows = 27;
   open(el: HTMLElement) { el.appendChild(document.createElement("div")); }
   resize(cols: number, rows: number) { this.cols = cols; this.rows = rows; }
   write(_d: string, done?: () => void) { done?.(); }
-  focus() {} scrollToBottom() {} onData() {} dispose() {}
+  focus() {} dispose() {}
+  scrollToBottom() { s.bottom++; }
+  onData(cb: (d: string) => void) { s.onData = cb; }
   attachCustomWheelEventHandler(h: (ev: { deltaY: number }) => boolean) { s.wheel = h; }
 } }));
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
@@ -24,6 +26,8 @@ import { FocusedTerminal } from "../src/components/terminal/FocusedTerminal.js";
 beforeEach(() => {
   s.sockets.length = 0;
   s.wheel = null;
+  s.onData = null;
+  s.bottom = 0;
   vi.useFakeTimers();
   vi.stubGlobal("WebSocket", class {
     static OPEN = 1; readyState = 0; sent: string[] = [];
@@ -115,4 +119,22 @@ it("is not offered on the error view", () => {
   const view = render(<FocusedTerminal sessionName="fixture" />);
   act(() => { s.sockets[0].onclose?.({ code: 1008, reason: "session not found: fixture" }); });
   expect(view.queryByRole("group", { name: /terminal keys/i })).toBeNull();
+});
+
+// xterm's own scrollable element can consume a native wheel (local history)
+// before the broker wheel callback, so the server offset stays 0. A key
+// press must still bring the local viewport back to live, as typing does
+// via xterm's scrollOnUserInput; paused input must not act at all.
+it("a press returns xterm's local viewport to live even when the server offset is zero; paused input does nothing", () => {
+  const view = render(<FocusedTerminal sessionName="fixture" />);
+  open(s.sockets[0]);
+  s.bottom = 0;
+  act(() => { s.onData!("\r"); });
+  expect(s.bottom).toBe(0);
+  expect(s.sockets[0].sent).toEqual([]);
+  act(() => s.sockets[0].onmessage?.({ data: JSON.stringify({ type: "geometry", cols: 90, rows: 27 }) }));
+  s.bottom = 0;
+  press(view, /^enter$/i);
+  expect(s.bottom).toBe(1);
+  expect(s.sockets[0].sent).toEqual([JSON.stringify({ type: "keys", keys: ["Enter"] })]);
 });

@@ -318,6 +318,11 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
   const sendInput = useCallback((data: string) => {
     const wsc = wsRef.current;
     if (!wsc || wsc.readyState !== WebSocket.OPEN || !geometryRef.current) return;
+    // xterm's own scroller can consume a native wheel into local history
+    // without reaching the broker wheel handler; key controls must return
+    // there too (typing already does via xterm's scrollOnUserInput). No
+    // smooth scrolling is configured, so this is immediate.
+    (termRef.current as { scrollToBottom(): void } | null)?.scrollToBottom();
     // OPR.0.4.0.39: typing returns to the live bottom before sending input.
     if (scrollOffsetRef.current > 0) {
       scrollOffsetRef.current = 0;
