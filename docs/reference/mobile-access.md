@@ -56,6 +56,10 @@ replacement, the stream resets it to the current checkpoint so new events can
 arrive. CLI followers also reread canonical state after opening a replacement
 stream, recovering completion, failure or abort that happened while disconnected.
 
+Workflow replay skips malformed event rows with a diagnostic and sequence
+checkpoint so later retained events and live updates can continue. Skipping a
+damaged row does not reconstruct its payload; current-state readback still applies.
+
 Event replay cannot recreate deleted history or recover events from a replaced
 database. The canonical readback remains necessary. If an operation's response
 was interrupted, inspect its current state and receipt before retrying it.

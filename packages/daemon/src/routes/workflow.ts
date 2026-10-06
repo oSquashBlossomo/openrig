@@ -340,13 +340,18 @@ export function workflowRoutes(): Hono {
         // Invalid explicit cursors start at zero, like /api/events.
         // Page the global log: workflow events deliberately have no rig scope.
         while (!stream.aborted) {
-          const page = eventBus.replayAll(cursor, replayPageSize);
-          for (const event of page) {
+          const page = eventBus.replayAllSettled(cursor, replayPageSize);
+          for (const row of page) {
             if (stream.aborted) return;
-            if (isWorkflowEvent(event)) {
-              await stream.writeSSE({ id: String(event.seq), data: JSON.stringify(event) });
+            if (row.error) {
+              console.warn(`Workflow SSE replay skipped event ${row.seq}: ${row.error}`);
+              // Checkpoint skipped rows too, so an invalid-only tail cannot
+              // trap EventSource reconnects at the last valid payload's ID.
+              await stream.write(`id: ${row.seq}\n\n`);
+            } else if (isWorkflowEvent(row.event)) {
+              await stream.writeSSE({ id: String(row.seq), data: JSON.stringify(row.event) });
             }
-            cursor = event.seq;
+            cursor = row.seq;
           }
           if (page.length < replayPageSize && cursor >= replayThroughSeq) break;
           // A page containing only unrelated events must still let disconnects
