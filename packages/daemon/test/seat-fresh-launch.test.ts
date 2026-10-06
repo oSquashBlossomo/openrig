@@ -122,8 +122,12 @@ describe("SeatLifecycleService.launchFresh", () => {
       sessionRegistry,
       eventBus,
       tmuxAdapter: tmux,
-      listProcesses: async () => [{ pid: 4242, ppid: 1, pgid: 4242, tpgid: 4242,
-        executableName: "codex", command: "/opt/native/codex -m model", startedAt: "Sat Jan  1 12:00:00 2000" }],
+      // Model the native occupant returned by this fixture's successful harness.
+      // A failed launch supplies no positive process identity evidence.
+      listProcesses: async () => harnessResult.ok ? [{ pid: 4242, ppid: 1, pgid: 4242, tpgid: 4242,
+        executableName: paneCommand,
+        command: paneCommand === "codex" ? "/opt/native/codex -m model" : `/opt/native/claude --session-id ${harnessResult.resumeToken}`,
+        startedAt: "Sat Jan  1 12:00:00 2000" }] : [],
       nodeLauncher,
       startupOrchestrator,
       runtimeAdapters: { "claude-code": adapter, codex: { ...adapter, runtime: "codex" } },

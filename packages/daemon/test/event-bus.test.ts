@@ -30,6 +30,41 @@ describe("EventBus", () => {
     db.close();
   });
 
+  it("replays legacy audit payloads using their recorded type and seat columns without rewriting history", () => {
+    const legacy = [
+      { type: "node.primary_orchestrator_selected", payload: { reason: "recorded rollout", fromLabel: null, toLabel: "primary" } },
+      { type: "node.primary_orchestrator_selected", payload: { reason: "recorded rollout", fromLabel: "old", toLabel: "new" } },
+      { type: "edge.primary_dispatch_added", payload: { reason: "recorded rollout", edge: {
+        id: "edge-1", rigId: "rig-1", sourceId: "node-1", targetId: "node-2", kind: "dispatch", createdAt: "2026-10-03T00:00:00Z",
+      } } },
+    ];
+    for (const event of legacy) db.prepare("INSERT INTO events (rig_id, node_id, type, payload) VALUES (?, ?, ?, ?)")
+      .run("rig-1", "node-1", event.type, JSON.stringify(event.payload));
+    const stored = db.prepare("SELECT * FROM events ORDER BY seq").all();
+    const status = bus.getNotifyDrainStatus();
+    const replay = bus.replayAll(0);
+    expect(replay).toEqual(legacy.map((event, index) => ({ ...event.payload, type: event.type, rigId: "rig-1", nodeId: "node-1",
+      seq: index + 1, createdAt: expect.any(String) })));
+    expect(bus.replaySince(1, "rig-1")).toEqual(replay.slice(1));
+    expect(bus.replayAllSettled(0, 3)).toEqual(replay.map(event => ({ seq: event.seq, event })));
+    expect(db.prepare("SELECT * FROM events ORDER BY seq").all()).toEqual(stored);
+    expect(bus.getNotifyDrainStatus()).toEqual(status);
+  });
+
+  it.each([
+    ["unrecognized legacy type", "other.audit", { reason: "fixture", fromLabel: null, toLabel: "primary" }, "rig-1", "node-1"],
+    ["malformed label", "node.primary_orchestrator_selected", { reason: "fixture", fromLabel: null, toLabel: 7 }, "rig-1", "node-1"],
+    ["explicit invalid discriminator", "node.primary_orchestrator_selected", { type: null, reason: "fixture", fromLabel: null, toLabel: "primary" }, "rig-1", "node-1"],
+    ["unrecorded scope", "node.primary_orchestrator_selected", { reason: "fixture", fromLabel: null, toLabel: "primary" }, null, null],
+    ["extra envelope fields", "node.primary_orchestrator_selected", { reason: "fixture", fromLabel: null, toLabel: "primary", rigId: "other" }, "rig-1", "node-1"],
+    ["conflicting edge scope", "edge.primary_dispatch_added", { reason: "fixture", edge: { id: "edge", rigId: "other", sourceId: "node-1", targetId: "node-2", kind: "dispatch", createdAt: "fixture" } }, "rig-1", "node-1"],
+  ])("keeps %s payloads invalid", (_name, type, payload, rigId, nodeId) => {
+    db.prepare("INSERT INTO events (rig_id, node_id, type, payload) VALUES (?, ?, ?, ?)")
+      .run(rigId, nodeId, type, JSON.stringify(payload));
+    expect(() => bus.replayAll(0)).toThrow("invalid event payload shape");
+    expect(bus.replayAllSettled(0, 1)).toEqual([{ seq: 1, error: "invalid event payload shape" }]);
+  });
+
   it("emit persists event to DB with monotonic seq", () => {
     const e1 = bus.emit({ type: "rig.created", rigId: "rig-1" });
     const e2 = bus.emit({ type: "node.added", rigId: "rig-1", nodeId: "n1", logicalId: "worker" });
