@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readlinkSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -22,7 +22,8 @@ const exec = promisify(execFile);
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const f of cleanup.splice(0).reverse()) await f(); });
 function fixture() {
-  const root = mkdtempSync(path.join(tmpdir(), "seat-env-"));
+  // The launch helper pins the real executable path, including /private on macOS.
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "seat-env-")));
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const bin = path.join(root, "current bin's"); const userBin = path.join(root, "user-bin");
   for (const dir of [bin, userBin, path.join(root, "workspace"), path.join(root, "home")]) mkdirSync(dir);

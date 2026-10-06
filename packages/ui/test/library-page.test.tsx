@@ -66,10 +66,10 @@ describe("Library page taxonomy", () => {
         return {
           ok: true,
           json: async () => [
-            { id: "rig-1", kind: "rig", name: "openrig-build", version: "1", sourceType: "builtin", sourcePath: "/pkg/rig.yaml", relativePath: "rigs/build/rig.yaml" },
-            { id: "agent-1", kind: "agent", name: "implementer", version: "1", sourceType: "builtin", sourcePath: "/pkg/agent.yaml", relativePath: "agents/impl/agent.yaml" },
-            { id: "workflow:conveyor:1", kind: "workflow", name: "conveyor", version: "1", sourceType: "builtin", sourcePath: "/pkg/workflow.yaml", relativePath: "workflow.yaml" },
-            { id: "app-1", kind: "rig", name: "vault-app", version: "1", sourceType: "builtin", sourcePath: "/pkg/app/rig.yaml", relativePath: "apps/vault/rig.yaml", hasServices: true },
+            { id: "rig-1", kind: "rig", name: "openrig-build", version: "1", updatedAt: "2026-05-07T00:00:00.000Z", sourceType: "builtin", sourcePath: "/pkg/rig.yaml", relativePath: "rigs/build/rig.yaml" },
+            { id: "agent-1", kind: "agent", name: "implementer", version: "1", updatedAt: "2026-05-07T00:00:00.000Z", sourceType: "builtin", sourcePath: "/pkg/agent.yaml", relativePath: "agents/impl/agent.yaml" },
+            { id: "workflow:conveyor:1", kind: "workflow", name: "conveyor", version: "1", updatedAt: "2026-05-07T00:00:00.000Z", sourceType: "builtin", sourcePath: "/pkg/workflow.yaml", relativePath: "workflow.yaml" },
+            { id: "app-1", kind: "rig", name: "vault-app", version: "1", updatedAt: "2026-05-07T00:00:00.000Z", sourceType: "builtin", sourcePath: "/pkg/app/rig.yaml", relativePath: "apps/vault/rig.yaml", hasServices: true },
           ],
         };
       }

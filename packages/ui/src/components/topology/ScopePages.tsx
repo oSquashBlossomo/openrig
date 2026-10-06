@@ -1,14 +1,22 @@
 // V1 attempt-3 Phase 3 — Topology scope pages per topology-tree.md.
 //
-// SC-10 LOAD-BEARING: view-mode tabs IN-PLACE — single URL across tab
-// switches. Tab state is React useState, NOT URL params. Each scope
-// page renders its tab nav + the active view-mode panel.
-// (Attempt-2 violated this by using separate routes per view-mode.)
+// SC-10 LOAD-BEARING: view-mode tabs IN-PLACE — one PATHNAME per scope
+// across tab switches (no /topology/host/3d route family). The active view,
+// the 3D Scene/List choice, search and exact selection are URL search state
+// (docs/plans/gui-spatial-navigation-contract.md), written by REPLACING the
+// current entry, so Back from a drill returns to the same view/query/
+// selection and same-route Back/Forward drives the controls.
+//
+// Every scope body (all target reads and local actions) mounts behind
+// TopologySourceGate: the URL's sourceHost must equal a successfully read
+// current selection. Legacy links bind once; nothing here writes the global
+// host selection except an explicit operator action.
 
-import { useState, useEffect } from "react";
-import { useParams } from "@tanstack/react-router";
+import { useEffect, useMemo, lazy, Suspense } from "react";
+import { useParams, useRouter } from "@tanstack/react-router";
 import {
   TopologyViewModeTabs,
+  topologyTabPanelProps,
   HOST_SCOPE_TABS,
   RIG_POD_SCOPE_TABS,
   SEAT_SCOPE_TABS,
@@ -42,6 +50,60 @@ import { useTopologyOverlay } from "./topology-overlay-context.js";
 import { useShellViewport } from "../../hooks/useShellViewport.js";
 import { useNodeInventory } from "../../hooks/useNodeInventory.js";
 import { computeActivityRollup, formatRollupLabel } from "../../lib/activity-visuals.js";
+import type { SpatialScope } from "../../lib/spatial-topology.js";
+import type { TopologyScope } from "../../lib/topology-location.js";
+import { RecentScopePanel, useTopologyRecentInstance } from "../recent-pulse/RecentView.js";
+import { ScopedHealthPanel, ScopedHealthStrip, useHealthAdmission, type HealthDisplayScope } from "./ScopedHealth.js";
+import {
+  navigateTopology,
+  topologyTarget,
+  useKnownSelectedHost,
+  TopologyLocationNotices,
+  TopologySourceGate,
+  useTopologyLocation,
+  type TopologyNavigation,
+} from "./topology-navigation.js";
+
+// 3D view-mode: lazy so the spatial module (and, one level deeper, three.js)
+// stays out of the initial payload and only mounts on the 3D tab.
+const SpatialTopologyView = lazy(() => import("./spatial/SpatialTopologyView.js"));
+
+function SpatialPanel({ scope }: { scope: SpatialScope }) {
+  return (
+    <ErrorBoundary label="3D view">
+      <Suspense
+        fallback={
+          <div
+            data-testid="topology-spatial-loading"
+            role="status"
+            className="px-6 py-10 font-mono text-[10px] text-on-surface-variant"
+          >
+            Loading 3D view…
+          </div>
+        }
+      >
+        <SpatialTopologyView scope={scope} />
+      </Suspense>
+    </ErrorBoundary>
+  );
+}
+
+/** Graph canvas frame. In graph-overlay mode the Explorer floats over the
+ *  left of <main>; --header-anchor-offset is the Explorer's right edge
+ *  (21rem expanded, 3rem collapsed, 0 on narrow/opaque layouts), so the
+ *  frame starts past it and React Flow measures — and fits to — only the
+ *  visible canvas instead of drawing nodes underneath the Explorer. */
+function GraphFrame({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      data-testid="topology-graph-frame"
+      className="flex-1 min-h-0 relative"
+      style={{ marginLeft: "var(--header-anchor-offset, 0px)" }}
+    >
+      {children}
+    </div>
+  );
+}
 
 function ActivityRollupBar({ rigId }: { rigId: string }) {
   const { data: nodes } = useNodeInventory(rigId);
@@ -53,6 +115,8 @@ function ActivityRollupBar({ rigId }: { rigId: string }) {
     <div
       data-testid="activity-rollup-bar"
       className="px-6 py-2 font-mono text-[10px] text-on-surface-variant border-b border-outline-variant bg-surface-lowest/30"
+      // Same anchoring as the tabs: legible past the Explorer overlay.
+      style={{ marginLeft: "var(--header-anchor-offset, 0px)" }}
     >
       {formatRollupLabel(rollup)}
     </div>
@@ -83,6 +147,9 @@ function useOverlayForActiveTab(active: string) {
 
 function ScopeShell({
   tabsNav,
+  nav,
+  panel,
+  summary,
   children,
 }: {
   /** Eyebrow + title are no longer rendered: tabs only, anchored to
@@ -94,6 +161,12 @@ function ScopeShell({
   eyebrow?: string;
   title?: string;
   tabsNav: React.ReactNode;
+  /** Discloses ignored (invalid optional) URL fields under the tabs. */
+  nav?: TopologyNavigation;
+  /** Names the active view-mode panel after its tab. */
+  panel?: ReturnType<typeof topologyTabPanelProps>;
+  /** Compact scope summary under the tabs (e.g. scoped Health). */
+  summary?: React.ReactNode;
   children: React.ReactNode;
 }) {
   // Class B fixed-anchor: tabsNav sits at left = var(--explorer-anchor-left)
@@ -109,24 +182,47 @@ function ScopeShell({
         style={{ marginLeft: "var(--header-anchor-offset, 0px)" }}
       >
         {tabsNav}
+        {nav ? <TopologyLocationNotices nav={nav} className="pb-2" /> : null}
+        {summary}
       </div>
       {/* flex column so the active view-mode panel can fill remaining
           height. min-h-0 lets the flex child shrink correctly inside
           the AppShell main scroll container. */}
-      <div className="flex-1 min-h-0 flex flex-col">
+      <div className="flex-1 min-h-0 flex flex-col" {...panel}>
         {children}
       </div>
     </div>
   );
 }
 
+const HOST_SPATIAL_SCOPE: SpatialScope = { kind: "host" };
+
 // V1 attempt-3 Phase 5 P5-7: TopologyTerminalView replaces the placeholder
 // with a real safe-N=12 paginated pinned-card grid + pulsing-ring on active
 // terminals (per topology-terminal-view.md L47/L60-65/L70-80).
 
+const HOST_SCOPE: TopologyScope = { kind: "host" };
+
 export function HostScopePage() {
-  const [active, setActive] = useState<TopologyHostScopeTab>("graph");
+  const nav = useTopologyLocation(HOST_SCOPE);
+  return (
+    <TopologySourceGate nav={nav}>
+      <HostScopeContent nav={nav} />
+    </TopologySourceGate>
+  );
+}
+
+const HOST_HEALTH_SCOPE: HealthDisplayScope = { kind: "host" };
+
+function HostScopeContent({ nav }: { nav: TopologyNavigation }) {
+  const health = useScopeHealth(nav, HOST_HEALTH_SCOPE);
+  const router = useRouter();
+  const active = nav.location.view as TopologyHostScopeTab;
+  const setActive = (view: TopologyHostScopeTab) => nav.replace({ view });
   const { data: rigs, error: rigsError, isFetching, isPlaceholderData, refetch } = useRigSummary();
+  // Recent describes the connected instance only: null while the selection
+  // resolves, unsupported (no read, no local rows) for a remote selection.
+  const recentInstance = useTopologyRecentInstance();
   const { isWideLayout } = useShellViewport();
   useOverlayForActiveTab(active);
 
@@ -157,6 +253,9 @@ export function HostScopePage() {
     <ScopeShell
       eyebrow="Topology · Host"
       title={isRemote ? selectedHost : ownName}
+      nav={nav}
+      summary={health.strip}
+      panel={topologyTabPanelProps("topology-host", active)}
       tabsNav={<TopologyViewModeTabs tabs={HOST_SCOPE_TABS} active={active} onSelect={setActive} testIdPrefix="topology-host" />}
     >
       {remoteUnreachable ? (
@@ -189,7 +288,16 @@ export function HostScopePage() {
               <button
                 type="button"
                 data-testid="topology-remote-back-local"
-                onClick={() => selectHost.mutate({ hostId: LOCAL_HOST_ID })}
+                onClick={() =>
+                  // Explicit operator choice: select local, then show local's
+                  // host scope (this page asserts the unreachable host).
+                  selectHost.mutate({ hostId: LOCAL_HOST_ID }, {
+                    onSuccess: () => {
+                      const target = topologyTarget({ scope: HOST_SCOPE, sourceHost: LOCAL_HOST_ID, view: active });
+                      if (target) navigateTopology(router, null, target);
+                    },
+                  })
+                }
                 className="border border-outline-variant px-3 py-1 font-mono text-[10px] uppercase tracking-wide text-on-surface-variant hover:text-on-surface"
               >
                 Back to {ownName} (local)
@@ -208,10 +316,11 @@ export function HostScopePage() {
         </div>
       ) : null}
       {!remoteUnreachable && effectiveActive === "graph" ? (
-        <div className="flex-1 min-h-0 relative">
+        <GraphFrame>
           <HostMultiRigGraph />
-        </div>
+        </GraphFrame>
       ) : null}
+      {!remoteUnreachable && effectiveActive === "spatial" ? <SpatialPanel scope={HOST_SPATIAL_SCOPE} /> : null}
       {effectiveActive === "table" ? (
         <div className="px-6 pb-6">
           {!isWideLayout && active === "graph" ? (
@@ -229,12 +338,28 @@ export function HostScopePage() {
         </div>
       ) : null}
       {effectiveActive === "terminal" ? <TopologyTerminalView scope="host" /> : null}
+      {health.view}
+      <RecentPanelFrame>
+        <RecentScopePanel instance={recentInstance} filter={{ kind: "instance" }} />
+      </RecentPanelFrame>
     </ScopeShell>
     </LiveTerminalProvider>
   );
 }
 
 export function RigScopePage() {
+  // Router-decoded (raw) param, used verbatim: never decoded again.
+  const { rigId } = useParams({ from: "/topology/rig/$rigId" });
+  const nav = useTopologyLocation({ kind: "rig", rigId });
+  return (
+    <TopologySourceGate nav={nav}>
+      <RigScopeContent nav={nav} rigId={rigId} />
+    </TopologySourceGate>
+  );
+}
+
+function RigScopeContent({ nav, rigId }: { nav: TopologyNavigation; rigId: string }) {
+  const health = useScopeHealth(nav, useMemoHealthScope("rig", rigId));
   // OPR.0.4.6.MH2 guard delta-confirm blocker: lifecycle/action surfaces are
   // TRI-STATE — unknown selection mounts NO local controls and fires NO bare
   // status read (useSelectedHostId defaults local pre-cache, which fails
@@ -243,10 +368,20 @@ export function RigScopePage() {
   const { known: hostSelectionKnown, isLocal: hostSelectionLocal } = useHostSelection();
   const rigScopeIsRemote = hostSelectionKnown && !hostSelectionLocal;
   const rigScopeActionsAllowed = hostSelectionKnown && hostSelectionLocal;
-  const { rigId } = useParams({ from: "/topology/rig/$rigId" });
-  const { data: rigs } = useRigSummary();
+  const { data: rigs, isError: rigsFailed } = useRigSummary();
   const rig = rigs?.find((r) => r.id === rigId);
-  const [active, setActive] = useState<TopologyRigPodScopeTab>("graph");
+  const recentInstance = useTopologyRecentInstance();
+  // Recent filters by exact rig NAME, taken only from the served summary row
+  // whose id is exactly this route's rig; never the id or a guessed name.
+  // A failed CURRENT summary read cannot certify a name, including a name
+  // retained from an earlier successful read of the same key.
+  const recentFilter = rigsFailed
+    ? "unavailable" as const
+    : rigs === undefined
+      ? "pending" as const
+    : rig && typeof rig.name === "string" && rig.name.length > 0 ? { kind: "rig" as const, rig: rig.name } : "unavailable" as const;
+  const active = nav.location.view as TopologyRigPodScopeTab;
+  const setActive = (view: TopologyRigPodScopeTab) => nav.replace({ view });
   const { isWideLayout } = useShellViewport();
   useOverlayForActiveTab(active);
 
@@ -258,6 +393,9 @@ export function RigScopePage() {
     <ScopeShell
       eyebrow="Topology · Rig"
       title={rig?.name ?? rigId}
+      nav={nav}
+      summary={health.strip}
+      panel={topologyTabPanelProps("topology-rig", active)}
       tabsNav={
         <TopologyViewModeTabs
           tabs={RIG_POD_SCOPE_TABS}
@@ -318,10 +456,11 @@ export function RigScopePage() {
       )}
       <ActivityRollupBar rigId={rigId} />
       {effectiveActive === "graph" ? (
-        <div className="flex-1 min-h-0 relative">
+        <GraphFrame>
           <RigGraph rigId={rigId} rigName={rig?.name ?? null} showDiscovered={false} />
-        </div>
+        </GraphFrame>
       ) : null}
+      {effectiveActive === "spatial" ? <SpatialPanel scope={{ kind: "rig", rigId }} /> : null}
       {effectiveActive === "table" ? (
         <div className="px-6 pb-6">
           {!isWideLayout && active === "graph" ? (
@@ -339,7 +478,11 @@ export function RigScopePage() {
         </div>
       ) : null}
       {effectiveActive === "terminal" ? <TopologyTerminalView scope="rig" rigId={rigId} /> : null}
+      {health.view}
       {active === "overview" ? <RigOverviewTab rigId={rigId} rigName={rig?.name ?? null} /> : null}
+      <RecentPanelFrame>
+        <RecentScopePanel instance={recentInstance} filter={recentFilter} />
+      </RecentPanelFrame>
     </ScopeShell>
     </LiveTerminalProvider>
   );
@@ -421,7 +564,18 @@ export function PodScopePage() {
   // pattern; pod scope should honor the same graph/table/terminal
   // grammar as other scopes.
   const { rigId, podName } = useParams({ from: "/topology/pod/$rigId/$podName" });
-  const [active, setActive] = useState<TopologyRigPodScopeTab>("graph");
+  const nav = useTopologyLocation({ kind: "pod", rigId, podName });
+  return (
+    <TopologySourceGate nav={nav}>
+      <PodScopeContent nav={nav} rigId={rigId} podName={podName} />
+    </TopologySourceGate>
+  );
+}
+
+function PodScopeContent({ nav, rigId, podName }: { nav: TopologyNavigation; rigId: string; podName: string }) {
+  const health = useScopeHealth(nav, useMemoHealthScope("pod", rigId, podName));
+  const active = nav.location.view as TopologyRigPodScopeTab;
+  const setActive = (view: TopologyRigPodScopeTab) => nav.replace({ view });
   const { isWideLayout } = useShellViewport();
   useOverlayForActiveTab(active);
   const effectiveActive = !isWideLayout && active === "graph" ? "table" : active;
@@ -430,13 +584,17 @@ export function PodScopePage() {
     <ScopeShell
       eyebrow="Topology · Pod"
       title={`${rigId} / ${podName}`}
+      nav={nav}
+      summary={health.strip}
+      panel={topologyTabPanelProps("topology-pod", active)}
       tabsNav={<TopologyViewModeTabs tabs={RIG_POD_SCOPE_TABS} active={active} onSelect={setActive} testIdPrefix="topology-pod" />}
     >
       {effectiveActive === "graph" ? (
-        <div className="flex-1 min-h-0 relative">
+        <GraphFrame>
           <RigGraph rigId={rigId} rigName={null} showDiscovered={false} podScope={podName} />
-        </div>
+        </GraphFrame>
       ) : null}
+      {effectiveActive === "spatial" ? <SpatialPanel scope={{ kind: "pod", rigId, podName }} /> : null}
       {effectiveActive === "table" ? (
         <div className="px-6 pb-6">
           {!isWideLayout && active === "graph" ? (
@@ -453,6 +611,7 @@ export function PodScopePage() {
           </ErrorBoundary>
         </div>
       ) : null}
+      {health.view}
       {effectiveActive === "terminal" ? (
         <TopologyTerminalView scope="pod" rigId={rigId} podName={podName} />
       ) : null}
@@ -471,11 +630,78 @@ export function SeatScopePage() {
   // LiveNodeDetails owns the canonical 5-tab body row inline
   // (Identity / Agent Spec / Startup / Transcript / Terminal). The
   // ScopeShell wrapper is dropped too — LiveNodeDetails is the page.
+  //
+  // Params are RAW (router-decoded exactly once): every producer passes the
+  // exact logical id through the shared link builder, so decoding here again
+  // would turn a literal "%2F" into "/" and open a different seat. The source
+  // gate keeps LiveNodeDetails (its reads, preview and local actions) from
+  // resolving this rig/logical id on a host the link was not made for.
   const { rigId, logicalId } = useParams({ from: "/topology/seat/$rigId/$logicalId" });
-  const decodedLogicalId = decodeURIComponent(logicalId);
+  const nav = useTopologyLocation({ kind: "seat", rigId, logicalId });
   return (
     <div data-testid="seat-scope-page" className="flex flex-col h-full">
-      <LiveNodeDetails rigId={rigId} logicalId={decodedLogicalId} />
+      <TopologySourceGate nav={nav}>
+        <SeatScopeContent nav={nav} rigId={rigId} logicalId={logicalId} />
+      </TopologySourceGate>
     </div>
+  );
+}
+
+/** Seat Overview/Details is URL state (`view`, default overview) like the
+ *  other scopes' view tabs: choosing a tab REPLACES the current entry, so Back
+ *  leaves the seat (to where it was opened from) and every seat entry restores
+ *  its own tab; another seat (a pushed entry) starts at its own URL's view. */
+function SeatScopeContent({ nav, rigId, logicalId }: { nav: TopologyNavigation; rigId: string; logicalId: string }) {
+  // Mounted only behind the source gate, so this is the admitted source.
+  const sourceHost = useKnownSelectedHost() ?? undefined;
+  const view = nav.location.view === "details" ? "details" : "overview";
+  return (
+    <LiveNodeDetails
+      rigId={rigId}
+      logicalId={logicalId}
+      activeTab={view}
+      onTabChange={(next) => nav.replace({ view: next })}
+      sourceHost={sourceHost}
+    />
+  );
+}
+
+/** Recent sits under the active view, anchored past the Explorer overlay and
+ *  bounded so canvas views (graph/3D) keep most of the page height. */
+function RecentPanelFrame({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      data-testid="topology-recent-frame"
+      className="shrink-0 max-h-[40vh] overflow-auto"
+      style={{ marginLeft: "var(--header-anchor-offset, 0px)" }}
+    >
+      {children}
+    </div>
+  );
+}
+
+/** Health summary strip (hidden while the Health view itself is open) and the
+ *  in-place Health view body for host/rig/pod scopes. One shared bounded
+ *  connected-instance read; the source admission is the gated page's current
+ *  source, so remote/unknown sources read nothing and show nothing local. */
+function useScopeHealth(nav: TopologyNavigation, scope: HealthDisplayScope) {
+  const admission = useHealthAdmission(nav.location.sourceHost);
+  const strip = nav.location.view === "health"
+    ? null
+    : <ScopedHealthStrip scope={scope} admission={admission} onOpen={() => nav.replace({ view: "health" })} />;
+  const view = nav.location.view === "health"
+    ? (
+      <div data-testid="topology-health-view" className="px-6 pb-6 pt-2">
+        <ScopedHealthPanel scope={scope} admission={admission} from={nav.scope} />
+      </div>
+    )
+    : null;
+  return { strip, view };
+}
+
+function useMemoHealthScope(kind: "rig" | "pod", rigId: string, podName = ""): HealthDisplayScope {
+  return useMemo<HealthDisplayScope>(
+    () => (kind === "rig" ? { kind: "rig", rigId } : { kind: "pod", rigId, podName }),
+    [kind, rigId, podName],
   );
 }

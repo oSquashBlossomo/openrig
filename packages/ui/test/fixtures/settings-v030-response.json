@@ -1,0 +1,139 @@
+{
+  "settings": {
+    "daemon.port": {
+      "value": 7433,
+      "source": "default",
+      "defaultValue": 7433
+    },
+    "daemon.host": {
+      "value": "127.0.0.1",
+      "source": "default",
+      "defaultValue": "127.0.0.1"
+    },
+    "db.path": {
+      "value": "/home/demo/.openrig/openrig.sqlite",
+      "source": "default",
+      "defaultValue": "/home/demo/.openrig/openrig.sqlite"
+    },
+    "transcripts.enabled": {
+      "value": true,
+      "source": "default",
+      "defaultValue": true
+    },
+    "transcripts.path": {
+      "value": "/home/demo/.openrig/transcripts",
+      "source": "default",
+      "defaultValue": "/home/demo/.openrig/transcripts"
+    },
+    "transcripts.lines": {
+      "value": 1000,
+      "source": "default",
+      "defaultValue": 1000
+    },
+    "transcripts.poll_interval_seconds": {
+      "value": 2,
+      "source": "default",
+      "defaultValue": 2
+    },
+    "workspace.root": {
+      "value": "/home/demo/.openrig/fictional-workspace",
+      "source": "file",
+      "defaultValue": "/home/demo/.openrig/workspace"
+    },
+    "workspace.slices_root": {
+      "value": "/home/demo/.openrig/fictional-workspace/missions",
+      "source": "default",
+      "defaultValue": "/home/demo/.openrig/fictional-workspace/missions"
+    },
+    "workspace.steering_path": {
+      "value": "/home/demo/.openrig/fictional-workspace/STEERING.md",
+      "source": "default",
+      "defaultValue": "/home/demo/.openrig/fictional-workspace/STEERING.md"
+    },
+    "workspace.field_notes_root": {
+      "value": "/home/demo/.openrig/fictional-workspace/field-notes",
+      "source": "default",
+      "defaultValue": "/home/demo/.openrig/fictional-workspace/field-notes"
+    },
+    "workspace.specs_root": {
+      "value": "/home/demo/.openrig/fictional-workspace/specs",
+      "source": "default",
+      "defaultValue": "/home/demo/.openrig/fictional-workspace/specs"
+    },
+    "workspace.dogfood_evidence_root": {
+      "value": "/home/demo/.openrig/fictional-workspace/dogfood-evidence",
+      "source": "default",
+      "defaultValue": "/home/demo/.openrig/fictional-workspace/dogfood-evidence"
+    },
+    "files.allowlist": {
+      "value": "workspace:/home/demo/.openrig/fictional-workspace",
+      "source": "default",
+      "defaultValue": "workspace:/home/demo/.openrig/fictional-workspace"
+    },
+    "progress.scan_roots": {
+      "value": "workspace:/home/demo/.openrig/fictional-workspace",
+      "source": "default",
+      "defaultValue": "workspace:/home/demo/.openrig/fictional-workspace"
+    },
+    "ui.preview.refresh_interval_seconds": {
+      "value": 3,
+      "source": "default",
+      "defaultValue": 3
+    },
+    "ui.preview.max_pins": {
+      "value": 4,
+      "source": "default",
+      "defaultValue": 4
+    },
+    "ui.preview.default_lines": {
+      "value": 50,
+      "source": "default",
+      "defaultValue": 50
+    },
+    "recovery.auto_drive_provider_prompts": {
+      "value": false,
+      "source": "default",
+      "defaultValue": false
+    },
+    "recovery.provider_auth_env_allowlist": {
+      "value": "",
+      "source": "default",
+      "defaultValue": ""
+    },
+    "agents.advisor_session": {
+      "value": "advisor-lead@openrig-velocity",
+      "source": "default",
+      "defaultValue": "advisor-lead@openrig-velocity"
+    },
+    "agents.operator_session": {
+      "value": "",
+      "source": "default",
+      "defaultValue": ""
+    },
+    "feed.subscriptions.action_required": {
+      "value": true,
+      "source": "default",
+      "defaultValue": true
+    },
+    "feed.subscriptions.approvals": {
+      "value": true,
+      "source": "default",
+      "defaultValue": true
+    },
+    "feed.subscriptions.shipped": {
+      "value": true,
+      "source": "default",
+      "defaultValue": true
+    },
+    "feed.subscriptions.progress": {
+      "value": true,
+      "source": "default",
+      "defaultValue": true
+    },
+    "feed.subscriptions.audit_log": {
+      "value": false,
+      "source": "default",
+      "defaultValue": false
+    }
+  }
+}

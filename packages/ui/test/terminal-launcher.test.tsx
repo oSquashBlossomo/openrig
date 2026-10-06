@@ -1,18 +1,19 @@
-// OPR.0.4.6.2 (FR-5) — TerminalLauncher. The view-library builder + layout math
-// are unit-tested purely (the load-bearing logic); the interactive open-flow +
-// pixel fidelity are covered by VM proof leg 9 (built-UI screenshots vs the 5
-// locked frames + a real launch), so this file does not fight the Radix dialog
-// in jsdom.
+// Catalog metadata, daemon preview authority and explicit Open contract.
+// UI tests stub HTTP boundaries; they do not operate native terminal providers.
 
-import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { NodeInventoryEntry } from "../src/hooks/useNodeInventory.js";
 
-// ── Mocks for the closed-dialog render test (the pure-fn tests need none). ──
+// ── Catalog hooks are isolated from the preview HTTP contract under test. ──
 // Node data is inlined INSIDE the factory: vitest hoists vi.mock above the file
 // body, so a factory must not reference an outer const.
-vi.mock("../src/hooks/useHosts.js", () => ({ useSelectedHostId: () => "local" }));
+const host = vi.hoisted(() => ({ id: "local", known: true }));
+vi.mock("../src/hooks/useHosts.js", () => ({
+  useSelectedHostId: () => host.id,
+  useHostSelection: () => ({ known: host.known, isLocal: host.id === "local" }),
+}));
 vi.mock("../src/hooks/useNodeInventory.js", () => ({
   useNodeInventory: () => ({
     data: [
@@ -34,7 +35,6 @@ vi.mock("../src/components/mission-control/missionControlAuth.js", () => ({ term
 import {
   TerminalLauncher,
   buildLauncherViews,
-  suggestLayout,
   describeOpenResult,
   type OpenViewResult,
 } from "../src/components/topology/TerminalLauncher.js";
@@ -50,7 +50,14 @@ const node = (partial: Partial<NodeInventoryEntry>): NodeInventoryEntry =>
     ...partial,
   } as unknown as NodeInventoryEntry);
 
+beforeEach(() => {
+  host.id = "local";
+  host.known = true;
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(preview()))));
+});
+
 afterEach(() => {
+  vi.unstubAllGlobals();
   cleanup();
   window.history.replaceState({}, "", "/");
 });
@@ -118,7 +125,7 @@ describe("buildLauncherViews — the view library", () => {
     expect(views[0]!.label).toBe("Rig name unavailable");
   });
 
-  it("groups agents into pod views by podNamespace and names absent seats", () => {
+  it("groups catalog members by podNamespace without guessing terminal readiness", () => {
     const views = buildLauncherViews({
       nodes: [
         node({ logicalId: "dev.d1", canonicalSessionName: "dev-d1@acme", podNamespace: "dev" }),
@@ -132,8 +139,8 @@ describe("buildLauncherViews — the view library", () => {
     const dev = views.find((v) => v.id === "pod:rig-1/dev");
     expect(dev).toBeTruthy();
     expect(dev!.seats).toHaveLength(2);
-    expect(dev!.seats!.filter((s) => s.live)).toHaveLength(1); // d2 has no session → absent
-    expect(dev!.seats!.find((s) => !s.live)!.reason).toBe("not launched");
+    expect(dev!.seats!.map((s) => s.session)).toEqual(["dev-d1@acme", "dev.d2"]);
+    expect(dev!.seats!.every((s) => !("live" in s) && !("reason" in s))).toBe(true);
     expect(views.some((v) => v.id === "pod:rig-1/orch")).toBe(true);
   });
 
@@ -147,25 +154,13 @@ describe("buildLauncherViews — the view library", () => {
 
   it("marks a fully read-only saved view as read-only (crossRig)", () => {
     const views = buildLauncherViews({ nodes: [], rigId: "rig-1", slices: [], savedViews: saved });
-    expect(views.find((v) => v.id === "watchtower")).toMatchObject({ kind: "saved", crossRig: true });
+    expect(views.find((v) => v.id === "saved:watchtower")).toMatchObject({ kind: "saved", crossRig: true });
   });
 
   it("a saved view with an interactive member is NOT read-only", () => {
     const mixed = [{ id: "mix", name: "Mix", members: [{ seat: "a@r", readOnly: true }, { seat: "b@r" }] }];
     const views = buildLauncherViews({ nodes: [], rigId: "rig-1", slices: [], savedViews: mixed });
-    expect(views.find((v) => v.id === "mix")!.crossRig).toBe(false);
-  });
-});
-
-describe("suggestLayout — grid math + paging cap", () => {
-  it("caps shown panes at 9 and reports the overflow", () => {
-    expect(suggestLayout(12)).toMatchObject({ shown: 9, cols: 3, rows: 3, paged: 3 });
-  });
-  it("no paging under the cap", () => {
-    expect(suggestLayout(4)).toMatchObject({ shown: 4, cols: 2, rows: 2, paged: 0 });
-  });
-  it("one pane is a 1×1 grid", () => {
-    expect(suggestLayout(1)).toMatchObject({ shown: 1, cols: 1, rows: 1, paged: 0 });
+    expect(views.find((v) => v.id === "saved:mix")!.crossRig).toBe(false);
   });
 });
 
@@ -256,4 +251,165 @@ describe("TerminalLauncher — mounts with its live hooks (collapsed)", () => {
     expect(classes).toContain("overflow-y-auto");
     expect(classes).not.toContain("overflow-hidden");
   });
+});
+
+function preview(over: Record<string, unknown> = {}) {
+  const pane = { seat: "confirmed@rig", label: "Confirmed", readOnly: true, paneCommand: "tmux attach -r" };
+  return {
+    view: "rig:rig-1", provider: "herdr", planId: "validated-plan", status: { available: true },
+    composed: { id: "rig:rig-1", opened: [pane], pages: [[pane]],
+      absent: [{ seat: "saved-stopped@rig", host: null, reason: "not alive" }],
+      degraded: [{ seat: "remote@rig", host: "http-host", reason: "tiles need ssh" }] },
+    grids: [{ columns: 1, rows: 1, blanks: 0 }], ...over,
+  };
+}
+
+function openLauncher() {
+  window.history.replaceState({}, "", "/topology/rig/rig-1?launcher=open");
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  return { qc, ...render(<QueryClientProvider client={qc}><TerminalLauncher rigId="rig-1" rigName="acme" /></QueryClientProvider>) };
+}
+
+describe("TerminalLauncher canonical preview contract", () => {
+  it("uses daemon readiness and sends the exact preview fingerprint only after explicit Open", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockImplementation(async (url, options) => new Response(JSON.stringify(
+      options?.method === "POST"
+        ? { provider: "herdr", ok: true, opened: ["confirmed@rig"], absent: [], degraded: [], pages: 1 }
+        : preview(),
+    )));
+    openLauncher();
+    await waitFor(() => expect(screen.getByTestId("launcher-layout").textContent).toContain("1 pane"));
+    expect(screen.getByTestId("terminal-launcher-dialog").textContent).toContain("saved-stopped@rig: not alive");
+    expect(screen.getByTestId("terminal-launcher-dialog").textContent).toContain("remote@rig (http-host): tiles need ssh");
+    expect(screen.getByTestId("launcher-view-rig:rig-1").textContent).toContain("2 unavailable");
+    expect(fetchMock.mock.calls.every(([, options]) => options?.method !== "POST")).toBe(true);
+    fireEvent.click(screen.getByTestId("launcher-open"));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([, options]) => options?.method === "POST")).toBe(true));
+    const call = fetchMock.mock.calls.find(([, options]) => options?.method === "POST")!;
+    expect(call[0]).toBe("/api/terminal/open");
+    expect(JSON.parse(String(call[1]!.body))).toEqual({ provider: "herdr", view: "rig:rig-1", expectedPlan: "validated-plan" });
+  });
+
+  it("never enables Open while preview is unresolved or the provider is unavailable", async () => {
+    vi.mocked(fetch).mockImplementation(() => new Promise(() => {}));
+    const mounted = openLauncher();
+    expect((screen.getByTestId("launcher-open") as HTMLButtonElement).disabled).toBe(true);
+    mounted.unmount();
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify(preview({ status: { available: false } }))));
+    openLauncher();
+    await waitFor(() => expect(screen.getByTestId("terminal-launcher-dialog").textContent).toContain("herdr unavailable"));
+    expect((screen.getByTestId("launcher-open") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("drops the old plan on provider changes until a new preview lands", async () => {
+    vi.mocked(fetch).mockImplementation(async (url) => String(url).includes("provider=cmux")
+      ? new Promise(() => {}) : new Response(JSON.stringify(preview())));
+    openLauncher();
+    await waitFor(() => expect((screen.getByTestId("launcher-open") as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByTestId("launcher-provider-cmux"));
+    expect((screen.getByTestId("launcher-open") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId("launcher-layout").textContent).not.toContain("1 pane");
+  });
+
+  it("uses explicit saved view arguments and previews saved membership without claiming it is live", async () => {
+    openLauncher();
+    const row = screen.getByTestId("launcher-view-saved:watchtower");
+    expect(row.textContent).not.toContain("1 live");
+    fireEvent.click(row);
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("view=saved%3Awatchtower"))).toBe(true));
+  });
+
+  it("renders daemon page grids and filler cells without claiming a configurable show limit", async () => {
+    const first = preview();
+    const panes = Array.from({ length: 10 }, (_, i) => ({ ...first.composed.opened[0], seat: `seat-${i}` }));
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify(preview({
+      composed: { ...first.composed, opened: panes, pages: [panes.slice(0, 9), panes.slice(9)] },
+      grids: [{ columns: 3, rows: 3, blanks: 0 }, { columns: 1, rows: 1, blanks: 0 }],
+    }))));
+    openLauncher();
+    await waitFor(() => expect(screen.getByTestId("launcher-layout").textContent).toContain("Page 1/2"));
+    expect(screen.getByTestId("launcher-open").textContent).toContain("all 2 pages");
+    fireEvent.click(screen.getByTestId("launcher-next-page"));
+    expect(screen.getByTestId("launcher-layout").textContent).toContain("Page 2/2");
+    expect(screen.getByTestId("terminal-launcher-dialog").textContent).not.toContain("show-limit");
+  });
+
+  it("keeps unknown host selection from launching a local terminal", () => {
+    host.known = false;
+    openLauncher();
+    expect((screen.getByTestId("launcher-open") as HTMLButtonElement).disabled).toBe(true);
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+});
+
+describe("TerminalLauncher preview failures and scope changes", () => {
+  it("rejects invalid geometry rather than opening a plan it cannot render", async () => {
+    vi.mocked(fetch).mockImplementation(async () => new Response(JSON.stringify(preview({ grids: [{ columns: 0, rows: 1, blanks: 0 }] }))));
+    openLauncher();
+    await waitFor(() => expect(screen.getByTestId("terminal-launcher-dialog").textContent).toContain("could not be verified"));
+    expect((screen.getByTestId("launcher-open") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("blocks empty plans and reports the daemon preview error without a fallback roster", async () => {
+    const first = preview();
+    vi.mocked(fetch).mockImplementation(async () => new Response(JSON.stringify(preview({ composed: { ...first.composed, opened: [], pages: [] }, grids: [] }))));
+    const mounted = openLauncher();
+    await waitFor(() => expect(screen.getByTestId("terminal-launcher-dialog").textContent).toContain("Nothing attachable"));
+    expect((screen.getByTestId("launcher-open") as HTMLButtonElement).disabled).toBe(true);
+    mounted.unmount();
+    vi.mocked(fetch).mockImplementation(async () => new Response(JSON.stringify({ code: "view_not_found", error: "unknown view" }), { status: 404 }));
+    openLauncher();
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("unknown view"));
+    expect((screen.getByTestId("launcher-open") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("requires the refreshed plan after the daemon rejects changed membership", async () => {
+    let revision = 0;
+    vi.mocked(fetch).mockImplementation(async (_url, options) => {
+      if (options?.method === "POST") {
+        revision++;
+        return new Response(JSON.stringify({ provider: "herdr", ok: false, opened: [], absent: [], degraded: [], pages: 0,
+          code: "preview_changed", error: "View membership or layout changed. Refresh the preview before Open; nothing was launched." }), { status: 409 });
+      }
+      return new Response(JSON.stringify(preview({ planId: `plan-${revision}` })));
+    });
+    openLauncher();
+    await waitFor(() => expect((screen.getByTestId("launcher-open") as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByTestId("launcher-open"));
+    await waitFor(() => expect(screen.getByTestId("launcher-open-error").textContent).toContain("nothing was launched"));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([, options]) => options?.method !== "POST")).toHaveLength(2));
+    await waitFor(() => expect((screen.getByTestId("launcher-open") as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByTestId("launcher-open"));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(2));
+    expect(vi.mocked(fetch).mock.calls.filter(([, options]) => options?.method === "POST").map(([, options]) => JSON.parse(String(options!.body)).expectedPlan)).toEqual(["plan-0", "plan-1"]);
+  });
+
+  it("drops an attachable local plan immediately when selection changes to remote", async () => {
+    const mounted = openLauncher();
+    await waitFor(() => expect((screen.getByTestId("launcher-open") as HTMLButtonElement).disabled).toBe(false));
+    host.id = "remote";
+    mounted.rerender(<QueryClientProvider client={mounted.qc}><TerminalLauncher rigId="rig-1" rigName="acme" /></QueryClientProvider>);
+    expect((screen.getByTestId("launcher-open") as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByTestId("launcher-open"));
+    expect(vi.mocked(fetch).mock.calls.every(([, options]) => options?.method !== "POST")).toBe(true);
+  });
+
+  it("blocks a cached plan when refreshing it fails", async () => {
+    openLauncher();
+    await waitFor(() => expect((screen.getByTestId("launcher-open") as HTMLButtonElement).disabled).toBe(false));
+    vi.mocked(fetch).mockRejectedValue(new Error("preview offline"));
+    fireEvent.click(screen.getByTestId("launcher-refresh-preview"));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("preview offline"));
+    expect((screen.getByTestId("launcher-open") as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+it("does not substitute the rig for an unknown deep-linked target", async () => {
+  window.history.replaceState({}, "", "/topology/rig/rig-1?launcher=open&view=saved:deleted");
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  render(<QueryClientProvider client={qc}><TerminalLauncher rigId="rig-1" rigName="acme" /></QueryClientProvider>);
+  expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  expect((screen.getByTestId("launcher-open") as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByTestId("terminal-launcher-dialog").textContent).toContain("Select an available view");
 });

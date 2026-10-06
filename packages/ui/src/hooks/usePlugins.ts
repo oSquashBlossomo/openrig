@@ -9,6 +9,8 @@
 // Kept in lockstep at v0; if the daemon shapes evolve, update both sides.
 
 import { useQuery } from "@tanstack/react-query";
+import { boundedJsonRead } from "../lib/bounded-json-read.js";
+import { OperatorReadError } from "../lib/operator-read.js";
 
 export type PluginRuntime = "claude" | "codex";
 export type PluginSourceKind = "vendored" | "claude-cache" | "codex-cache";
@@ -86,28 +88,29 @@ function buildListUrl(opts: UsePluginsOpts | undefined): string {
   return qs.length === 0 ? "/api/plugins" : `/api/plugins?${qs}`;
 }
 
-async function fetchPlugins(opts: UsePluginsOpts | undefined): Promise<PluginEntry[]> {
-  const res = await fetch(buildListUrl(opts));
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json() as Promise<PluginEntry[]>;
+async function fetchPlugins(opts: UsePluginsOpts | undefined, signal?: AbortSignal): Promise<PluginEntry[]> {
+  return boundedJsonRead<PluginEntry[]>(buildListUrl(opts), { signal });
 }
 
-async function fetchPlugin(id: string): Promise<PluginDetail> {
-  const res = await fetch(`/api/plugins/${encodeURIComponent(id)}`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json() as Promise<PluginDetail>;
+function exactPluginTarget(id: string | null): string {
+  if (typeof id !== "string" || id.length === 0) {
+    throw new OperatorReadError("invalid_request", "Choose an exact plugin before reading.");
+  }
+  return id;
 }
 
-async function fetchPluginUsedBy(id: string): Promise<PluginAgentReference[]> {
-  const res = await fetch(`/api/plugins/${encodeURIComponent(id)}/used-by`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json() as Promise<PluginAgentReference[]>;
+async function fetchPlugin(id: string | null, signal?: AbortSignal): Promise<PluginDetail> {
+  return boundedJsonRead<PluginDetail>(`/api/plugins/${encodeURIComponent(exactPluginTarget(id))}`, { signal });
+}
+
+async function fetchPluginUsedBy(id: string | null, signal?: AbortSignal): Promise<PluginAgentReference[]> {
+  return boundedJsonRead<PluginAgentReference[]>(`/api/plugins/${encodeURIComponent(exactPluginTarget(id))}/used-by`, { signal });
 }
 
 export function usePlugins(opts: UsePluginsOpts = {}) {
   return useQuery<PluginEntry[]>({
     queryKey: ["plugins", "list", opts.runtime ?? "all", opts.source ?? "all"],
-    queryFn: () => fetchPlugins(opts),
+    queryFn: ({ signal }) => fetchPlugins(opts, signal),
     staleTime: 30_000,
   });
 }
@@ -115,8 +118,8 @@ export function usePlugins(opts: UsePluginsOpts = {}) {
 export function usePlugin(id: string | null) {
   return useQuery<PluginDetail>({
     queryKey: ["plugins", "detail", id],
-    queryFn: () => fetchPlugin(id!),
-    enabled: id !== null,
+    queryFn: ({ signal }) => fetchPlugin(id, signal),
+    enabled: id !== null && id.length > 0,
     staleTime: 30_000,
   });
 }
@@ -124,8 +127,8 @@ export function usePlugin(id: string | null) {
 export function usePluginUsedBy(id: string | null) {
   return useQuery<PluginAgentReference[]>({
     queryKey: ["plugins", "used-by", id],
-    queryFn: () => fetchPluginUsedBy(id!),
-    enabled: id !== null,
+    queryFn: ({ signal }) => fetchPluginUsedBy(id, signal),
+    enabled: id !== null && id.length > 0,
     staleTime: 30_000,
   });
 }

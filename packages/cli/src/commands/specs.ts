@@ -8,6 +8,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
 } from "node:fs";
@@ -150,9 +151,12 @@ export async function resolveLibrarySpec(
   const res = await client.get<LibraryEntry[]>(opts?.kind ? `/api/specs/library?kind=${opts.kind}` : "/api/specs/library");
   const entries = res.data ?? [];
 
+  if (/^[0-9a-f]{16}$/.test(nameOrId)) throw new Error("Legacy spec ID cannot identify an exact source. Reselect a current ID with 'rig specs ls'.");
+
   // Try exact ID match first
   const byId = entries.find((e) => e.id === nameOrId);
   if (byId) return byId;
+  if (nameOrId.startsWith("specfile:")) throw new Error(`Spec ID '${nameOrId}' not found. Reselect a current ID with 'rig specs ls'.`);
 
   // Try name match
   const byName = entries.filter((e) => e.name === nameOrId);
@@ -323,9 +327,9 @@ Examples:
         const syncRes = await client.post<LibraryEntry[]>("/api/specs/library/sync");
         const entries = syncRes.data ?? [];
         const name = (res.data as Record<string, unknown>)["name"] as string ?? source.installName;
+        const installedSourcePath = realpathSync(source.installKind === "file" ? dest : join(dest, basename(source.yamlPath)));
         const newEntry = entries.find((e) => (
-          e.name === name &&
-          normalizePathForMatch(e.sourcePath).endsWith(source.libraryEntrySuffix)
+          e.name === name && e.kind === kind && e.sourcePath === installedSourcePath
         ));
 
         if (opts.json) {

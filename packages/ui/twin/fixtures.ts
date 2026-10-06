@@ -90,8 +90,46 @@ export const rigGraphByRig: Record<string, TwinGraph> = {
       { id: "e_builder2_reviewer1", source: "n_builders_builder2", target: "n_builders_reviewer1", data: { kind: "collaborates_with" } },
     ],
   },
-  rig_bravo: { nodes: [], edges: [] },
-  rig_gamma: { nodes: [], edges: [] },
+  // 3D preview variety (fictional). Node counts match psEntries/rigSummary (8 / 4) so the
+  // spatial view's real counts agree with the summary. Covers: fresh hook evidence (explicit
+  // small `staleness`), a stale hook sample, an identity mismatch, a failed startup, a stopped
+  // session, an unpodded infrastructure seat and cross-pod relationships.
+  rig_bravo: {
+    nodes: [
+      { id: "pod-b-desk", type: "podGroup", position: ZERO, data: { podId: "b_desk", podNamespace: "desk", podLabel: "desk" } },
+      { id: "pod-b-relay", type: "podGroup", position: ZERO, data: { podId: "b_relay", podNamespace: "relay", podLabel: "relay" } },
+      { id: "b_editor", type: "rigNode", parentId: "pod-b-desk", position: ZERO, data: { logicalId: "desk.editor", runtime: "claude-code", model: "opus", status: "running", startupStatus: "ready", canonicalSessionName: "editor@acme-comms", agentActivity: { ...act("needs_input", "permission_prompt", "runtime_hook"), staleness: 4 }, terminalActive: false, pendingWorkCount: 1, hasAssignedWork: true, currentQitems: [] } },
+      { id: "b_writer", type: "rigNode", parentId: "pod-b-desk", position: ZERO, data: { logicalId: "desk.writer", runtime: "codex", status: "running", startupStatus: "ready", canonicalSessionName: "writer@acme-comms", terminalActive: true, currentQitems: [] } },
+      { id: "b_checker", type: "rigNode", parentId: "pod-b-desk", position: ZERO, data: { logicalId: "desk.checker", runtime: "claude-code", status: "running", startupStatus: "ready", canonicalSessionName: "checker@acme-comms", agentActivity: { ...act("running", "tool_use", "runtime_hook"), stale: true }, currentQitems: [] } },
+      { id: "b_router", type: "rigNode", parentId: "pod-b-relay", position: ZERO, data: { logicalId: "relay.router", runtime: "claude-code", status: "running", startupStatus: "attention_required", canonicalSessionName: "router@acme-comms", terminalActive: true, identityVerdict: { verdict: "mismatch", reason: "pane process is a login shell" }, currentQitems: [] } },
+      { id: "b_mailer", type: "rigNode", parentId: "pod-b-relay", position: ZERO, data: { logicalId: "relay.mailer", runtime: "codex", status: "running", startupStatus: "ready", canonicalSessionName: "mailer@acme-comms", terminalActive: false, currentQitems: [] } },
+      { id: "b_archiver", type: "rigNode", parentId: "pod-b-relay", position: ZERO, data: { logicalId: "relay.archiver", runtime: "codex", status: "stopped", startupStatus: null, canonicalSessionName: "archiver@acme-comms", currentQitems: [] } },
+      { id: "b_feed", type: "rigNode", parentId: "pod-b-relay", position: ZERO, data: { logicalId: "relay.feed", runtime: "claude-code", status: "running", startupStatus: "failed", canonicalSessionName: "feed@acme-comms", currentQitems: [] } },
+      { id: "b_shell", type: "rigNode", position: ZERO, data: { logicalId: "ops-shell", runtime: "terminal", nodeKind: "infrastructure", status: "running", startupStatus: "ready", canonicalSessionName: "ops-shell@acme-comms", terminalActive: false, currentQitems: [] } },
+    ],
+    edges: [
+      { id: "be1", source: "b_editor", target: "b_writer", data: { kind: "delegates_to" } },
+      { id: "be2", source: "b_editor", target: "b_checker", data: { kind: "delegates_to" } },
+      { id: "be3", source: "b_writer", target: "b_router", data: { kind: "hands_off_to" } },
+      { id: "be4", source: "b_router", target: "b_mailer", data: { kind: "delegates_to" } },
+      { id: "be5", source: "b_router", target: "b_feed", data: { kind: "delegates_to" } },
+      { id: "be6", source: "b_checker", target: "b_archiver", data: { kind: "reports_to" } },
+    ],
+  },
+  rig_gamma: {
+    nodes: [
+      { id: "pod-g-core", type: "podGroup", position: ZERO, data: { podId: "g_core", podNamespace: "core", podLabel: "core" } },
+      { id: "g_planner", type: "rigNode", parentId: "pod-g-core", position: ZERO, data: { logicalId: "core.planner", runtime: "claude-code", model: "opus", status: "running", startupStatus: "ready", canonicalSessionName: "planner@acme-core", terminalActive: true, pendingWorkCount: 3, hasAssignedWork: true, currentQitems: [{ qitemId: "wf-demo-301", bodyExcerpt: "Example: plan the next release slice", tier: "plan" }] } },
+      { id: "g_impl", type: "rigNode", parentId: "pod-g-core", position: ZERO, data: { logicalId: "core.implementer", runtime: "codex", status: "running", startupStatus: "ready", canonicalSessionName: "implementer@acme-core", terminalActive: false, currentQitems: [] } },
+      { id: "g_qa", type: "rigNode", parentId: "pod-g-core", position: ZERO, data: { logicalId: "core.qa", runtime: "claude-code", status: "running", startupStatus: "pending", canonicalSessionName: "qa@acme-core", currentQitems: [] } },
+      { id: "g_docs", type: "rigNode", parentId: "pod-g-core", position: ZERO, data: { logicalId: "core.docs", runtime: "codex", status: "running", startupStatus: "ready", canonicalSessionName: "docs@acme-core", terminalActive: false, currentQitems: [] } },
+    ],
+    edges: [
+      { id: "ge1", source: "g_planner", target: "g_impl", data: { kind: "delegates_to" } },
+      { id: "ge2", source: "g_impl", target: "g_qa", data: { kind: "hands_off_to" } },
+      { id: "ge3", source: "g_planner", target: "g_docs", data: { kind: "delegates_to" } },
+    ],
+  },
 };
 
 // --- Hard surface 2: LIVE NODE DETAILS ------------------------------------------------

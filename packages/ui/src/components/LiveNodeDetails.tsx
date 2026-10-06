@@ -17,7 +17,6 @@ import { useMemo, useState } from "react";
 import { CirclePlay } from "lucide-react";
 import { useNodeDetail, type NodeDetailData } from "../hooks/useNodeDetail.js";
 import { useTopologyActivity } from "../hooks/useTopologyActivity.js";
-import { useSpecLibrary, useLibraryReview } from "../hooks/useSpecLibrary.js";
 import { WorkspacePage } from "./WorkspacePage.js";
 import { WorkflowHeader } from "./WorkflowScaffold.js";
 import { AgentSpecDisplay } from "./AgentSpecDisplay.js";
@@ -26,6 +25,11 @@ import { AgentSpecDisplay } from "./AgentSpecDisplay.js";
 // defensively (the resources.plugins field is owned by batch 1 on
 // plugin-primitive-v0; on main it's absent and we render empty state).
 import { AgentPluginsList } from "./specs/AgentPluginsList.js";
+// Library-owned seat provenance (gui-library-provenance-ui.md): the ONE
+// same-origin library read for this seat, keyed by its launched binding.
+import { SeatSpecProvenance } from "./specs/SeatSpecProvenance.js";
+import { ScopedHealthPanel, useHealthAdmission } from "./topology/ScopedHealth.js";
+import { SeatWorkPanel } from "./SeatWorkPanel.js";
 // V0.3.1 slice 25 — PreviewPane no longer rendered (Startup section
 // in Details tab drops the preview; the terminal moved up to Overview
 // via SessionPreviewPane). PreviewPane is still owned by other
@@ -52,11 +56,22 @@ import type { AgentSpecReview } from "../hooks/useSpecReview.js";
 import { RuntimeBadge, ToolMark } from "./graphics/RuntimeMark.js";
 import { postOpenCmux } from "../hooks/useCmuxLaunch.js";
 
-type Tab = "overview" | "details";
+export type LiveNodeDetailsTab = "overview" | "details";
+type Tab = LiveNodeDetailsTab;
 
 interface LiveNodeDetailsProps {
   rigId: string;
   logicalId: string;
+  /** Controlled tab (the topology seat route's `view`). When omitted (legacy
+   *  /rigs/$rigId/nodes/$logicalId route) the tab is local state bound to this
+   *  exact rig/logical identity, so a reused component never shows another
+   *  seat's tab. */
+  activeTab?: LiveNodeDetailsTab;
+  onTabChange?: (tab: LiveNodeDetailsTab) => void;
+  /** Admitted source host whose node read produced this page (topology seat
+   *  route). File references from it carry that exact origin; omitted on
+   *  legacy routes, where the drawer captures the known selection itself. */
+  sourceHost?: string;
 }
 
 const SECTION_CLASS = "border border-outline-variant bg-surface-lowest/30 p-3";
@@ -78,12 +93,6 @@ function startupStatusLabel(status: string | null): string {
   }
 }
 
-function resolveAgentName(agentRef: string | null): string | null {
-  if (!agentRef) return null;
-  const match = agentRef.match(/^local:agents\/([^/]+)$/);
-  return match?.[1] ?? null;
-}
-
 function InfoRow({ label, value }: { label: string; value: string | number | null | undefined }) {
   if (value === null || value === undefined || value === "") return null;
   return (
@@ -94,17 +103,12 @@ function InfoRow({ label, value }: { label: string; value: string | number | nul
   );
 }
 
-function AgentSpecSection({ data }: { data: NodeDetailData }) {
-  const agentName = resolveAgentName(data.agentRef);
-  const { data: agentEntries = [], isLoading: entriesLoading } = useSpecLibrary("agent");
-
-  const matches = agentName
-    ? agentEntries.filter((entry) => entry.name === agentName)
-    : [];
-
-  const entryId = matches.length === 1 ? matches[0]!.id : null;
-  const { data: review, isLoading: reviewLoading } = useLibraryReview(entryId);
-
+/** Spec facts for the seat. Library provenance (launched binding vs current
+ *  same-origin library candidates, and the exact review when unambiguous) is
+ *  delegated to Library's SeatSpecProvenance — no independent name-match
+ *  lookup here. `specSourceHost` is the admitted host that served this seat;
+ *  null (legacy routes without a source assertion) means no library read. */
+function AgentSpecSection({ data, specSourceHost }: { data: NodeDetailData; specSourceHost: string | null }) {
   return (
     <div data-testid="live-agent-spec-section" className="space-y-4">
       {data.compactSpec.name && (
@@ -119,43 +123,36 @@ function AgentSpecSection({ data }: { data: NodeDetailData }) {
           </div>
         </section>
       )}
-
-      {!agentName ? (
-        <div data-testid="agent-spec-unavailable" className="p-4 font-mono text-[10px] text-on-surface-variant">No agent spec available</div>
-      ) : entriesLoading || reviewLoading ? (
-        <div className="p-4 font-mono text-[10px] text-on-surface-variant">Loading agent spec...</div>
-      ) : matches.length === 0 ? (
-        <div data-testid="agent-spec-unavailable" className="p-4 font-mono text-[10px] text-on-surface-variant">No agent spec available</div>
-      ) : matches.length > 1 ? (
-        <div data-testid="agent-spec-ambiguous" className="p-4 font-mono text-[10px] text-amber-600">
-          Agent spec ambiguous ({matches.length} matches for &quot;{agentName}&quot;)
-        </div>
-      ) : !review || review.kind !== "agent" ? (
-        <div data-testid="agent-spec-unavailable" className="p-4 font-mono text-[10px] text-on-surface-variant">No agent spec available</div>
-      ) : (
-        <>
-          <AgentSpecDisplay
-            review={review as AgentSpecReview}
-            yaml={review.raw}
-            testIdPrefix="live-agent"
-            sourcePath={review.sourcePath}
-          />
-          {/* Slice 3.3 fix-B — Plugins section sits between AgentSpecDisplay
-              (which renders Skills among other things) and the surrounding
-              tabs' Startup Files block. Extracts plugin IDs from review
-              defensively: the field is owned by batch 1 on plugin-primitive-v0;
-              renders empty state on main + populated state post-merge. */}
-          <section
-            data-testid="live-agent-plugins-section"
-            className="border border-outline-variant bg-surface-lowest/30 p-3"
-          >
-            <div className="mb-2 font-mono text-[8px] uppercase tracking-wider text-on-surface-variant">
-              Plugins
-            </div>
-            <AgentPluginsList pluginIds={extractAgentPluginIds(review)} />
-          </section>
-        </>
-      )}
+      <SeatSpecProvenance
+        hostId={specSourceHost}
+        seat={data}
+        renderReview={(review) => (
+          <>
+            <AgentSpecDisplay
+              review={review as unknown as AgentSpecReview}
+              yaml={review.raw}
+              testIdPrefix="live-agent"
+              sourcePath={review.sourcePath}
+              // The host that SERVED this review (SeatSpecProvenance only
+              // calls renderReview after reading on specSourceHost) — never
+              // the current selection recaptured for retained content.
+              originInstance={specSourceHost}
+            />
+            {/* Slice 3.3 fix-B — Plugins section sits between AgentSpecDisplay
+                (which renders Skills among other things) and the surrounding
+                tabs' Startup Files block. */}
+            <section
+              data-testid="live-agent-plugins-section"
+              className="border border-outline-variant bg-surface-lowest/30 p-3"
+            >
+              <div className="mb-2 font-mono text-[8px] uppercase tracking-wider text-on-surface-variant">
+                Plugins
+              </div>
+              <AgentPluginsList pluginIds={extractAgentPluginIds(review)} />
+            </section>
+          </>
+        )}
+      />
     </div>
   );
 }
@@ -451,12 +448,49 @@ function ContextUsageSection({ data }: { data: NodeDetailData }) {
 //      from the column table above)
 //   4. InlineTerminal (black-glass)
 //   5. RecentEventsSection (at bottom)
-function OverviewTab({ data, activityVisual }: { data: NodeDetailData; activityVisual?: TopologyActivityVisual | null }) {
+/** Inline canonical Health for this exact seat (no extra seat route or tab).
+ *  Admitted only when the page asserts a source that equals the CURRENT
+ *  selection and the served detail is this route's exact rig/logical seat;
+ *  findings match the detail's stable nodeId byte-for-byte (never logicalId,
+ *  session name or a composite). Legacy routes assert no source → nothing read. */
+function SeatHealthSection({ data, rigId, logicalId, sourceHost, detailCurrent }: { data: NodeDetailData; rigId: string; logicalId: string; sourceHost?: string; detailCurrent: boolean }) {
+  const admission = useHealthAdmission(sourceHost ?? null);
+  const detailAdmitted = data.rigId === rigId && data.logicalId === logicalId;
+  if (!detailCurrent) {
+    // The latest detail read failed: the retained detail (and its stable
+    // nodeId) is not current proof of this seat's identity — a recreated seat
+    // can carry a new id — so no Health is correlated until a read succeeds.
+    return (
+      <section className={SECTION_CLASS} data-testid="live-seat-health">
+        <h2 className="font-mono text-[11px] font-bold uppercase tracking-[0.14em] text-on-surface">Seat health</h2>
+        <p data-testid="seat-health-detail-unavailable" role="status" className="mt-1 text-xs text-on-surface-variant">
+          The current seat detail could not be read, so this seat&apos;s identity is not confirmed and no findings are matched to it. This is not &quot;no findings&quot;.
+        </p>
+      </section>
+    );
+  }
+  return (
+    <section className={SECTION_CLASS} data-testid="live-seat-health">
+      <ScopedHealthPanel
+        scope={{ kind: "seat", rigId: data.rigId, nodeId: data.nodeId ?? null }}
+        admission={detailAdmitted ? admission : { kind: "unknown" }}
+        from={{ kind: "seat", rigId, logicalId }}
+        testId="seat-health"
+      />
+    </section>
+  );
+}
+
+function OverviewTab({ data, activityVisual, rigId, logicalId, sourceHost, detailCurrent }: { data: NodeDetailData; activityVisual?: TopologyActivityVisual | null; rigId: string; logicalId: string; sourceHost?: string; detailCurrent: boolean }) {
   return (
     <div data-testid="live-overview-section" className="space-y-4">
       <SeatNotificationBanner data={data} />
       <SeatOverviewTable data={data} activityVisual={activityVisual} />
-      <SeatOverviewSecondary data={data} />
+      {/* A local seat's full current work is in the panel below; the single
+          detail snippet stays only where that list cannot be read here. */}
+      <SeatOverviewSecondary data={data} showCurrentWork={sourceHost !== LOCAL_HOST_ID} />
+      <SeatWorkPanel rigId={rigId} logicalId={logicalId} sourceHost={sourceHost} />
+      <SeatHealthSection data={data} rigId={rigId} logicalId={logicalId} sourceHost={sourceHost} detailCurrent={detailCurrent} />
       <InlineTerminal data={data} />
       <RecentEventsSection data={data} />
     </div>
@@ -472,16 +506,18 @@ function DetailsTab({
   logicalId,
   data,
   isAgent,
+  sourceHost,
 }: {
   rigId: string;
   logicalId: string;
   data: NodeDetailData;
   isAgent: boolean;
+  sourceHost?: string;
 }) {
   return (
     <div data-testid="live-details-section" className="space-y-4">
-      <StartupContent rigId={rigId} logicalId={logicalId} data={data} />
-      {isAgent ? <AgentSpecSection data={data} /> : null}
+      <StartupContent rigId={rigId} logicalId={logicalId} data={data} sourceHost={sourceHost} />
+      {isAgent ? <AgentSpecSection data={data} specSourceHost={sourceHost ?? null} /> : null}
       <EdgesSection data={data} />
       <PeersSection data={data} />
       <ContextUsageSection data={data} />
@@ -539,7 +575,7 @@ function InlineTerminal({ data }: { data: NodeDetailData }) {
   );
 }
 
-function StartupContent({ rigId: _rigId, logicalId: _logicalId, data }: { rigId: string; logicalId: string; data: NodeDetailData }) {
+function StartupContent({ rigId: _rigId, logicalId: _logicalId, data, sourceHost }: { rigId: string; logicalId: string; data: NodeDetailData; sourceHost?: string }) {
   void _rigId; void _logicalId;
   return (
     <div data-testid="live-startup-section" className="space-y-4">
@@ -581,7 +617,9 @@ function StartupContent({ rigId: _rigId, logicalId: _logicalId, data }: { rigId:
                 data-testid={`live-startup-file-${f.path}`}
               >
                 <FileReferenceTrigger
-                  data={{ path: f.path, absolutePath: f.absolutePath }}
+                  // The seat's own host produced this path: a remote seat's
+                  // startup file is never read from the local instance.
+                  data={sourceHost === undefined ? { path: f.path, absolutePath: f.absolutePath } : { path: f.path, absolutePath: f.absolutePath, originInstance: sourceHost }}
                   testId={`live-startup-file-trigger-${f.path}`}
                   className="block w-full px-3 py-2 text-left hover:bg-surface-low/60 transition-colors font-mono text-[10px]"
                 >
@@ -665,7 +703,7 @@ function TabNav({
   );
 }
 
-export function LiveNodeDetails({ rigId, logicalId }: LiveNodeDetailsProps) {
+export function LiveNodeDetails({ rigId, logicalId, activeTab: controlledTab, onTabChange, sourceHost }: LiveNodeDetailsProps) {
   const { data, isLoading, error } = useNodeDetail(rigId, logicalId);
   const sessionIndex = useMemo(() => buildTopologySessionIndex(data ? [{
     nodeId: `${data.rigId}::${data.logicalId}`,
@@ -696,7 +734,16 @@ export function LiveNodeDetails({ rigId, logicalId }: LiveNodeDetailsProps) {
   // at-a-glance info table + inline terminal without tab-switching.
   // Analogous to slice 12's project-scope default-tab flip
   // (story → overview).
-  const [activeTab, setActiveTab] = useState<Tab>("overview");
+  // Controlled by the seat URL when provided; otherwise local, and keyed to
+  // the exact seat so another seat rendered by the same component starts at
+  // Overview instead of inheriting this one's tab.
+  const identity = `${rigId}\u0000${logicalId}`;
+  const [localTab, setLocalTab] = useState<{ identity: string; tab: Tab }>({ identity, tab: "overview" });
+  const activeTab: Tab = controlledTab ?? (localTab.identity === identity ? localTab.tab : "overview");
+  const setActiveTab = (tab: Tab) => {
+    if (onTabChange) onTabChange(tab);
+    else setLocalTab({ identity, tab });
+  };
   const isAgent = data ? data.nodeKind !== "infrastructure" : true;
   const tabs: Tab[] = ["overview", "details"];
 
@@ -730,9 +777,9 @@ export function LiveNodeDetails({ rigId, logicalId }: LiveNodeDetailsProps) {
             <ActionButtonsRow rigId={rigId} logicalId={logicalId} data={data} />
             <TabNav tabs={tabs} activeTab={activeTab} onSelect={setActiveTab} />
             <div data-testid="live-node-tab-body" className="space-y-4">
-              {activeTab === "overview" && <OverviewTab data={data} activityVisual={activityVisual} />}
+              {activeTab === "overview" && <OverviewTab data={data} activityVisual={activityVisual} rigId={rigId} logicalId={logicalId} sourceHost={sourceHost} detailCurrent={!error} />}
               {activeTab === "details" && (
-                <DetailsTab rigId={rigId} logicalId={logicalId} data={data} isAgent={isAgent} />
+                <DetailsTab rigId={rigId} logicalId={logicalId} data={data} isAgent={isAgent} sourceHost={sourceHost} />
               )}
             </div>
           </>

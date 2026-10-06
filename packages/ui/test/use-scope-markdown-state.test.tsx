@@ -19,6 +19,7 @@ let fetchSpy: ReturnType<typeof vi.fn>;
 
 function makeWrapper() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["hosts"], { ownName: "Private local test", selected: "local", hosts: [] });
   return ({ children }: { children: ReactNode }) =>
     createElement(QueryClientProvider, { client }, children);
 }

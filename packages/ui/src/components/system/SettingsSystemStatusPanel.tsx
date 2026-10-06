@@ -10,12 +10,7 @@ import { SectionHeader } from "../ui/section-header.js";
 import { StatusPip } from "../ui/status-pip.js";
 import { useRigSummary } from "../../hooks/useRigSummary.js";
 import { usePsEntries } from "../../hooks/usePsEntries.js";
-
-async function fetchHealth(): Promise<boolean> {
-  const res = await fetch("/healthz");
-  if (!res.ok) throw new Error("unhealthy");
-  return true;
-}
+import { useDaemonHealth } from "../../hooks/useDaemonHealth.js";
 
 async function fetchCmux(): Promise<{ available: boolean }> {
   const res = await fetch("/api/adapters/cmux/status");
@@ -24,12 +19,7 @@ async function fetchCmux(): Promise<{ available: boolean }> {
 }
 
 export function SettingsSystemStatusPanel() {
-  const healthQuery = useQuery({
-    queryKey: ["daemon", "health"],
-    queryFn: fetchHealth,
-    refetchInterval: 10_000,
-    retry: false,
-  });
+  const { query: healthQuery, signal: healthSignal } = useDaemonHealth();
   const cmuxQuery = useQuery({
     queryKey: ["daemon", "cmux"],
     queryFn: fetchCmux,
@@ -41,12 +31,15 @@ export function SettingsSystemStatusPanel() {
   const { data: psEntries } = usePsEntries();
 
   const daemonConnected = healthQuery.isSuccess;
+  const eventLoopUnhealthy = daemonConnected && healthSignal.evidence?.healthy === false;
   const cmuxAvailable = daemonConnected ? (cmuxQuery.data?.available ?? null) : null;
   const totalRigs = rigs?.length ?? 0;
   const runningRigs = psEntries?.filter((p) => p.runningCount > 0).length ?? 0;
 
   const daemonStatus: React.ComponentProps<typeof StatusPip>["status"] =
-    daemonConnected
+    eventLoopUnhealthy
+      ? "warning"
+      : daemonConnected
       ? "active"
       : healthQuery.isError
       ? "error"
@@ -70,7 +63,9 @@ export function SettingsSystemStatusPanel() {
           <StatusPip
             status={daemonStatus}
             label={
-              daemonConnected
+              eventLoopUnhealthy
+                ? "UNHEALTHY"
+                : daemonConnected
                 ? "OK"
                 : healthQuery.isError
                 ? "ERROR"
@@ -82,6 +77,12 @@ export function SettingsSystemStatusPanel() {
             testId="status-daemon"
           />
         </div>
+        {eventLoopUnhealthy && healthSignal.evidence && (
+          <div data-testid="status-daemon-evidence" className="mt-1 font-mono text-[10px] text-warning">
+            event loop starved — lag {healthSignal.evidence.lagMeanMs.toFixed(0)}ms,
+            last-tick {healthSignal.evidence.lastTickAgeMs.toFixed(0)}ms
+          </div>
+        )}
       </section>
       {/* A4 bounce-fix: cmux control row restored. */}
       <section>

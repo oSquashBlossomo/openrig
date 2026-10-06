@@ -14,6 +14,7 @@ import { Link } from "@tanstack/react-router";
 import { useCmuxLaunch } from "../../hooks/useCmuxLaunch.js";
 import { ActorMark, isHumanActor } from "../graphics/RuntimeMark.js";
 import { parseSessionName } from "../../lib/session-name.js";
+import { freshTopologyVisitState, topologyTarget } from "../topology/topology-navigation.js";
 
 interface AuthorAgentTagProps {
   authorSession: string;
@@ -49,10 +50,29 @@ export function AuthorAgentTag({ authorSession, rigId, className, testId }: Auth
     );
   }
 
+  // Shared exact builder: RAW params (the seat page no longer decodes twice).
+  // Feed rows carry no explicit origin host, so the link is legacy and binds
+  // to the confirmed selection on arrival; never the selected host by guess.
+  const target = topologyTarget({ scope: { kind: "seat", rigId: targetRigId, logicalId: parsed.logicalId }, sourceHost: null });
+  if (!target) {
+    return (
+      <span
+        data-testid={testId ?? "author-agent-tag"}
+        title="This seat identity cannot be represented as a link."
+        className={className ?? "inline-flex items-center gap-1 font-mono text-[10px] text-on-surface-variant"}
+      >
+        {humanActor ? <ActorMark actor={authorSession} size="xs" /> : null}
+        <span>{authorSession}</span>
+      </span>
+    );
+  }
+
   return (
     <Link
-      to="/topology/seat/$rigId/$logicalId"
-      params={{ rigId: targetRigId, logicalId: encodeURIComponent(parsed.logicalId) }}
+      to={target.to}
+      params={target.params as never}
+      search={target.search as never}
+      state={freshTopologyVisitState}
       data-testid={testId ?? "author-agent-tag"}
       onClick={(e) => {
         // Cmd/Ctrl-click or right-click → standard Link behavior (open seat detail).

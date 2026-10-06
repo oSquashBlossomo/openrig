@@ -13,6 +13,7 @@ import { RigAgentsPage } from "../src/components/review/RigAgentsPage.js";
 import { AgentsBandView } from "../src/components/review/AgentsBandView.js";
 import { NeedsYouAccordion } from "../src/components/review/NeedsYouAccordion.js";
 import type { ComposedRigAgents, AgentsBand, NeedsYouBand } from "../src/hooks/useReview.js";
+import type { HostsResponse } from "../src/hooks/useHosts.js";
 
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ to, children }: { to: string; children: React.ReactNode }) => <a href={to}>{children}</a>,
@@ -28,6 +29,14 @@ vi.mock("../src/components/project/Lightbox.js", () => ({ Lightbox: () => null }
 vi.mock("../src/hooks/useFiles.js", () => ({ fileAssetUrl: () => "" }));
 
 const NOW = "2026-07-04T18:00:00.000Z";
+
+// The mounted FleetBand reads hosts independently of the rig composer.
+// Serve the actual single-host DTO rather than the agent payload on that route.
+const LOCAL_HOSTS: HostsResponse = { ownName: "studio", selected: "local", hosts: [] };
+
+function localHostsResponse(): Response {
+  return new Response(JSON.stringify(LOCAL_HOSTS), { status: 200, headers: { "Content-Type": "application/json" } });
+}
 
 function band(overrides: Partial<AgentsBand> = {}): AgentsBand {
   return {
@@ -107,11 +116,12 @@ function composed(overrides: Partial<ComposedRigAgents> = {}): ComposedRigAgents
 }
 
 function renderPage(payload: ComposedRigAgents | { error: true }) {
-  vi.stubGlobal("fetch", async () =>
-    "error" in payload
+  vi.stubGlobal("fetch", async (url: string) => {
+    if (String(url) === "/api/hosts") return localHostsResponse();
+    return "error" in payload
       ? new Response("boom", { status: 503 })
-      : new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } }),
-  );
+      : new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } });
+  });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
@@ -309,6 +319,7 @@ describe("transcript drill-in (FR-6)", () => {
     const urls: string[] = [];
     vi.stubGlobal("fetch", async (url: string) => {
       urls.push(String(url));
+      if (String(url) === "/api/hosts") return localHostsResponse();
       return new Response(JSON.stringify(composed()), { status: 200, headers: { "Content-Type": "application/json" } });
     });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -326,6 +337,7 @@ describe("transcript drill-in (FR-6)", () => {
     vi.stubGlobal("fetch", async (url: string) => {
       const u = String(url);
       urls.push(u);
+      if (u === "/api/hosts") return localHostsResponse();
       if (u.includes("/api/transcripts/")) {
         if (u.includes("/grep")) return new Response(JSON.stringify({ session: "s", pattern: "x", matches: ["m1"] }), { status: 200 });
         return new Response(JSON.stringify({ session: "s", lines: 50, content: "tail content here" }), { status: 200 });
@@ -351,6 +363,7 @@ describe("transcript drill-in (FR-6)", () => {
 
   it("a seat with no transcript renders the daemon's honest per-seat error — never a silent empty pane", async () => {
     vi.stubGlobal("fetch", async (url: string) => {
+      if (String(url) === "/api/hosts") return localHostsResponse();
       if (String(url).includes("/api/transcripts/")) {
         return new Response(JSON.stringify({ error: "No transcript for 'dev44-qa1@openrig-delivery'. Transcripts start automatically on next rig up." }), { status: 404 });
       }

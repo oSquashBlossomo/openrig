@@ -1081,7 +1081,7 @@ export class WorkflowRuntime {
     absorbedReplay?: boolean;
   }> {
     const occurrences = this.instanceStore.listFailureOccurrences(input.instanceId);
-    if (input.occurrenceId || occurrences.length > 0) {
+    if (input.occurrenceId !== undefined || occurrences.length > 0) {
       return this.resumeFailureOccurrence(input);
     }
     let result!: {
@@ -1214,6 +1214,7 @@ export class WorkflowRuntime {
       // (concurrent resumes: exactly one commits).
       this.instanceStore.updateFrontier(instance.instanceId, [created.qitemId], "active", {
         currentStepId: step.id,
+        completedAt: null,
         expectedVersion: instance.version,
         resumeStamp: {
           resumeCount: (instance.resumeCount ?? 0) + 1,
@@ -1331,7 +1332,7 @@ export class WorkflowRuntime {
     absorbedReplay?: boolean;
   }> {
     const all = this.instanceStore.listFailureOccurrences(input.instanceId);
-    const selected = input.occurrenceId
+    const selected = input.occurrenceId !== undefined
       ? all.find((occurrence) => occurrence.occurrenceId === input.occurrenceId)
       : undefined;
     if (selected?.status === "resolved" && selected.redrivePacketId) {
@@ -1355,10 +1356,12 @@ export class WorkflowRuntime {
       return { instanceId: input.instanceId, stepId: selected.stepId, newPacketId: selected.redrivePacketId, ownerSession: packet.destinationSession, resumeCount: instance.resumeCount, exceptionItemsClosed: 0, absorbedReplay: true };
     }
     const unresolved = all.filter((occurrence) => occurrence.status === "unresolved");
-    if (!input.occurrenceId && unresolved.length !== 1) {
+    if (input.occurrenceId === undefined && unresolved.length !== 1) {
       throw new WorkflowProjectorError("failure_occurrence_required", `instance ${input.instanceId} has ${unresolved.length} unresolved failure occurrences; --occurrence is required`, { instanceId: input.instanceId, candidates: unresolved });
     }
-    const occurrence = selected ?? unresolved[0];
+    // Only omission permits the single-failure shorthand. An explicit ID must
+    // match this instance exactly; never substitute another unresolved failure.
+    const occurrence = input.occurrenceId !== undefined ? selected : unresolved[0];
     if (!occurrence || occurrence.status !== "unresolved") {
       throw new WorkflowProjectorError("failure_occurrence_not_unresolved", `failure occurrence ${input.occurrenceId ?? "(unspecified)"} is not unresolved`, { instanceId: input.instanceId, occurrenceId: input.occurrenceId ?? null });
     }
@@ -1419,6 +1422,7 @@ export class WorkflowRuntime {
       const bindings = this.instanceStore.listFrontierBindings(instance.instanceId);
       this.instanceStore.updateFrontier(instance.instanceId, nextFrontier, "active", {
         currentStepId: bindings.length === 1 ? bindings[0]!.stepId : "clear",
+        completedAt: null,
         expectedVersion: instance.version,
         resumeStamp: { resumeCount: instance.resumeCount + 1, hopsBaseline: instance.hopCount },
         lastContinuationDecision: { action: "resume_occurrence", occurrenceId: occurrence.occurrenceId, redrivePacketId: created.qitemId, actorSession: input.actorSession, decision: input.decision ?? null },

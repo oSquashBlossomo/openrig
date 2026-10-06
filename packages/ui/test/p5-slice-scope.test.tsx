@@ -20,6 +20,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { DrawerSelectionContext } from "../src/components/AppShell.js";
 import { SliceScopePage } from "../src/components/project/ScopePages.js";
 import type { SliceDetail } from "../src/hooks/useSlices.js";
+import type { HostsResponse } from "../src/hooks/useHosts.js";
 
 const mockFetch = vi.fn();
 globalThis.fetch = mockFetch;
@@ -40,6 +41,11 @@ function renderSliceScope(opts: {
   const setSelection = vi.fn();
   // Mock /api/slices/:name response.
   mockFetch.mockImplementation(async (url: string) => {
+    // Queue details are read only for a CONFIRMED source host, so the active
+    // hosts observer must read back the same selection that is seeded below.
+    if (url === "/api/hosts") {
+      return new Response(JSON.stringify({ ownName: "fixture", selected: "local", hosts: [] }));
+    }
     if (url.includes(`/api/slices/${opts.sliceId}/doc/`)) {
       return new Response(JSON.stringify({ relPath: "README.md", content: "# Readme" }), { status: 200 });
     }
@@ -64,6 +70,7 @@ function renderSliceScope(opts: {
     return new Response("[]");
   });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(["hosts"], { ownName: "fixture", selected: "local", hosts: [] } satisfies HostsResponse);
   const rootRoute = createRootRoute({ component: () => <Outlet /> });
   const sliceRoute = createRoute({
     getParentRoute: () => rootRoute,
@@ -111,6 +118,8 @@ function makeQueueItem(qitemId: string, body: string) {
 function makeDetail(overrides: Partial<SliceDetail> = {}): SliceDetail {
   return {
     name: "idea-ledger",
+    missionId: null,
+    slicePath: "/workspace/slices/idea-ledger",
     displayName: "Idea Ledger",
     railItem: null,
     status: "active",

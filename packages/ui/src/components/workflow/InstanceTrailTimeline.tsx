@@ -13,6 +13,7 @@ import type {
   WorkflowInstanceWithDeadline,
   WorkflowStepTrailEntry,
 } from "../../hooks/useWorkflow.js";
+import { DisplayTime } from "../time/DisplayTime.js";
 
 const EXIT_GLYPH: Record<string, { glyph: string; cls: string }> = {
   handoff: { glyph: "→", cls: "text-emerald-800" },
@@ -20,10 +21,6 @@ const EXIT_GLYPH: Record<string, { glyph: string; cls: string }> = {
   done: { glyph: "○", cls: "text-on-surface-variant" },
   failed: { glyph: "▲", cls: "text-red-700" },
 };
-
-function fmtTime(iso: string): string {
-  return iso.replace("T", " ").replace(/\.\d+Z$/, "Z");
-}
 
 function TrailRow({
   entry,
@@ -57,7 +54,7 @@ function TrailRow({
         </span>
         <span className="min-w-0 flex-1 truncate text-[11px] text-on-surface-variant">{note ?? "—"}</span>
         <span className="hidden font-mono text-[10px] text-on-surface-variant lg:inline">{entry.actorSession}</span>
-        <span className="font-mono text-[10px] text-on-surface-variant">{fmtTime(entry.closedAt)}</span>
+        <span className="font-mono text-[10px] text-on-surface-variant"><DisplayTime iso={entry.closedAt} className="" /></span>
       </button>
       {expanded ? (
         <div

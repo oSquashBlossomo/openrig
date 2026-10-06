@@ -43,6 +43,8 @@ describe("F1: production createAppWithWebSocket + registered terminal route, raw
     const tmux = {
       ...mockTmuxAdapter(),
       hasSession: async () => { hasSessionCalls++; return true; },
+      getPaneCursorPosition: async () => ({ x: 0, y: 0, width: 137, height: 43 }),
+      capturePaneScreen: async () => null,
       setWindowOption: ok, startPipePane: ok, stopPipePane: ok, sendKeys: ok, sendText: ok, resizeWindow: ok,
     };
     const built = createTestApp(db, {
@@ -57,7 +59,9 @@ describe("F1: production createAppWithWebSocket + registered terminal route, raw
 
   async function upgradeCase(headers: string[]) {
     const d0 = decisions.length, h0 = hasSessionCalls;
-    const status = await rawRequest(port, "GET /api/terminal/seat-1 HTTP/1.1", [...headers, ...UPGRADE]);
+    // Use the supported terminal protocol so a permitted origin reaches the
+    // broker instead of closing at the legacy-client guard before attachment.
+    const status = await rawRequest(port, "GET /api/terminal/seat-1?protocol=2 HTTP/1.1", [...headers, ...UPGRADE]);
     await settle();
     return { status, decisions: decisions.slice(d0), routeEffects: hasSessionCalls - h0 };
   }

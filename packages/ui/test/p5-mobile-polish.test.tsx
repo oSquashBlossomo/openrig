@@ -30,6 +30,8 @@ let OriginalEventSource: typeof EventSource | undefined;
 beforeEach(async () => {
   mockFetch.mockReset();
   mockFetch.mockImplementation(async (url: string) => {
+    // Topology bodies mount only behind a successfully read source host.
+    if (url === "/api/hosts") return new Response(JSON.stringify({ ownName: "localhost", selected: "local", hosts: [] }));
     if (url.includes("/api/rigs/summary")) return new Response(JSON.stringify([]));
     if (url.includes("/api/rigs/ps")) return new Response(JSON.stringify([]));
     if (url.includes("/api/inventory")) return new Response(JSON.stringify([]));
@@ -166,10 +168,15 @@ describe("Topology graph degradation P5-9 (universal-shell.md L143)", () => {
     // (mock returns []). Either is acceptable proof that the desktop
     // path is NOT degraded to the table; <lg path would have rendered
     // the table degradation hint.
-    const desktopMount = await waitFor(() =>
-      container.querySelector("[data-testid='host-multi-rig-graph']") ??
-      container.querySelector("[data-testid='host-multi-rig-graph-empty']"),
-    );
+    // Wait for the read to settle: a pending inventory is "Reading rigs…",
+    // not an empty fleet, so the callback must actually retry until mounted.
+    const desktopMount = await waitFor(() => {
+      const el =
+        container.querySelector("[data-testid='host-multi-rig-graph']") ??
+        container.querySelector("[data-testid='host-multi-rig-graph-empty']");
+      expect(el).toBeTruthy();
+      return el;
+    });
     expect(desktopMount).toBeTruthy();
     expect(container.querySelector("[data-testid='topology-mobile-graph-degraded']")).toBeNull();
   });

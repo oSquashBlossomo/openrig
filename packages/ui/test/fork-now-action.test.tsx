@@ -3,6 +3,15 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ForkNowAction } from "../src/components/agent-images/ForkNowAction.js";
 import type { AgentImageEntry } from "../src/hooks/useAgentImageLibrary.js";
+import type { NodeInventoryEntry } from "../src/hooks/useNodeInventory.js";
+
+// The actual inventory includes nullable native bindings even before launch.
+// Keep this picker fixture faithful to that response without inventing a session.
+const inventoryFacts = {
+  rigId: "r1", rigName: "rig-1", canonicalSessionName: null, nodeKind: "agent",
+  sessionStatus: null, startupStatus: null, restoreOutcome: "n-a",
+  tmuxAttachCommand: null, resumeCommand: null, latestError: null,
+} satisfies Partial<NodeInventoryEntry>;
 
 function makeEntry(overrides?: Partial<AgentImageEntry>): AgentImageEntry {
   return {
@@ -80,10 +89,10 @@ describe("ForkNowAction", () => {
   it("shows failed/attention_required launch as red error, not green success", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "/api/ps") return new Response(JSON.stringify([{ rigId: "r1", name: "rig-1", nodeCount: 1, runningCount: 1, status: "running" }]));
+      if (url === "/api/ps") return new Response(JSON.stringify([{ rigId: "r1", name: "rig-1", nodeCount: 1, runningCount: 1, status: "running", uptime: null, latestSnapshot: null }]));
       if (url.includes("/api/rigs/r1/nodes")) return new Response(JSON.stringify([
-        { logicalId: "dev.impl", podId: "p1", podNamespace: "dev", runtime: "claude-code", agentRef: "local:agents/impl", profile: "default" },
-      ]));
+        { ...inventoryFacts, logicalId: "dev.impl", podId: "p1", podNamespace: "dev", runtime: "claude-code", agentRef: "local:agents/impl", profile: "default" },
+      ] satisfies NodeInventoryEntry[]));
       if (url.includes("/members") && init?.method === "POST") {
         return new Response(JSON.stringify({
           ok: true,
@@ -118,11 +127,11 @@ describe("ForkNowAction", () => {
   it("excludes runtime-matched siblings with null agentRef from picker", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url === "/api/ps") return new Response(JSON.stringify([{ rigId: "r1", name: "rig-1", nodeCount: 2, runningCount: 2, status: "running" }]));
+      if (url === "/api/ps") return new Response(JSON.stringify([{ rigId: "r1", name: "rig-1", nodeCount: 2, runningCount: 2, status: "running", uptime: null, latestSnapshot: null }]));
       if (url.includes("/api/rigs/r1/nodes")) return new Response(JSON.stringify([
-        { logicalId: "dev.impl", podId: "p1", podNamespace: "dev", runtime: "claude-code", agentRef: null, profile: null },
-        { logicalId: "dev.guard", podId: "p1", podNamespace: "dev", runtime: "codex", agentRef: "local:agents/guard", profile: "default" },
-      ]));
+        { ...inventoryFacts, logicalId: "dev.impl", podId: "p1", podNamespace: "dev", runtime: "claude-code", agentRef: null, profile: null },
+        { ...inventoryFacts, logicalId: "dev.guard", podId: "p1", podNamespace: "dev", runtime: "codex", agentRef: "local:agents/guard", profile: "default" },
+      ] satisfies NodeInventoryEntry[]));
       return new Response(JSON.stringify([]), { status: 200 });
     });
 

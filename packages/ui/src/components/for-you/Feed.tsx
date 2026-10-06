@@ -49,6 +49,13 @@ import { LevelControl } from "./LevelControl.js";
 import { useDismissedSeqs } from "../../hooks/useDismissedSeqs.js";
 import { useDismissedCardIds } from "../../hooks/useDismissedCardIds.js";
 import { FeedCard } from "./FeedCard.js";
+import { FeedSourceStatus } from "./FeedSourceStatus.js";
+import {
+  attentionFeedState,
+  emptyIsConfirmed,
+  needsInputFeedState,
+  UNCONFIRMED_EMPTY_LABEL,
+} from "./feed-read-state.js";
 import { UndoToast } from "./UndoToast.js";
 import type { FeedActionOutcome, FeedProofPreview } from "./FeedCard.js";
 import {
@@ -265,6 +272,11 @@ export function Feed() {
     () => (needsInputQuery.data ?? []).map(needsInputSeatToFeedCard),
     [needsInputQuery.data],
   );
+  // Decision-source read state: emptiness is only reassuring when both the
+  // attention queue and the seat prompt scan are current and complete;
+  // retained cards from a failed refresh are labeled as an earlier read.
+  const attentionState = attentionFeedState(attentionQuery);
+  const needsInputState = needsInputFeedState(needsInputQuery.readState);
   const eventDerivedCards = useMemo(() => classifyFeed(events).slice(0, HISTORY_LIMIT), [events]);
   const allAttention = useMemo(
     () => [...queueDerivedAttention, ...needsInputCards],
@@ -449,6 +461,11 @@ export function Feed() {
           >
             ALL HOSTS
           </button>
+          {attentionState === "stale" ? (
+            <span data-testid="feed-host-stale" className="self-center font-mono text-[9px] uppercase text-warning">
+              Host status from the last successful read
+            </span>
+          ) : null}
           {hostStatuses.map((h) => (
             <button
               key={h.hostId}
@@ -484,13 +501,39 @@ export function Feed() {
           </div>
         ))}
 
+      <FeedSourceStatus
+        attention={attentionState}
+        attentionError={attentionQuery.error}
+        attentionReadAt={attentionQuery.dataUpdatedAt || null}
+        onRetryAttention={() => void attentionQuery.refetch()}
+        needsInput={needsInputState}
+        needsInputError={needsInputQuery.error}
+        needsInputReadAt={needsInputQuery.readAt}
+        coverage={needsInputQuery.coverage}
+        omittedRigIds={needsInputQuery.omittedRigIds ?? []}
+        onRetryNeedsInput={() => void needsInputQuery.refetch()}
+      />
+
       {cards.length === 0 ? (
-        <EmptyState
-          label={EMPTY_COPY[lens].label}
-          description={EMPTY_COPY[lens].description}
-          variant="card"
-          testId="for-you-empty"
-        />
+        emptyIsConfirmed(lens, attentionState, needsInputState) ? (
+          <EmptyState
+            label={EMPTY_COPY[lens].label}
+            description={EMPTY_COPY[lens].description}
+            variant="card"
+            testId="for-you-empty"
+          />
+        ) : (
+          <EmptyState
+            label={UNCONFIRMED_EMPTY_LABEL[lens] ?? "Not confirmed"}
+            description={
+              attentionState === "pending" || needsInputState === "pending"
+                ? "Still reading the request queue and seat prompts. Nothing is assumed until those reads finish."
+                : "A source behind this view is unavailable, partial or from an earlier read (see above). No cards here does not mean nothing needs you."
+            }
+            variant="card"
+            testId="for-you-empty-unconfirmed"
+          />
+        )
       ) : (
         <div data-testid="for-you-feed-cards">
           {cards.map((c) => {
@@ -501,7 +544,9 @@ export function Feed() {
             const actionOutcome = qitemId
               ? optimisticOutcomes.get(qitemId) ?? actionOutcomes.get(qitemId) ?? null
               : null;
-            return (
+            const fromEarlierRead = (attentionState === "stale" && isQueueDerivedFeedCard(c))
+              || (needsInputState === "stale" && isSyntheticFeedCard(c) && !isQueueDerivedFeedCard(c));
+            const card = (
               <FeedCard
                 key={c.id}
                 card={c}
@@ -511,6 +556,15 @@ export function Feed() {
                 onDismiss={handleDismiss}
                 onOptimisticOutcome={setOptimisticOutcome}
               />
+            );
+            if (!fromEarlierRead) return card;
+            return (
+              <div key={c.id} data-testid={`feed-card-earlier-read-${c.id}`} data-stale="true">
+                <p className="mb-1 font-mono text-[9px] uppercase tracking-wide text-warning">
+                  From an earlier read · latest refresh failed
+                </p>
+                {card}
+              </div>
             );
           })}
         </div>

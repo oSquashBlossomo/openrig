@@ -7,8 +7,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 
 vi.mock("../src/components/terminal/FocusedTerminal.js", () => ({
-  FocusedTerminal: ({ sessionName }: { sessionName: string }) => (
-    <div data-testid={`live-${sessionName}`}>live terminal</div>
+  FocusedTerminal: ({ sessionName, fit }: { sessionName: string; fit?: string }) => (
+    <div data-testid={`live-${sessionName}`} data-fit={fit}>live terminal</div>
   ),
 }));
 vi.mock("../src/components/preview/SessionPreviewPane.js", () => ({
@@ -48,6 +48,21 @@ describe("ProgressiveTerminal (OPR.0.4.0.1 interaction model)", () => {
     fireEvent.click(screen.getByTestId("progressive-terminal-static"));
     expect(screen.getByTestId("live-a@r")).toBeTruthy();
     expect(screen.queryByTestId("preview-a@r")).toBeNull();
+  });
+
+  it("live upgrade forwards the caller's fit and keeps readable-floor panning inside its own box", () => {
+    render(
+      <LiveTerminalProvider cap={2}>
+        <ProgressiveTerminal sessionName="a@r" terminalKey="a" />
+        <ProgressiveTerminal sessionName="b@r" terminalKey="b" testIdPrefix="detail" fit="contain" />
+      </LiveTerminalProvider>,
+    );
+    fireEvent.click(screen.getByTestId("progressive-terminal-static"));
+    fireEvent.click(screen.getByTestId("detail-static"));
+    expect(screen.getByTestId("live-a@r").dataset.fit).toBe("width");
+    expect(screen.getByTestId("live-b@r").dataset.fit).toBe("contain");
+    expect(screen.getByTestId("progressive-terminal-live").className.split(" ")).toEqual(["w-full", "min-w-0"]);
+    expect(screen.getByTestId("detail-live").className.split(" ")).toEqual(["h-full", "w-full", "min-w-0"]);
   });
 
   it("AC-4: GLOBAL cap=2 — opening a 3rd live evicts the OLDEST back to static; static previews uncapped", () => {

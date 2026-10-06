@@ -35,17 +35,34 @@ export interface AgentImageLibraryOpts {
   roots: AgentImageLibraryRoot[];
 }
 
-/** Stable id format: agent-image:<name>:<version> (parallel to context-pack:). */
+/** Unambiguous legacy tuples retain their ID; colon-bearing fields use an opaque tuple. */
 export function agentImageId(name: string, version: string): string {
+  if (name.includes(":") || version.includes(":")) {
+    return `agent-image:@${Buffer.from(JSON.stringify([name, version])).toString("base64url")}`;
+  }
   return `agent-image:${name}:${version}`;
 }
 
 export function parseAgentImageId(id: string): { name: string; version: string } | null {
   if (!id.startsWith("agent-image:")) return null;
   const rest = id.slice("agent-image:".length);
-  const last = rest.lastIndexOf(":");
-  if (last === -1) return null;
-  return { name: rest.slice(0, last), version: rest.slice(last + 1) };
+  if (rest.startsWith("@") && !rest.includes(":")) {
+    try {
+      const encoded = rest.slice(1);
+      const bytes = Buffer.from(encoded, "base64url");
+      if (!encoded || bytes.toString("base64url") !== encoded) return null;
+      const tuple: unknown = JSON.parse(bytes.toString("utf8"));
+      if (!Array.isArray(tuple) || tuple.length !== 2 || tuple.some(value => typeof value !== "string")) return null;
+      const [name, version] = tuple as [string, string];
+      // Reject JSON whitespace/alternate escapes and alternate spellings of a legacy tuple.
+      if (agentImageId(name, version) !== id) return null;
+      return { name, version };
+    } catch { return null; }
+  }
+  const colon = rest.indexOf(":");
+  // A historical multi-colon spelling cannot identify which field contained the colon.
+  if (colon === -1 || colon !== rest.lastIndexOf(":")) return null;
+  return { name: rest.slice(0, colon), version: rest.slice(colon + 1) };
 }
 
 export function estimateTokensFromBytes(bytes: number): number {

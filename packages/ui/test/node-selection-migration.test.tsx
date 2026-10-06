@@ -89,39 +89,17 @@ describe("P5.1-D2 retirement regression: drawer-as-seat-detail removed", () => {
     expect(codeOnly).not.toMatch(/setSelection\s*\(\s*\{\s*type:\s*["']seat-detail["']/);
   });
 
-  it("LiveNodeDetails.tsx renders the 2-tab Overview + Details body row (single canonical surface per slice 25)", () => {
+  // The exact Overview/Details count/names are mounted behavior assertions in
+  // live-node-details.test.tsx (HG-7). The actual seat route's single tablist,
+  // with no duplicate outer scope tabs, is covered by the direct-details URL
+  // case in topology-navigation-round-trip.test.tsx. Neither depends on a
+  // type alias's spelling or whether the route delegates to a gated helper.
+  it("LiveNodeDetails preserves startup file drawer triggers", () => {
     const src = readFileSync(path.join(SRC, "components/LiveNodeDetails.tsx"), "utf8");
-    // V0.3.1 slice 25 forward-fix-1 — anchored discriminator. The
-    // earlier `/type\s+Tab\s*=\s*"overview"\s*\|\s*"details"/` regex
-    // matched as a prefix and would not have failed if a third tab
-    // was reintroduced (e.g., `"overview" | "details" | "terminal"`).
-    // Two assertions together prove exact 2-member shape:
-    //   (1) positive — the declaration ends at the second member with
-    //       a trailing `;` (or `\n`) so the union cannot extend silently
-    //   (2) negative — no 3-or-more-member string union exists anywhere
-    //       in the file at the top-level Tab declaration position.
-    expect(src).toMatch(/type\s+Tab\s*=\s*"overview"\s*\|\s*"details"\s*;/);
-    // Negative: the legacy 5-tab literal is gone.
-    expect(src).not.toMatch(/"identity"\s*\|\s*"agent-spec"\s*\|\s*"startup"\s*\|\s*"transcript"\s*\|\s*"terminal"/);
-    // Negative: NO Tab union literal with 3+ string members. Catches a
-    // silent reintroduction like `"overview" | "details" | "anything"`.
-    expect(src).not.toMatch(/type\s+Tab\s*=\s*"[^"]+"\s*\|\s*"[^"]+"\s*\|\s*"[^"]+"/);
     // FileReferenceTrigger wraps startup files (P5.1-1a preserved).
+    // Mounted startup trigger/provenance and absent Startup preview coverage
+    // also remains in live-node-details.test.tsx (HG-6 and Details cases).
     expect(src).toMatch(/import\s*\{[^}]*FileReferenceTrigger[^}]*\}\s*from/);
     expect(src).toMatch(/<FileReferenceTrigger/);
-  });
-
-  it("SeatScopePage drops outer tabs and mounts LiveNodeDetails directly (DRIFT P5.1-D1)", () => {
-    const src = readFileSync(path.join(SRC, "components/topology/ScopePages.tsx"), "utf8");
-    // Locate the SeatScopePage function body specifically (not the
-    // file-wide imports which still reference the SEAT_SCOPE_TABS
-    // constant for other surfaces).
-    const seatFn = src.match(/export function SeatScopePage\(\)\s*\{[\s\S]*?^}/m);
-    expect(seatFn).not.toBeNull();
-    const body = seatFn![0];
-    // No outer ScopeShell tabsNav for seat scope; LiveNodeDetails mounts
-    // as the page body.
-    expect(body).not.toMatch(/SEAT_SCOPE_TABS/);
-    expect(body).toMatch(/<LiveNodeDetails\s+rigId=/);
   });
 });

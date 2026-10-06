@@ -30,8 +30,9 @@ import {
   useContext,
   type ComponentType,
 } from "react";
-import { Link, useRouterState } from "@tanstack/react-router";
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
+  Activity,
   Brain,
   Cog,
   FileText,
@@ -58,6 +59,9 @@ import { useGlobalEvents } from "../hooks/useGlobalEvents.js";
 import { cn } from "../lib/utils.js";
 import { parseSessionName } from "../lib/session-name.js";
 import { HostIndicator } from "./HostIndicator.js";
+import { topologyTarget } from "./topology/topology-navigation.js";
+import { LOCAL_HOST_ID } from "../lib/host-param.js";
+import { UiMaintenanceNotice } from "./shell/ExperimentalNotice.js";
 
 // =====================================================================
 // Contexts (preserved per DRIFT P2-B + active consumers in Dashboard, RigGraph)
@@ -123,6 +127,9 @@ interface RailIconSpec {
   activeWhen: (pathname: string) => boolean;
   testId: string;
   group: "destination" | "chat";
+  /** Exact raw route params/search (chat seat targets from the shared builder). */
+  params?: Record<string, string>;
+  search?: Record<string, string>;
 }
 
 // V1 default seats per agent-chat-surface.md L51–L52. Phase 4 swaps in
@@ -155,6 +162,16 @@ const RAIL_ICONS: RailIconSpec[] = [
     icon: Sparkles,
     activeWhen: (p) => p.startsWith("/for-you"),
     testId: "rail-for-you",
+    group: "destination",
+  },
+  {
+    // Pulse, Recent and the maintained stream (connected instance).
+    id: "pulse",
+    label: "Pulse",
+    to: "/pulse",
+    icon: Activity,
+    activeWhen: (p) => p.startsWith("/pulse"),
+    testId: "rail-pulse",
     group: "destination",
   },
   {
@@ -219,13 +236,19 @@ function readSettingString(
  *  target. When configured: `/topology/seat/$rigId/$logicalId`. When
  *  unset: `/settings#agents-{role}-session`. Per universal-shell.md L80
  *  (one-click navigation; not popup-then-CTA two-click). */
-function resolveChatTo(session: string, role: "advisor" | "operator"): string {
-  if (!session) return `/settings#agents-${role}-session`;
+export function resolveChatTo(session: string, role: "advisor" | "operator"): Pick<RailIconSpec, "to" | "params" | "search"> {
+  const settings = { to: `/settings#agents-${role}-session` };
+  if (!session) return settings;
   // OPR.0.4.6.MH1 FR-8: the shared parse contract; non-canonical
   // (malformed/legacy) falls back to /settings.
   const parsed = parseSessionName(session);
-  if (parsed.kind !== "canonical") return `/settings#agents-${role}-session`;
-  return `/topology/seat/${encodeURIComponent(parsed.rig)}/${encodeURIComponent(parsed.member)}`;
+  if (parsed.kind !== "canonical") return settings;
+  // Chat seats come from this instance's ConfigStore: qualify them as local
+  // so a remote topology selection shows the source mismatch gate instead of
+  // the remote host's same-named rig. RAW params via the shared builder;
+  // unrepresentable ids fall back to Settings.
+  const target = topologyTarget({ scope: { kind: "seat", rigId: parsed.rig, logicalId: parsed.member }, sourceHost: LOCAL_HOST_ID });
+  return target ? { to: target.to, params: target.params, search: target.search } : settings;
 }
 
 // =====================================================================
@@ -237,8 +260,46 @@ function surfaceForPath(pathname: string): ExplorerSurface {
   if (pathname.startsWith("/project")) return "project";
   if (pathname.startsWith("/specs") || pathname.startsWith("/plugins")) return "specs";
   if (pathname.startsWith("/for-you")) return "for-you";
-  if (pathname.startsWith("/settings")) return "settings";
+  // Terminal views and Help are listed in the Settings explorer (Operations /
+  // Help) so they are reachable from the rail's Settings destination and the
+  // phone menu without adding rail icons.
+  if (pathname.startsWith("/settings") || pathname === "/terminals" || pathname === "/help") return "settings";
   return "none";
+}
+
+/** True when a key event comes from a text-entry context (never hijack typing). */
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.closest("[role='textbox'], .xterm") !== null;
+}
+
+/** Help entry in the top bar on every viewport, plus "?" outside text fields.
+ * Opens contextual help for the current page; Back returns here. */
+function HelpAffordance({ currentHref, pathname }: { currentHref: string; pathname: string }) {
+  const navigate = useNavigate();
+  const onHelp = pathname === "/help";
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "?" || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || isTypingTarget(event.target)) return;
+      if (window.location.pathname === "/help") return;
+      event.preventDefault();
+      void navigate({ to: "/help", search: { from: currentHref } });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [navigate, currentHref]);
+  return (
+    <Link
+      to="/help"
+      search={onHelp ? {} : { from: currentHref }}
+      data-testid="topbar-help"
+      aria-label="Help and actions (?)"
+      title="Help and actions (?)"
+      className="inline-flex h-9 min-w-9 items-center justify-center border border-outline-variant px-2 font-mono text-[11px] font-bold text-on-surface hover:bg-surface-low focus-visible:outline focus-visible:outline-2 focus-visible:outline-on-surface"
+    >
+      ?
+    </Link>
+  );
 }
 
 // =====================================================================
@@ -266,10 +327,10 @@ function Rail({
   const operatorSession = readSettingString(settingsData, "agents.operator_session");
   const chatIcons: RailIconSpec[] = RAIL_ICONS.filter((i) => i.group === "chat").map((spec) => {
     if (spec.id === "advisor") {
-      return { ...spec, to: resolveChatTo(advisorSession, "advisor") };
+      return { ...spec, ...resolveChatTo(advisorSession, "advisor") };
     }
     if (spec.id === "operator") {
-      return { ...spec, to: resolveChatTo(operatorSession, "operator") };
+      return { ...spec, ...resolveChatTo(operatorSession, "operator") };
     }
     return spec;
   });
@@ -281,6 +342,8 @@ function Rail({
       <Link
         key={spec.id}
         to={spec.to}
+        params={spec.params as never}
+        search={spec.search as never}
         data-testid={spec.testId}
         data-active={active}
         aria-label={spec.label}
@@ -555,15 +618,23 @@ function AppShellInner({ children }: AppShellProps) {
                   reserved for: the MH-2 which-host indicator (FR-3),
                   truthful to the selected data source. Hidden on narrow
                   viewports to preserve mobile space. */}
-              <div
-                data-testid="topbar-right-slot"
-                className="hidden sm:flex items-center gap-3"
-              >
-                <HostIndicator />
-                {/* OPR.0.4.3.29 — theme selector (placement founder-taste-gated). */}
-                <ThemeSelector />
+              <div className="flex items-center gap-3">
+                <div
+                  data-testid="topbar-right-slot"
+                  className="hidden sm:flex items-center gap-3"
+                >
+                  <HostIndicator />
+                  {/* OPR.0.4.3.29 — theme selector (placement founder-taste-gated). */}
+                  <ThemeSelector />
+                </div>
+                {/* Help stays visible at every width and while reads fail. */}
+                <HelpAffordance currentHref={(routerState.location as { publicHref?: string }).publicHref ?? routerState.location.href} pathname={pathname} />
               </div>
             </header>
+
+            {/* Experimental-UI notice: in flow BELOW the header, so Help and the
+                other top-bar controls are never covered; dismissal leaves no gap. */}
+            <UiMaintenanceNotice />
 
             {/* Main: rail + explore + center + drawer */}
             <div className="flex flex-1 min-h-0 relative">
@@ -622,6 +693,7 @@ function AppShellInner({ children }: AppShellProps) {
               {/* Center workspace */}
               <main
                 data-testid="content-area"
+                data-scroll-restoration-id="content-area"
                 data-explorer-mode={isTopologyOverlay ? "overlay" : "opaque"}
                 className="flex-1 flex flex-col overflow-auto relative"
                 style={{
@@ -680,13 +752,14 @@ function AppShellInner({ children }: AppShellProps) {
  *  terminal ships). Rendered at lg:hidden so desktop never shows it. */
 function MobileBottomNav({ pathname }: { pathname: string }) {
   const slots: Array<{
-    id: "for-you" | "project" | "topology";
+    id: "for-you" | "pulse" | "project" | "topology";
     label: string;
     to: string;
     activeWhen: (p: string) => boolean;
     icon: ComponentType<{ className?: string; strokeWidth?: number | string }>;
   }> = [
     { id: "for-you", label: "For You", to: "/for-you", activeWhen: (p) => p.startsWith("/for-you"), icon: Sparkles },
+    { id: "pulse", label: "Pulse", to: "/pulse", activeWhen: (p) => p.startsWith("/pulse"), icon: Activity },
     { id: "project", label: "Project", to: "/project", activeWhen: (p) => p.startsWith("/project"), icon: Folder },
     { id: "topology", label: "Topology", to: "/topology", activeWhen: (p) => p.startsWith("/topology") || p.startsWith("/rigs/"), icon: Network },
   ];

@@ -1,31 +1,30 @@
-// OPR.0.4.6.WF4 — guard blocker 1 regression. The instance-page Resume button is
-// the only in-scope web mutation (route-from-web is deferred). It is a thin client
-// of POST /api/workflow/:id/resume, which REQUIRES a structured `actorSession` and
-// returns 400 without it (routes/workflow.ts:266). This regression fails on the
-// prior empty-body POST.
+// OPR.0.4.6.WF4 — guard blocker 1 regression, migrated to occurrence-specific
+// Resume. The route requires a structured `actorSession` (400 without it) and,
+// with several unresolved failures, an explicit `occurrenceId`. The old
+// actor-only `postResume` could not choose among failures, so it is removed:
+// the instance page resumes only through FailureOccurrenceChooser, which sends
+// the exact occurrence, actor and decision bytes via useWorkflowResume
+// (behaviour covered in workflow-instance-actions.test.tsx).
 
-import { describe, it, expect, vi, afterEach } from "vitest";
-import { postResume } from "../src/components/workflow/WorkflowInstancePage.js";
+import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import * as instancePage from "../src/components/workflow/WorkflowInstancePage.js";
 
-afterEach(() => vi.unstubAllGlobals());
+const src = (rel: string) => readFileSync(path.resolve(import.meta.dirname, "../src", rel), "utf8");
 
-describe("WF-4 guard blocker 1: web Resume sends a structured actorSession", () => {
-  it("POSTs a JSON body carrying actorSession (the shipped route 400s without it)", async () => {
-    const calls: Array<{ url: string; init: RequestInit }> = [];
-    vi.stubGlobal("fetch", (url: string, init: RequestInit) => {
-      calls.push({ url, init });
-      return Promise.resolve({ ok: true, status: 200 } as Response);
-    });
+describe("WF-4 guard blocker 1: web Resume names its occurrence and actor", () => {
+  it("the instance page no longer exports or issues an actor-only resume POST", () => {
+    expect("postResume" in instancePage).toBe(false);
+    const page = src("components/workflow/WorkflowInstancePage.tsx");
+    expect(page).not.toMatch(/\/resume[`"']/);
+    expect(page).not.toMatch(/(^|[^.\w])fetch\(/m);
+    expect(page).toContain("<FailureOccurrenceChooser");
+  });
 
-    await postResume("01ABC");
-
-    expect(calls).toHaveLength(1);
-    expect(calls[0].url).toContain("/api/workflow/01ABC/resume");
-    expect(calls[0].init.method).toBe("POST");
-    // The body must be JSON with a NON-empty actorSession — the exact contract
-    // the route enforces (empty/absent → 400).
-    const body = JSON.parse(String(calls[0].init.body));
-    expect(typeof body.actorSession).toBe("string");
-    expect(body.actorSession.length).toBeGreaterThan(0);
+  it("the chooser builds its attempt from the selected occurrence and the actor field", () => {
+    const chooser = src("components/workflow/FailureOccurrenceChooser.tsx");
+    expect(chooser).toContain("occurrenceId: selected!.occurrenceId, actorSession: actor");
+    expect(chooser).toContain("useWorkflowResume(instance.instanceId, scope)");
   });
 });

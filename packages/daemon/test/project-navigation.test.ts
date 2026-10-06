@@ -15,6 +15,7 @@ import { viewsRoutes } from "../src/routes/views.js";
 import { slicesRoutes } from "../src/routes/slices.js";
 import { selectCatalogProject } from "../src/domain/workspace/project-catalog.js";
 import { workSource, projectMission } from "../src/domain/workspace/project-read.js";
+import { isCanonicalScopes, isExecutionView, isProjectCatalog, isProjectSliceDetail } from "../../ui/src/lib/project-read.js";
 let root: string, app: Hono, db: ReturnType<typeof createDb>;
 function file(name: string, text: string) { fs.mkdirSync(path.dirname(name), { recursive: true }); fs.writeFileSync(name, text); }
 function source(text: string) { return `---\nid: same-id\nstatus: active\n---\n# Same name\n\n## Intent\n\n${text}\n`; }
@@ -52,6 +53,7 @@ describe("catalog project identity across work reads", () => {
     file(path.join(root, "a/missions/healthy/SPEC.md"), source("healthy mission"));
     let scopes = await get("/api/scopes?detail=1&project=a");
     expect(scopes.status).toBe(200);
+    expect(isCanonicalScopes(scopes.body)).toBe(true);
     expect(scopes.body.readErrors).toEqual([]);
     expect(scopes.body.missions.map((m: any) => m.mission).sort()).toEqual(["bad-mission", "healthy", "release-x"]);
     const mission = scopes.body.missions.find((m: any) => m.mission === "release-x");
@@ -72,17 +74,21 @@ describe("catalog project identity across work reads", () => {
   });
   it("shares CLI catalog selection, preserves equal work IDs and filters execution/queue membership", async () => {
     const catalog = await get("/api/scopes/projects"); expect(catalog.body.projects.map((p: any) => p.id)).toEqual(["a", "b"]);
+    expect(isProjectCatalog(catalog.body)).toBe(true);
     for (const id of ["a", "b"]) {
       expect(selectCatalogProject(path.join(root, "workspace.yaml"), id)?.root).toBe(path.join(root, id));
       const scopes = await get(`/api/scopes?detail=1&project=${id}`);
+      expect(isCanonicalScopes(scopes.body)).toBe(true);
       expect(scopes.body.missions[0].slices[0].intent).toBe(`${id} slice only`);
       const execution = await get(`/api/views/execution?mission=release-x&project=${id}`);
       expect(execution.status).toBe(200);
+      expect(isExecutionView(execution.body)).toBe(true);
       expect(JSON.stringify(execution.body)).toContain(`qitem-${id}`);
       expect(JSON.stringify(execution.body)).not.toContain(`qitem-${id === "a" ? "b" : "a"}`);
       expect(JSON.stringify(execution.body)).not.toContain("qitem-unscoped");
       const detail = await get(`/api/slices/01-story?mission=release-x&project=${id}`);
       expect(detail.status).toBe(200); expect(detail.body.qitemIds).toEqual([`qitem-${id}`]);
+      expect(isProjectSliceDetail(detail.body)).toBe(true);
     }
   });
   it("reports removed, changed, malformed and escaping sources without substituting another project", async () => {

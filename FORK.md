@@ -8,6 +8,22 @@ The fork starts from upstream 0.6.3. The separate local operations installation
 uses 0.5.16. Source development and GitHub setup do not authorize upgrading that
 running installation or replaying its version-gated patches onto newer source.
 
+## Web GUI development
+
+This fork is modernizing the web GUI beyond upstream's maintenance-only scope.
+[Issue #10](https://github.com/oSquashBlossomo/openrig/issues/10) tracks reliability,
+responsiveness, TUI capability parity and an interactive spatial topology. The
+[capability matrix](docs/reference/gui-parity.md) records the daemon contracts and
+acceptance cases for each operator workflow. Work remains in progress; the matrix
+distinguishes source coverage from verified behavior.
+
+Use a separate Git worktree with its own `npm ci` install. The UI's digital twin
+provides sanitized visual fixtures; actual daemon and terminal behavior must also
+be checked in an isolated instance. Never point a development server's default API
+proxy at the production fleet by accident: explicitly set `OPENRIG_URL` to the
+private test daemon, or use the daemon-free twin described in
+`packages/ui/twin/README.md`.
+
 ## Issue to release
 
 1. Capture the intended behavior, acceptance criteria, reproduction, and scope
@@ -45,6 +61,12 @@ isolated source runs. Review `docs/as-built/test-layers.md` for what CI proves.
 Do not start a development daemon against production state or provider settings.
 
 ## Reviews
+
+Activation was verified on 2026-10-04 and [setup issue #1 is
+closed](https://github.com/oSquashBlossomo/openrig/issues/1). All eight required CI
+checks passed on the final setup PR. Both Codex and Claude produced actual review
+output, including an automatic Claude review. The token and enablement variable
+below are already configured; the instructions also cover future rotation.
 
 Codex's GitHub connector must cover this fork, and automatic review must be
 enabled in [Codex's repository review settings](https://chatgpt.com/codex/cloud/settings/code-review).
@@ -91,8 +113,8 @@ loading Claude credentials. It can review the merged setup PR as an activation
 check. This workflow responds to automatic PR events and manual dispatch, not
 to `@claude` mentions.
 
-Review activation is complete only after a PR receives actual reviewer output.
-Keep setup issue #1 open until both integrations and required checks are verified.
+After changing review credentials or workflows, verify actual reviewer output
+again. A successful configuration save alone does not prove review execution.
 
 ## Upstream sync
 

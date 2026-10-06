@@ -10,6 +10,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import type { FileEntry } from "./useFiles.js";
+import { readCatalogFile, readCatalogFilesList } from "../lib/catalog-file-read.js";
 
 export interface SkillFilesListResponse {
   skillId: string;
@@ -30,36 +31,24 @@ export interface SkillFilesReadResponse {
   totalBytes?: number;
 }
 
-async function fetchList(skillId: string, path: string): Promise<SkillFilesListResponse> {
-  const res = await fetch(
-    `/api/skills/${encodeURIComponent(skillId)}/files/list?path=${encodeURIComponent(path)}`,
-  );
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return (await res.json()) as SkillFilesListResponse;
-}
-
-async function fetchRead(skillId: string, path: string): Promise<SkillFilesReadResponse> {
-  const res = await fetch(
-    `/api/skills/${encodeURIComponent(skillId)}/files/read?path=${encodeURIComponent(path)}`,
-  );
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return (await res.json()) as SkillFilesReadResponse;
-}
-
 export function useSkillFilesList(skillId: string | null, path: string | null) {
   return useQuery({
     queryKey: ["skill-files", "list", skillId, path],
-    queryFn: () => fetchList(skillId!, path ?? ""),
+    queryFn: ({ signal }) => readCatalogFilesList("skill", skillId, path, signal),
     enabled: !!skillId,
     staleTime: 15_000,
+    retry: false,
+    placeholderData: undefined,
   });
 }
 
 export function useSkillFilesRead(skillId: string | null, path: string | null) {
   return useQuery({
     queryKey: ["skill-files", "read", skillId, path],
-    queryFn: () => fetchRead(skillId!, path!),
+    queryFn: ({ signal }) => readCatalogFile("skill", skillId, path, signal),
     enabled: !!skillId && !!path,
     staleTime: 15_000,
+    retry: false,
+    placeholderData: undefined,
   });
 }

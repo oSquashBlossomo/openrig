@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { SpecsTreeView } from "../src/components/specs/SpecsTreeView.js";
+import type { SpecLibraryEntry } from "../src/hooks/useSpecLibrary.js";
 import { createTestRouter } from "./helpers/test-router.js";
 
 // Slice 28 — Library Explorer Finishing.
@@ -174,16 +175,21 @@ describe("SpecsTreeView — slice 28 HG-3 (PLUGINS section dual-action label)", 
 
 describe("SpecsTreeView — slice 19 sidebar density follow-up", () => {
   it("renders Library Explorer spec/plugin entries as single-row name-only leaves with metadata kept out of visible text", async () => {
+    // Hold the actual-shaped spec response until the first expansion decision.
+    // An expanded section has no leaf yet while its read is pending.
+    let releaseLibrary!: () => void;
+    const libraryReady = new Promise<void>((resolve) => { releaseLibrary = resolve; });
     mockFetch.mockImplementation(async (url: string) => {
       if (url === "/api/specs/library") {
+        await libraryReady;
         return {
           ok: true,
           json: async () => [
-            { id: "rig:adversarial-review:0.2", kind: "rig", name: "adversarial-review", version: "0.2", sourceType: "builtin", sourcePath: "/pkg/rig.yaml", relativePath: "rig.yaml" },
-            { id: "workflow:conveyor:1", kind: "workflow", name: "conveyor", version: "1", sourceType: "builtin", sourcePath: "/pkg/workflow.yaml", relativePath: "workflow.yaml" },
-            { id: "agent:driver:1", kind: "agent", name: "driver", version: "1", sourceType: "builtin", sourcePath: "/pkg/agent.yaml", relativePath: "agent.yaml" },
-            { id: "app:vault:3", kind: "rig", name: "vault-app", version: "3", sourceType: "builtin", sourcePath: "/pkg/app/rig.yaml", relativePath: "apps/vault/rig.yaml", hasServices: true },
-          ],
+            { id: "rig:adversarial-review:0.2", kind: "rig", name: "adversarial-review", version: "0.2", sourceType: "builtin", sourcePath: "/pkg/rig.yaml", relativePath: "rig.yaml", updatedAt: "2026-05-07T00:00:00.000Z" },
+            { id: "workflow:conveyor:1", kind: "workflow", name: "conveyor", version: "1", sourceType: "builtin", sourcePath: "/pkg/workflow.yaml", relativePath: "workflow.yaml", updatedAt: "2026-05-07T00:00:00.000Z" },
+            { id: "agent:driver:1", kind: "agent", name: "driver", version: "1", sourceType: "builtin", sourcePath: "/pkg/agent.yaml", relativePath: "agent.yaml", updatedAt: "2026-05-07T00:00:00.000Z" },
+            { id: "app:vault:3", kind: "rig", name: "vault-app", version: "3", sourceType: "builtin", sourcePath: "/pkg/app/rig.yaml", relativePath: "apps/vault/rig.yaml", updatedAt: "2026-05-07T00:00:00.000Z", hasServices: true },
+          ] satisfies SpecLibraryEntry[],
         };
       }
       if (url === "/api/context-packs/library") {
@@ -231,10 +237,11 @@ describe("SpecsTreeView — slice 19 sidebar density follow-up", () => {
 
     for (const entry of entries) {
       const section = await screen.findByTestId(`specs-section-${entry.section}`);
-      const leafAlreadyVisible = within(section).queryByTestId(`specs-leaf-${entry.leaf}`);
-      if (!leafAlreadyVisible) {
+      // The child list exists when expanded, even before entries load.
+      if (!within(section).queryByRole("list")) {
         fireEvent.click(await screen.findByTestId(`specs-section-toggle-${entry.section}`));
       }
+      if (entry.section === "rig-specs") releaseLibrary();
       const leaf = await within(section).findByTestId(`specs-leaf-${entry.leaf}`);
 
       expect(leaf.parentElement?.children).toHaveLength(1);

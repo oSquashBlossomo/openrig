@@ -13,6 +13,7 @@
 
 import { createContext, useContext } from "react";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
+import { hasShape, isBoolean, isNumber, isText, optional, operatorRead, LOCAL_OPERATOR_INSTANCE } from "../lib/operator-read.js";
 
 export interface DaemonEventLoopEvidence {
   lagMeanMs: number;
@@ -28,10 +29,15 @@ export interface DaemonHealthPayload {
   eventLoop?: DaemonEventLoopEvidence;
 }
 
-async function fetchDaemonHealth(): Promise<DaemonHealthPayload> {
-  const res = await fetch("/healthz");
-  if (!res.ok) throw new Error("unhealthy");
-  return (await res.json()) as DaemonHealthPayload;
+function isDaemonHealthPayload(value: unknown): value is DaemonHealthPayload {
+  return hasShape(value, { status: isText, eventLoop: optional(evidence => hasShape(evidence, {
+    lagMeanMs: isNumber, lagP99Ms: isNumber, utilization: isNumber,
+    lastTickAgeMs: isNumber, healthy: isBoolean,
+  })) });
+}
+
+async function fetchDaemonHealth(signal: AbortSignal): Promise<DaemonHealthPayload> {
+  return operatorRead(LOCAL_OPERATOR_INSTANCE, "/healthz", isDaemonHealthPayload, { signal });
 }
 
 export interface DaemonHealthSignal {
@@ -53,7 +59,7 @@ export interface DaemonHealthSignal {
 export function useDaemonHealthQuery(): UseQueryResult<DaemonHealthPayload> {
   return useQuery({
     queryKey: ["daemon", "health"],
-    queryFn: fetchDaemonHealth,
+    queryFn: ({ signal }) => fetchDaemonHealth(signal),
     refetchInterval: 10_000,
     retry: false,
   });

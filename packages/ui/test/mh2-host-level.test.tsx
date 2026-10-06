@@ -1,3 +1,4 @@
+import type { ResolvedSetting } from "../src/hooks/useSettings.js";
 // OPR.0.4.6.MH2 — the UI host level: FR-2 plumbing (withHostParam identity
 // for local = the zero-regression negative), FR-1 tree host level (expand =
 // select, one write path), FR-3 indicator states, FR-5 HOSTS toggles over
@@ -26,6 +27,8 @@ import { TopologyTerminalView } from "../src/components/topology/TopologyTermina
 import { RigScopePage } from "../src/components/topology/ScopePages.js";
 import { DiscoveryPanel } from "../src/components/DiscoveryPanel.js";
 import { useClearPlacementOnHostSwitch } from "../src/hooks/useHosts.js";
+import type { MissionDataResponse } from "../src/hooks/useMission.js";
+import type { SliceListEntry, SliceListResponse } from "../src/hooks/useSlices.js";
 
 // DiscoveryPanel's discovery hooks are mocked file-wide (no other test here
 // consumes them) — the regressions assert AFFORDANCE state, and the adopt
@@ -63,7 +66,7 @@ const HOSTS_TWO: HostsPayload = {
   ],
 };
 
-function wireFetch(opts: { hosts?: HostsPayload; settings?: Record<string, unknown>; feedHostSubscriptions?: Array<{ hostId: string; enabled: boolean }> } = {}) {
+function wireFetch(opts: { hosts?: HostsPayload; settings?: Record<string, ResolvedSetting>; feedHostSubscriptions?: Array<{ hostId: string; enabled: boolean }> } = {}) {
   mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
     if (init?.method === "POST") return { ok: true, json: async () => ({ ok: true }) };
     if (url === "/api/hosts") {
@@ -140,7 +143,7 @@ describe("TopologyTreeView host level (FR-1)", () => {
   it("registry hosts render as collapsed nodes; local is expanded + viewing", async () => {
     // The tree's local label reads MH-1's canonical stored name — the
     // host.name SETTINGS key (the settings twins), not the hosts payload.
-    wireFetch({ hosts: HOSTS_TWO, settings: { "host.name": { value: "Linkpix Proof Host" } } });
+    wireFetch({ hosts: HOSTS_TWO, settings: { "host.name": { value: "Linkpix Proof Host", source: "file", defaultValue: "localhost" } } });
     renderWithRouter(() => <TopologyTreeView />);
     await waitFor(() => expect(screen.getByTestId("topology-host-vps-a")).toBeTruthy());
     const local = screen.getByTestId("topology-host-localhost");
@@ -183,7 +186,9 @@ describe("HostIndicator (FR-3 — truthful states)", () => {
   it("defaults to the quiet local state with no hosts payload", async () => {
     wireFetch();
     renderWithRouter(() => <HostIndicator />);
-    await waitFor(() => expect(screen.getByTestId("host-indicator")).toBeTruthy());
+    // Source truth: "local" only once the default local payload is read
+    // (before that the indicator says it is resolving, never presumed local).
+    await waitFor(() => expect(screen.getByTestId("host-indicator").getAttribute("data-state")).toBe("local"));
     const el = screen.getByTestId("host-indicator");
     expect(el.getAttribute("data-state")).toBe("local");
     expect(el.textContent?.toLowerCase()).toContain("localhost");
@@ -235,7 +240,7 @@ describe("guard-B1 files gate — a remote selection issues ZERO /api/files/* re
       const u = String(url);
       if (init?.method === "POST") return { ok: true, json: async () => ({ ok: true }) };
       if (u === "/api/hosts") return { ok: true, json: async () => ({ ...HOSTS_TWO, selected }) };
-      if (u === "/api/config") return { ok: true, json: async () => ({ settings: { "workspace.root": { value: "/local/ws" } }, feedHostSubscriptions: [] }) };
+      if (u === "/api/config") return { ok: true, json: async () => ({ settings: { "workspace.root": { value: "/local/ws", source: "file", defaultValue: "/default/.openrig/workspace" } }, feedHostSubscriptions: [] }) };
       if (u.startsWith("/api/files/roots")) return { ok: true, json: async () => ({ roots: [{ name: "ws", path: "/local/ws" }] }) };
       if (u.startsWith("/api/files/list")) return { ok: true, json: async () => ({ root: "ws", path: "missions", entries: [] }) };
       if (u.startsWith("/api/slices/test-slice")) return { ok: true, json: async () => SLICE_DETAIL };
@@ -391,20 +396,23 @@ describe("guard-B1 files gate — a remote selection issues ZERO /api/files/* re
 
 describe("guard-B1 files gate round 2 — mission landing + portfolio glance (remote never touches /api/files)", () => {
   const MISSION_PAYLOAD = {
+    missionId: "m1",
     missionPath: "/remote/workspace/missions/m1",
     slices: [],
-  };
+    workflow_spec: null,
+    topology: null,
+  } satisfies MissionDataResponse;
 
   function wireMissionFetch(selected: string) {
     mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
       const u = String(url);
       if (init?.method === "POST") return { ok: true, json: async () => ({ ok: true }) };
       if (u === "/api/hosts") return { ok: true, json: async () => ({ ...HOSTS_TWO, selected }) };
-      if (u === "/api/config") return { ok: true, json: async () => ({ settings: { "workspace.root": { value: "/local/ws" } }, feedHostSubscriptions: [] }) };
+      if (u === "/api/config") return { ok: true, json: async () => ({ settings: { "workspace.root": { value: "/local/ws", source: "file", defaultValue: "/default/.openrig/workspace" } }, feedHostSubscriptions: [] }) };
       if (u.startsWith("/api/files/roots")) return { ok: true, json: async () => ({ roots: [{ name: "ws", path: "/local/ws" }] }) };
       if (u.startsWith("/api/files/read")) return { ok: true, json: async () => ({ root: "ws", path: "x", absolutePath: "/local/ws/x", content: "## Building\nstuff", mtime: "now", contentHash: "h", size: 1 }) };
       if (u.startsWith("/api/missions/")) return { ok: true, json: async () => MISSION_PAYLOAD };
-      if (u.startsWith("/api/slices")) return { ok: true, json: async () => ({ slices: [] }) };
+      if (u.startsWith("/api/slices")) return { ok: true, json: async () => ({ slices: [], totalCount: 0, filter: "all", boundToWorkflow: null } satisfies SliceListResponse) };
       if (u.startsWith("/api/scope/audit")) return { ok: true, json: async () => ({ slices: [] }) };
       return { ok: true, json: async () => [] };
     });
@@ -448,15 +456,18 @@ describe("guard-B1 files gate round 2 — mission landing + portfolio glance (re
       name: "s1",
       displayName: "S1",
       missionId: "m1",
+      railItem: null,
       status: "active",
+      rawStatus: null,
       qitemCount: 0,
       hasProofPacket: false,
-    };
+      lastActivityAt: null,
+    } satisfies SliceListEntry;
     const wire = (selected: string) => {
       wireMissionFetch(selected);
       const base = mockFetch.getMockImplementation()!;
       mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
-        if (String(url).startsWith("/api/slices")) return { ok: true, json: async () => ({ slices: [SLICE_ROW] }) };
+        if (String(url).startsWith("/api/slices")) return { ok: true, json: async () => ({ slices: [SLICE_ROW], totalCount: 1, filter: "all", boundToWorkflow: null } satisfies SliceListResponse) };
         return base(url, init);
       });
     };
@@ -545,8 +556,17 @@ describe("rev1-r2 B1/B2 — remote action gates (topology table / terminal grid 
   });
 
   const RIG_SUMMARY = [{ id: "r1", name: "rig-one", nodeCount: 1 }];
+  // A complete inventory DTO row (the table reads through the validating
+  // inventory reader, which rejects rows missing the daemon's required facts).
   const NODES_R1 = [
     {
+      rigId: "r1",
+      rigName: "rig-one",
+      podId: null,
+      restoreOutcome: "n-a",
+      tmuxAttachCommand: null,
+      resumeCommand: null,
+      latestError: null,
       logicalId: "a1",
       nodeKind: "agent",
       canonicalSessionName: "a1@rig-one",
@@ -814,7 +834,11 @@ describe("rev1-r2 B1/B2 — remote action gates (topology table / terminal grid 
       return { ok: true, json: async () => ({}) };
     });
     renderUnprimed(() => <RigScopePage />, { path: "/topology/rig/$rigId", entry: "/topology/rig/r1" });
-    await waitFor(() => expect(screen.getByTestId("rig-status-selection-pending")).toBeTruthy());
+    // The topology source gate now holds the whole rig body (its reads and
+    // local actions) until a host read succeeds; its resolving state is the
+    // pending marker. Every original no-control / no-read / no-POST
+    // assertion below is unchanged.
+    await waitFor(() => expect(screen.getByTestId("topology-source-gate").getAttribute("data-state")).toBe("resolving"));
     expect(document.querySelector('[data-testid^="rig-primary-action"]')).toBeNull();
     expect(document.querySelector('[data-testid^="rig-status-control"]')).toBeNull();
     expect(screen.queryByTestId("rig-status-remote-readonly")).toBeNull();

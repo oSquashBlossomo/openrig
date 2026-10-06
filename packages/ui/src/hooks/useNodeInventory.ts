@@ -1,5 +1,5 @@
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { withHostParam } from "../lib/host-param.js";
+import { useQuery } from "@tanstack/react-query";
+import { readNodeInventory } from "../lib/fleet-inventory-reads.js";
 import { useSelectedHostId } from "./useHosts.js";
 
 export interface AgentActivitySummary {
@@ -42,6 +42,17 @@ export interface SeatIdentityVerdictSummary {
   observedAt?: string;
 }
 
+/** Exact server-arbitrated three-axis projection. Strings remain extensible;
+ * consumers display served facts rather than deriving a new arbitration. */
+export interface SeatActivityStateSummary {
+  activity: string;
+  display: string;
+  needsInput: { count: number; reason: string | null };
+  decidedBy: string | null;
+  seq: number;
+  lastSwap: { generation: string; at: string } | null;
+}
+
 export interface NodeInventoryEntry {
   rigId: string;
   rigName: string;
@@ -66,7 +77,7 @@ export interface NodeInventoryEntry {
     fresh: boolean;
     totalInputTokens?: number | null;
     totalOutputTokens?: number | null;
-  };
+  } | null;
   // PL-019: agent activity attached daemon-side via attachAgentActivity.
   agentActivity?: AgentActivitySummary | null;
   // PL-019: in-progress qitems joined daemon-side on node-detail responses.
@@ -74,29 +85,33 @@ export interface NodeInventoryEntry {
   terminalActive?: boolean | null;
   hasAssignedWork?: boolean;
   pendingWorkCount?: number;
+  // Daemon totals include its distinct raw/canonical seat address aliases.
+  // Missing fields remain unknown, never inferred from bounded queue rows.
+  assignedWorkCount?: number;
+  inProgressWorkCount?: number;
+  blockedWorkCount?: number;
+  activityState?: SeatActivityStateSummary | null;
   // OPR.0.4.3.19 — liveness identity verdict (third axis). null/absent when
   // never observed; mismatch/pane_missing down-ranks the seat non-green.
   identityVerdict?: SeatIdentityVerdictSummary | null;
   agentRef?: string | null;
   profile?: string | null;
   codexConfigProfile?: string | null;
-}
-
-async function fetchNodeInventory(rigId: string, hostId: string): Promise<NodeInventoryEntry[]> {
-  // OPR.0.4.6.MH2 FR-2 — selected-host envelope; origin shape verbatim;
-  // local path unchanged (withHostParam is identity for local).
-  const res = await fetch(withHostParam(`/api/rigs/${encodeURIComponent(rigId)}/nodes`, hostId));
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+  // Effective binding facts served by the daemon; absent legacy fields remain unknown.
+  resolvedSpecName?: string | null;
+  resolvedSpecVersion?: string | null;
+  resolvedSpecHash?: string | null;
+  lifecycleState?: "running" | "detached" | "recoverable" | "attention_required";
 }
 
 export function useNodeInventory(rigId: string | null) {
   const hostId = useSelectedHostId();
   return useQuery({
     queryKey: ["rig", rigId, "nodes", hostId],
-    queryFn: () => fetchNodeInventory(rigId!, hostId),
-    enabled: !!rigId,
+    queryFn: ({ signal }) => readNodeInventory(rigId, hostId, { signal }),
+    enabled: !!rigId?.trim(),
+    retry: false,
     refetchInterval: 30_000,
-    placeholderData: keepPreviousData,
+    placeholderData: undefined,
   });
 }

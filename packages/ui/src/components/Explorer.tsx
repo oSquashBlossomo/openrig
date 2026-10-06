@@ -235,7 +235,23 @@ function SurfaceBody({
     return <TopologyTreeView />;
   }
   if (surface === "project") {
-    return <ProjectTreeView />;
+    // The configured workspace tree stays the default; exact catalog
+    // projects (ID + canonical root) are the explicit alternative.
+    return (
+      <>
+        <div className="shrink-0 border-b border-outline-variant px-3 py-2">
+          <Link
+            to="/project/catalog"
+            data-testid="explorer-project-catalog-link"
+            className="block font-mono text-[11px] uppercase tracking-wide text-on-surface hover:underline"
+          >
+            Catalog projects →
+            <span className="block text-[9px] normal-case tracking-normal text-on-surface-variant">Choose an exact project ID + root</span>
+          </Link>
+        </div>
+        <ProjectTreeView />
+      </>
+    );
   }
   if (surface === "specs") {
     return <SpecsTreeView />;

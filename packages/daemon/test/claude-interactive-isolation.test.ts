@@ -9,9 +9,39 @@ import {TmuxAdapter,type TmuxFileOps} from '../src/adapters/tmux.js';
 const run=promisify(execFile);
 const q=(v:string)=>"'"+v.replaceAll("'","'\"'\"'")+"'";
 async function until(f:()=>boolean){for(let i=0;i<240;i++){if(f())return;await new Promise(r=>setTimeout(r,25));}throw Error('private pane did not produce receipt');}
+function processExists(pid:number){try{process.kill(pid,0);return true;}catch(error){if((error as NodeJS.ErrnoException).code==='ESRCH')return false;throw error;}}
+async function cleanupPrivatePane(root:string,tm:(args:string[])=>Promise<string>,panePid?:number){
+ await tm(['kill-server']).catch(()=>{});
+ // tmux's command receipt is not a shell-exit receipt. Bash may still flush
+ // HISTFILE after kill-server returns; wait only for this fixture's captured PID.
+ if(panePid){
+  for(let i=0;processExists(panePid);i++){
+   if(i===240)throw Error(`private pane shell ${panePid} did not exit before fixture cleanup`);
+   await new Promise(r=>setTimeout(r,25));
+  }
+ }
+ fs.rmSync(root,{recursive:true,force:true});
+}
 let hasTmux=false;
 try{execFileSync('tmux',['-V'],{stdio:'ignore'});hasTmux=true;}catch{/* optional dependency */}
 describe.skipIf(!hasTmux || process.platform==='win32')('classic Claude pane-shell isolation',()=>{
+it('waits for its private shell to finish exit history before deleting its home',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'claude-isolation-'));const socket=path.join(root,'tmux');const ready=path.join(root,'ready');
+ const env={HOME:root,PATH:process.env.PATH!,TMPDIR:root,TERM:'xterm-256color'};
+ const tm=async(args:string[])=>(await run('tmux',['-S',socket,'-f','/dev/null',...args],{env,timeout:8000})).stdout;
+ let panePid:number|undefined;
+ try{
+  // A delayed HUP handler deterministically models Bash's final history write:
+  // kill-server may return while this exact owned shell can still write its home.
+  const onHangup=`sleep 0.3; printf final-history > ${q(path.join(root,'history'))}; exit`;
+  const body=`trap ${q(onHangup)} HUP; printf ready > ${q(ready)}; while :; do sleep 0.025; done`;
+  await tm(['new-session','-d','-s','pane','/bin/bash --noprofile --norc -c '+q(body)]);
+  panePid=Number((await tm(['display-message','-p','-t','pane','#{pane_pid}'])).trim());
+  expect(Number.isSafeInteger(panePid)&&panePid>0).toBe(true);await until(()=>fs.existsSync(ready));
+  await cleanupPrivatePane(root,tm,panePid);
+  expect(processExists(panePid)).toBe(false);expect(fs.existsSync(root)).toBe(false);
+ }finally{await cleanupPrivatePane(root,tm,panePid);}
+},30000);
 it.each(['return','exit','errexit'])('keeps pane environment, lifetime and history after sourced %s',async(kind)=>{
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'claude-isolation-'));const socket=path.join(root,'tmux');const status=path.join(root,'status');const before=path.join(root,'before');const after=path.join(root,'after');const history=path.join(root,'history');const unreachable=path.join(root,'unreachable');
  const env={HOME:root,PATH:process.env.PATH!,TMPDIR:root,TERM:'xterm-256color'};
@@ -22,8 +52,12 @@ it.each(['return','exit','errexit'])('keeps pane environment, lifetime and histo
  const writes:Array<{path:string,content:string,mode:number,uid:number}>=[];
  const ops:TmuxFileOps={tmpName:()=>path.join(root,'stage-'+randomUUID()),bufferName:()=>('fixture_'+randomUUID().replaceAll('-','')),writeFile:async(p,c,o)=>{await fs.promises.writeFile(p,c,{encoding:'utf8',...o});const st=fs.statSync(p);writes.push({path:p,content:c,mode:st.mode&0o777,uid:st.uid});},unlink:p=>fs.promises.unlink(p)};
  const transport=new TmuxAdapter(async cmd=>{if(!cmd.startsWith('tmux '))throw Error('unexpected fixture command');return(await run('/bin/sh',['-c',cmd.replace(/^tmux /,`tmux -S ${q(socket)} -f /dev/null `)],{env,timeout:8000})).stdout;},ops);
+ let panePid:number|undefined;
  try {
-  await tm(['new-session','-d','-s','pane','/bin/bash --noprofile --rcfile '+q(rc)+' -i']);await until(()=>fs.existsSync(status)&&fs.existsSync(before));fs.unlinkSync(status);
+  await tm(['new-session','-d','-s','pane','/bin/bash --noprofile --rcfile '+q(rc)+' -i']);
+  panePid=Number((await tm(['display-message','-p','-t','pane','#{pane_pid}'])).trim());
+  expect(Number.isSafeInteger(panePid)&&panePid>0).toBe(true);
+  await until(()=>fs.existsSync(status)&&fs.existsSync(before));fs.unlinkSync(status);
   const rcInitial=fs.readFileSync(before,'utf8');fs.unlinkSync(before);
   // Capture the real comparison after Bash has finished rc processing. The
   // ordinary-input control allows only Bash's version-dependent stdin flag
@@ -59,7 +93,7 @@ it.each(['return','exit','errexit'])('keeps pane environment, lifetime and histo
   expect(fs.readFileSync(after,'utf8')).toBe(initial);
   const h=fs.readFileSync(history,'utf8');expect(h).toContain('prior-history-sentinel');expect(h).toContain(payload.content);expect(h).not.toContain('FIXTURE_MUTATION=child');expect(h).not.toContain('child-home');
   console.log('CLAUDE_ISOLATION='+JSON.stringify({kind,exit,sameShellPid:true,environmentUnchanged:true,cwdUnchanged:true,optionsUnchanged:true,historyPathUnchanged:true,ordinaryHistoryFlush:ordinaryFlush,priorHistoryPreserved:true,scriptBodyNotInParentHistory:true,scriptBytes:Buffer.byteLength(script.content),typedBytes:Buffer.byteLength(payload.content),scriptMode:script.mode,scriptUid:script.uid,consumedFilesRemoved:true}));
- } finally {await tm(['kill-server']).catch(()=>{});fs.rmSync(root,{recursive:true,force:true});}
+ } finally {await cleanupPrivatePane(root,tm,panePid);}
 },30000);
 
 });

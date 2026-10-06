@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi, beforeEach } from "vitest";
-import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, cleanup, waitFor, fireEvent, within } from "@testing-library/react";
 import { createTestRouter } from "./helpers/test-router.js";
 import { LiveNodeDetails } from "../src/components/LiveNodeDetails.js";
 import { DrawerSelectionContext, type DrawerSelection } from "../src/components/AppShell.js";
@@ -155,6 +155,11 @@ describe("LiveNodeDetails (slice 25 Overview + Details)", () => {
     renderDetails();
     await screen.findByTestId("live-tab-overview");
 
+    // Assert the rendered canonical surface, including an arbitrary third
+    // tab that an exclusion list of historical tab names would miss.
+    const tabs = within(screen.getByTestId("live-node-tabs")).getAllByRole("tab");
+    expect(tabs).toHaveLength(2);
+    expect(tabs.map(tab => tab.textContent?.trim())).toEqual(["overview", "details"]);
     expect(screen.queryByTestId("live-tab-terminal")).toBeNull();
     expect(screen.queryByTestId("live-tab-identity")).toBeNull();
     expect(screen.queryByTestId("live-tab-agent-spec")).toBeNull();
@@ -562,22 +567,33 @@ describe("LiveNodeDetails (slice 25 Overview + Details)", () => {
 
   // Agent spec unavailable cases — switch to Details, then exercise the
   // null + non-local agentRef shapes.
-  it("Details tab: agent spec section shows unavailable when agentRef is null", async () => {
-    mockNodeDetail({ ...NODE_DETAIL, agentRef: null });
+  // Spec provenance is delegated to Library's SeatSpecProvenance (keyed by the
+  // launched binding on the seat's admitted origin); the former agentRef
+  // name-match lookup and its "agent-spec-unavailable" copy were replaced.
+  const specLibraryReads = () =>
+    mockFetch.mock.calls.map(([u]) => String(u)).filter((u) => u.startsWith("/api/specs/library"));
+
+  it("Details tab: a seat with no recorded binding says so and reads no library", async () => {
+    mockNodeDetail({ ...NODE_DETAIL, agentRef: null, resolvedSpecName: null, resolvedSpecVersion: null });
     renderDetails();
     fireEvent.click(await screen.findByTestId("live-tab-details"));
     await waitFor(() => {
-      expect(screen.getByTestId("agent-spec-unavailable")).toBeDefined();
+      expect(screen.getByTestId("seat-spec-unbound")).toBeDefined();
     });
+    expect(screen.getByTestId("seat-spec-agent-ref").textContent).toBe("not recorded");
+    expect(specLibraryReads()).toEqual([]);
   });
 
-  it("Details tab: agent spec section shows unavailable when agentRef is non-local form", async () => {
+  it("Details tab: a non-local authored ref is shown as written; without an admitted origin no library is read", async () => {
     mockNodeDetail({ ...NODE_DETAIL, agentRef: "remote:agents/impl" });
     renderDetails();
     fireEvent.click(await screen.findByTestId("live-tab-details"));
     await waitFor(() => {
-      expect(screen.getByTestId("agent-spec-unavailable")).toBeDefined();
+      expect(screen.getByTestId("seat-spec-origin-unknown")).toBeDefined();
     });
+    expect(screen.getByTestId("seat-spec-agent-ref").textContent).toBe("remote:agents/impl");
+    expect(screen.getByTestId("seat-spec-name").textContent).toBe("impl");
+    expect(specLibraryReads()).toEqual([]);
   });
 
   // Startup files surface inside Details > Startup section.
@@ -623,10 +639,10 @@ describe("LiveNodeDetails (slice 25 Overview + Details)", () => {
         return { ok: true, json: async () => NODE_DETAIL };
       }
       if (typeof url === "string" && url === "/api/specs/library?kind=agent") {
-        return { ok: true, json: async () => [{ id: "agent-1", kind: "agent", name: "impl", version: "1.0.0", sourceType: "builtin", sourcePath: "/x/agent.yaml", relativePath: "x/agent.yaml" }] };
+        return { ok: true, json: async () => [{ id: "agent-1", kind: "agent", name: "impl", version: "1.0.0", updatedAt: "2026-05-04T00:00:00.000Z", sourceType: "builtin", sourcePath: "/x/agent.yaml", relativePath: "x/agent.yaml" }] };
       }
       if (typeof url === "string" && url.includes("/api/specs/library/agent-1/review")) {
-        return { ok: true, json: async () => ({ kind: "agent", name: "impl", version: "1.0.0", raw: "", sourcePath: "/x/agent.yaml", sourceState: "library_item", libraryEntryId: "agent-1", description: null, profiles: [], resources: { plugins: [], skills: [], guidance: [], hooks: [] }, startup: { files: [], actions: [] } }) };
+        return { ok: true, json: async () => ({ kind: "agent", name: "impl", version: "1.0.0", raw: "", sourcePath: "/x/agent.yaml", sourceState: "library_item", libraryEntryId: "agent-1", description: null, profiles: [], resources: { plugins: [], skills: [], guidance: [], subagents: [] }, startup: { files: [], actions: [] } }) };
       }
       if (typeof url === "string" && url.startsWith("/api/specs/library")) {
         return { ok: true, json: async () => [] };
@@ -636,12 +652,15 @@ describe("LiveNodeDetails (slice 25 Overview + Details)", () => {
       }
       return { ok: true, json: async () => ({}) };
     });
-    renderDetails();
+    // The seat route supplies its admitted source; the exact launched
+    // binding (impl@1.0.0) resolves to one library entry on that origin.
+    render(createTestRouter({ component: () => <LiveNodeDetails rigId="rig-1" logicalId="dev.impl" sourceHost="local" />, path: "/test" }));
     fireEvent.click(await screen.findByTestId("live-tab-details"));
     await waitFor(() => {
       expect(screen.getByTestId("live-agent-plugins-section")).toBeDefined();
     });
     expect(screen.getByTestId("agent-plugins-empty")).toBeDefined();
+    expect(screen.getByTestId("seat-spec-library-exact")).toBeDefined();
   });
 
   // PL-019 preserved (follow-on-2) — activity surfaces in the

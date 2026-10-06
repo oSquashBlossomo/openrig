@@ -1,42 +1,25 @@
-// OPR.0.4.6.2 (FR-5) — TerminalLauncher (the REAL build of the spec-mockup twin).
-//
-// The web-UI launcher for the terminal wall/views ride (herdr primary, cmux
-// best-effort). Generalizes the shipped rig-scope "Launch in CMUX" button into
-// a provider + view picker: choose a PROVIDER (herdr | cmux), choose a VIEW
-// (this rig · a pod · a mission-or-slice's agents · a saved view), see the
-// suggested LAYOUT for N panes, then Open. Same tab-bar trailing slot so it
-// extends the shipped surface rather than inventing a new one.
-//
-// Locked vocabulary (PRD glossary): view / layout / pane / provider.
-//
-// This is the real-data build of `fr5-launcher-mockup/` (twin-locked): the
-// structure, copy, testids, and 4 regions match the twin; the DEMO roster is
-// replaced by live seams — rig seats + pods from `useNodeInventory`, derived
-// mission/slice targets from `useSlices` (roster previewed via the review
-// agents band), saved views from `GET /api/terminal/views`, and the launch via
-// `POST /api/terminal/open { provider, view }` (the C3 canonical composer).
-// Any copy change routes back through spec-mockup, never driver improvisation.
+// Terminal view catalog and passive daemon preview. Open submits the exact
+// preview fingerprint so changed membership or layout requires another preview.
+// The daemon owns attachability, read-only policy, paging and provider geometry.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Terminal, ChevronDown, Bookmark, Layers, GitBranch, Server, Eye, Plus } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "../ui/dialog.js";
 import { StatusPip } from "../ui/status-pip.js";
 import { cn } from "../../lib/utils.js";
 import { withHostParam } from "../../lib/host-param.js";
-import { useSelectedHostId } from "../../hooks/useHosts.js";
+import { useHostSelection, useSelectedHostId } from "../../hooks/useHosts.js";
 import { useNodeInventory, type NodeInventoryEntry } from "../../hooks/useNodeInventory.js";
 import { useSlices } from "../../hooks/useSlices.js";
 import { useTerminalViews } from "../../hooks/useTerminalViews.js";
-import { useReviewAgents } from "../../hooks/useReviewAgents.js";
+import { useTerminalPreview, type TerminalPreviewDto } from "../../hooks/useTerminalPreview.js";
 import { terminalAuthHeaders } from "../mission-control/missionControlAuth.js";
 
 type ProviderId = "herdr" | "cmux";
 
 export interface Seat {
   session: string;
-  live: boolean;
-  reason?: string;
   activity: "active" | "idle";
 }
 
@@ -47,7 +30,7 @@ export interface LauncherView {
   kind: ViewKind;
   label: string;
   sub: string;
-  /** null = a derived roster resolved lazily (mission/slice) via the review band. */
+  /** Catalog membership only. Readiness is resolved by the daemon preview. */
   seats: Seat[] | null;
   /** spans another rig / all-read-only ⇒ read-only by construction (tmux attach -r). */
   crossRig?: boolean;
@@ -83,14 +66,6 @@ export function describeOpenResult(r: OpenViewResult): { ok: boolean; headline: 
   }
   const why = r.error ? `${r.code ? `${r.code}: ` : ""}${r.error}` : (r.code ?? "no tiles opened");
   return { ok: false, headline: `No tiles opened in ${r.provider} — ${why}`, disclosure };
-}
-
-export const PANE_CAP = 9;
-export function suggestLayout(n: number) {
-  const shown = Math.min(n, PANE_CAP);
-  const cols = Math.max(1, Math.ceil(Math.sqrt(shown)));
-  const rows = Math.ceil(shown / cols);
-  return { shown, cols, rows, paged: Math.max(0, n - shown) };
 }
 
 const PROVIDERS: { id: ProviderId; label: string; note: string; badge: string }[] = [
@@ -139,22 +114,19 @@ function readParams() {
 }
 
 export function nodeToSeat(n: NodeInventoryEntry): Seat {
-  const live = !!n.canonicalSessionName;
   const act = n.agentActivity?.state;
   return {
     session: n.canonicalSessionName ?? n.logicalId,
-    live,
-    reason: live ? undefined : "not launched",
     activity: act === "running" || act === "needs_input" ? "active" : "idle",
   };
 }
 
 /**
- * PURE view-library builder — the launcher's whole data model, extracted so it
+ * PURE view-library builder — the launcher's catalog metadata, extracted so it
  * is unit-testable without rendering the (Radix) dialog. Order = the founder's
  * "choose what to open": this rig → a pod → a mission/slice → a saved view.
- * Derived mission/slice views carry `seats: null` (their roster resolves live at
- * open, previewed via the review agents band); rig/pod/saved carry their roster.
+ * Inventory supplies rig/pod catalog membership only. The canonical terminal
+ * preview resolves readiness for every selected view, including saved membership.
  */
 export function buildLauncherViews(input: {
   nodes: NodeInventoryEntry[] | undefined;
@@ -168,12 +140,12 @@ export function buildLauncherViews(input: {
   const agents = (nodes ?? []).filter((n) => n.nodeKind === "agent");
   const resolvedRigName = resolveLauncherRigName({ nodes, rigId, rigName });
 
-  // This rig — every live agent, interactive.
+  // Rig catalog membership; attachability is supplied by preview.
   out.push({
     id: `rig:${rigId}`,
     kind: "rig",
     label: resolvedRigName,
-    sub: "All live agents in this rig",
+    sub: "Agents in this rig · preview readiness",
     seats: agents.map(nodeToSeat),
   });
 
@@ -208,11 +180,11 @@ export function buildLauncherViews(input: {
   // Saved views — provider-agnostic; read-only when every member is read-only.
   for (const sv of savedViews) {
     out.push({
-      id: sv.id,
+      id: `saved:${sv.id}`,
       kind: "saved",
       label: sv.name,
       sub: `${sv.members.length} agent${sv.members.length === 1 ? "" : "s"} · saved`,
-      seats: sv.members.map((m) => ({ session: m.seat, live: true, activity: "idle" as const })),
+      seats: null,
       crossRig: sv.members.length > 0 && sv.members.every((m) => m.readOnly === true),
     });
   }
@@ -232,6 +204,9 @@ export function TerminalLauncher({ rigId, rigName }: TerminalLauncherProps) {
   const [selectedId, setSelectedId] = useState<string>(boot.view || `rig:${rigId}`);
 
   const hostId = useSelectedHostId();
+  const { known, isLocal } = useHostSelection();
+  const launchAllowed = known && isLocal;
+  const [pageIndex, setPageIndex] = useState(0);
   const { data: nodes } = useNodeInventory(rigId);
   const { data: slicesData } = useSlices("active");
   const { data: viewsData } = useTerminalViews();
@@ -251,40 +226,35 @@ export function TerminalLauncher({ rigId, rigName }: TerminalLauncherProps) {
     [nodes, rigId, rigName, slicesData, viewsData],
   );
 
-  const selected = views.find((v) => v.id === selectedId) ?? views[0];
+  const selected = views.find((v) => v.id === selectedId || (v.kind === "saved" && v.id === `saved:${selectedId}`));
   const resolvedRigName = views.find((view) => view.kind === "rig")?.label ?? RIG_NAME_UNAVAILABLE;
 
-  // A derived view (mission/slice) previews its roster via the review band.
-  const derivedScope = selected && (selected.kind === "mission" || selected.kind === "slice") ? selected.id : null;
-  const { data: reviewBand } = useReviewAgents(derivedScope);
-
-  const selectedSeats: Seat[] =
-    selected?.seats ??
-    (reviewBand?.rows.map((r) => ({
-      session: r.sessionName,
-      live: true,
-      activity: r.stateGlyph === "active" ? ("active" as const) : ("idle" as const),
-    })) ??
-      []);
-
-  const live = selectedSeats.filter((s) => s.live);
-  const absent = selectedSeats.filter((s) => !s.live);
-  const layout = suggestLayout(live.length);
-  const readOnly = Boolean(selected?.crossRig);
+  const previewQuery = useTerminalPreview(hostId, selected?.id, provider, open && launchAllowed);
+  const preview = launchAllowed && !previewQuery.isError && !previewQuery.isFetching ? previewQuery.data : undefined;
+  const plan = preview?.composed;
+  const page = plan?.pages[pageIndex] ?? [];
+  const grid = preview?.grids[pageIndex];
+  const readOnly = !!plan?.opened.length && plan.opened.every((pane) => pane.readOnly);
   const providerLabel = PROVIDERS.find((p) => p.id === provider)!.label;
+  const canOpen = !!preview?.status.available && !!plan?.opened.length;
+
+  useEffect(() => { setPageIndex(0); }, [hostId, selected?.id, provider, preview?.planId]);
 
   const openMut = useMutation({
-    mutationFn: async (): Promise<OpenViewResult> => {
+    mutationFn: async (validated: TerminalPreviewDto): Promise<OpenViewResult> => {
+      if (!launchAllowed || !canOpen || validated !== preview) throw new Error("Refresh the terminal preview before Open.");
       const res = await fetch(withHostParam("/api/terminal/open", hostId), {
         method: "POST",
         headers: { "Content-Type": "application/json", ...terminalAuthHeaders() },
-        body: JSON.stringify({ provider, view: selected?.id ?? `rig:${rigId}` }),
+        body: JSON.stringify({ provider: validated.provider, view: validated.view, expectedPlan: validated.planId }),
       });
       const body = (await res.json().catch(() => null)) as OpenViewResult | null;
+      if (body?.code === "preview_changed") void previewQuery.refetch();
       if (!res.ok || !body) throw new Error(body?.error ?? `HTTP ${res.status}`);
       return body;
     },
   });
+  useEffect(() => { openMut.reset(); }, [hostId, selected?.id, provider]);
 
   return (
     <div data-testid="terminal-launcher-wrapper" className="hidden lg:inline-flex items-center ml-auto">
@@ -378,8 +348,8 @@ export function TerminalLauncher({ rigId, rigName }: TerminalLauncherProps) {
                       </div>
                       {groupViews.map((v) => {
                         const Icon = KIND_ICON[v.kind];
-                        const vlive = v.seats ? v.seats.filter((s) => s.live).length : null;
-                        const vabsent = v.seats ? v.seats.length - (vlive ?? 0) : 0;
+                        const vlive = v.id === selected?.id && plan ? plan.opened.length : null;
+                        const vabsent = v.id === selected?.id && plan ? plan.absent.length + plan.degraded.length : 0;
                         const isSel = v.id === selected?.id;
                         return (
                           <button
@@ -409,12 +379,12 @@ export function TerminalLauncher({ rigId, rigName }: TerminalLauncherProps) {
                             </span>
                             <span className="shrink-0 text-right">
                               {vlive === null ? (
-                                <span className="block font-mono text-[9px] text-on-surface-variant">derived</span>
+                                <span className="block font-mono text-[9px] text-on-surface-variant">Preview readiness</span>
                               ) : (
                                 <>
-                                  <span className="block font-mono text-[10px] text-on-surface">{vlive} live</span>
+                                  <span className="block font-mono text-[10px] text-on-surface">{vlive} attachable</span>
                                   {vabsent > 0 ? (
-                                    <span className="block font-mono text-[8px] text-warning">{vabsent} absent</span>
+                                    <span className="block font-mono text-[8px] text-warning">{vabsent} unavailable</span>
                                   ) : null}
                                 </>
                               )}
@@ -437,30 +407,28 @@ export function TerminalLauncher({ rigId, rigName }: TerminalLauncherProps) {
               </div>
             </section>
 
-            {/* ── LAYOUT ── */}
-            <section data-testid="launcher-layout" className="grid grid-cols-[auto_1fr] gap-4 items-center">
-              <div className="shrink-0">
-                <div
-                  aria-hidden="true"
-                  className="grid gap-1 p-1.5 border border-outline-variant bg-surface-low"
-                  style={{ gridTemplateColumns: `repeat(${layout.cols}, 14px)`, gridTemplateRows: `repeat(${layout.rows}, 12px)` }}
-                >
-                  {Array.from({ length: layout.shown }).map((_, i) => (
-                    <span key={i} className="bg-on-surface/70" />
-                  ))}
-                </div>
-              </div>
-              <div>
-                <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-on-surface-variant mb-1">Layout</div>
-                <div className="font-mono text-[11px] text-on-surface">
-                  Auto grid · {layout.cols}×{layout.rows} · {layout.shown} pane{layout.shown === 1 ? "" : "s"}
-                </div>
-                {layout.paged > 0 ? (
-                  <div className="font-mono text-[9px] text-warning mt-0.5">{layout.paged} more paged · raise the show-limit in settings</div>
-                ) : (
-                  <div className="font-mono text-[9px] text-on-surface-variant mt-0.5">Fits the show-limit ({PANE_CAP}) · no paging</div>
-                )}
-              </div>
+            {/* The daemon preview supplies every page and filler cell. */}
+            <section data-testid="launcher-layout" className="grid gap-2 font-mono text-[11px]">
+              <div className="text-[10px] uppercase tracking-[0.18em] text-on-surface-variant">Layout</div>
+              {!launchAllowed ? <p>{known ? "Terminal launch is available on the local host. Select local to continue." : "Reading host selection…"}</p>
+                : !selected ? <p>Select an available view to preview.</p>
+                : previewQuery.isError ? <p role="alert">{previewQuery.error.message}</p>
+                : !preview ? <p>Reading terminal preview…</p>
+                : <>
+                    <p>Page {plan!.pages.length ? pageIndex + 1 : 0}/{plan!.pages.length}{grid ? ` · Auto grid · ${grid.columns}×${grid.rows} · ${page.length} pane${page.length === 1 ? "" : "s"} · ${grid.blanks} filler cells` : ""}</p>
+                    {grid ? <div aria-hidden="true" className="grid gap-1 p-1.5 border border-outline-variant bg-surface-low w-fit"
+                      style={{ gridTemplateColumns: `repeat(${grid.columns}, 14px)`, gridTemplateRows: `repeat(${grid.rows}, 12px)` }}>
+                      {Array.from({ length: page.length + grid.blanks }, (_, i) => <span key={i} className={i < page.length ? "bg-on-surface/70" : "border border-outline-variant"} />)}
+                    </div> : null}
+                    {page.map((pane) => <p key={pane.seat}>{pane.label} · {pane.seat} · {pane.readOnly ? "read-only" : "interactive"}{pane.paneCommand.startsWith("ssh ") ? " · SSH login unverified; opened pane will attempt connection" : ""}</p>)}
+                    {plan!.pages.length > 1 ? <div className="flex gap-3">
+                      <button type="button" data-testid="launcher-previous-page" disabled={pageIndex === 0} onClick={() => setPageIndex((n) => n - 1)}>Previous page</button>
+                      <button type="button" data-testid="launcher-next-page" disabled={pageIndex + 1 >= plan!.pages.length} onClick={() => setPageIndex((n) => n + 1)}>Next page</button>
+                    </div> : null}
+                    <p className="text-[9px] text-on-surface-variant">Provider auto-layout uses equal cells. Saved views store membership; blank cells fill incomplete rectangles.</p>
+                    {!preview.status.available ? <p className="text-warning">{providerLabel} unavailable on the local daemon host. Start/connect it there, then refresh the preview.</p> : !plan!.opened.length ? <p>Nothing attachable; no space will be opened.</p> : null}
+                  </>}
+              <button type="button" data-testid="launcher-refresh-preview" disabled={!launchAllowed || !selected || previewQuery.isFetching} onClick={() => void previewQuery.refetch()}>Refresh preview</button>
             </section>
 
             {/* ── FOOTER ── */}
@@ -469,21 +437,16 @@ export function TerminalLauncher({ rigId, rigName }: TerminalLauncherProps) {
                 <StatusPip
                   status={readOnly ? "info" : "active"}
                   variant="pill"
-                  label={readOnly ? "read-only · cross-rig" : "interactive"}
+                  label={plan ? (readOnly ? "read-only" : "interactive") : "readiness unverified"}
                   testId="launcher-mode-pip"
                 />
                 <div className="mt-1.5 font-mono text-[9px] text-on-surface-variant leading-relaxed">
-                  Opens <span className="text-on-surface">{layout.shown}</span> pane{layout.shown === 1 ? "" : "s"}
-                  {absent.length > 0 ? (
-                    <>
-                      {" · "}
-                      <span className="text-warning" data-testid="launcher-honest-partial">
-                        {absent.length} absent ({absent.map((s) => `${s.session.split("@")[0]}: ${s.reason}`).join(", ")})
-                      </span>
-                    </>
-                  ) : (
-                    <> · every seat live</>
-                  )}
+                  {plan ? <>
+                    {plan.opened.length} attachable · {plan.absent.length} absent · {plan.degraded.length} degraded
+                    {[...plan.absent, ...plan.degraded].map((seat) => <span className="block text-warning" key={`${seat.host}:${seat.seat}`} data-testid="launcher-honest-partial">
+                      {seat.seat}{seat.host ? ` (${seat.host})` : ""}: {seat.reason}
+                    </span>)}
+                  </> : "Preview readiness before Open."}
                 </div>
                 {openMut.data
                   ? (() => {
@@ -509,12 +472,12 @@ export function TerminalLauncher({ rigId, rigName }: TerminalLauncherProps) {
               <button
                 type="button"
                 data-testid="launcher-open"
-                disabled={openMut.isPending || !selected}
-                onClick={() => openMut.mutate()}
+                disabled={openMut.isPending || !canOpen}
+                onClick={() => { if (preview) openMut.mutate(preview); }}
                 className="shrink-0 inline-flex items-center gap-2 bg-inverse-surface text-background px-4 py-2.5 font-headline font-bold uppercase tracking-widest text-[11px] hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:opacity-60"
               >
                 <Terminal className="h-3.5 w-3.5" aria-hidden="true" />
-                {openMut.isPending ? "Opening…" : `Open ${layout.shown} in ${providerLabel}`}
+                {openMut.isPending ? "Opening…" : `Open in ${providerLabel}${plan?.pages.length ? ` · all ${plan.pages.length} pages` : ""}`}
               </button>
             </div>
           </div>

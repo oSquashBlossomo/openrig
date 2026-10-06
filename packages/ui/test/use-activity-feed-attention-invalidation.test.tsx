@@ -63,7 +63,7 @@ describe("useActivityFeed — attention-items invalidation on queue events (QA B
     // The cache key for useAttentionItems is ["attention-items", <limit>].
     // invalidateQueries with key ["attention-items"] is a prefix match in
     // react-query — verify we called it with that exact prefix.
-    expect(spy).toHaveBeenCalledWith({ queryKey: ["attention-items"] });
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["attention-items"], refetchType: "none" });
   });
 
   it("invalidates ['attention-items'] on queue.handed_off, queue.updated, queue.claimed, queue.unclaimed", async () => {
@@ -158,7 +158,7 @@ describe("useActivityFeed — attention-items invalidation on queue events (QA B
       }));
     });
 
-    expect(spy).toHaveBeenCalledWith({ queryKey: ["queue", "item", "qitem-abc-123"] });
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["queue", "item", "qitem-abc-123"], refetchType: "none" });
   });
 
   it("accepts qitem_id snake-case payload key for queue detail invalidation", async () => {
@@ -178,7 +178,7 @@ describe("useActivityFeed — attention-items invalidation on queue events (QA B
       }));
     });
 
-    expect(spy).toHaveBeenCalledWith({ queryKey: ["queue", "item", "qitem-snake-1"] });
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["queue", "item", "qitem-snake-1"], refetchType: "none" });
   });
 
   it("does NOT invalidate ['attention-items'] for non-queue events (no over-invalidation)", async () => {

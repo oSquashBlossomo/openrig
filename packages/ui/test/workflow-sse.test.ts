@@ -65,7 +65,7 @@ describe("useWorkflowSse — Q5-P1 rig-unscoped primary feed", () => {
     });
     await new Promise((r) => setTimeout(r, 200));
 
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["workflow"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["workflow"], refetchType: "none" });
   });
 
   it("ignores non-JSON heartbeats (no invalidation)", async () => {

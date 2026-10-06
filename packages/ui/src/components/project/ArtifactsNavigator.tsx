@@ -19,7 +19,10 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import { useFilesRoots, useFilesList } from "../../hooks/useFiles.js";
 import { resolveScopePathToAllowlist } from "../../hooks/useScopeMarkdown.js";
 import { FileLink } from "../ui/FileLink.js";
+import { filesReadOrigin } from "./project-file-source.js";
 import { EmptyState } from "../ui/empty-state.js";
+import { useDisplayZone } from "../time/DisplayTime.js";
+import { exactInstant, formatDisplayTime } from "../../lib/display-time.js";
 
 function isUnavailable(data: unknown): data is { unavailable: true; error: string; hint?: string } {
   return Boolean(data && typeof data === "object" && "unavailable" in (data as Record<string, unknown>));
@@ -39,13 +42,18 @@ function formatSize(bytes: number | null): string {
   return `${(bytes / 1024).toFixed(1)} KB`;
 }
 
-/** mtime straight from the /list entry (ISO -> "MM-DD HH:mm"). */
-function formatMtime(mtime: string | null): string {
-  if (!mtime) return "—";
-  const d = new Date(mtime);
-  if (Number.isNaN(d.getTime())) return "—";
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+/** mtime straight from the /list entry as a compact "MM-DD HH:mm ZONE" in the
+ * connected instance's configured display zone (shared DisplayTime contract:
+ * same instant normalization and invalid/missing-zone fallback). The exact
+ * served instant and the zone note stay on the <time> element. A missing or
+ * malformed mtime stays unknown. */
+function Mtime({ mtime }: { mtime: string | null }) {
+  const zone = useDisplayZone();
+  const exact = exactInstant(mtime);
+  if (!exact) return <span title={mtime ? `time unknown (served ${mtime})` : "time unknown"}>—</span>;
+  // "YYYY-MM-DD HH:MM:SS ZONE[ (timezone fallback)]" -> "MM-DD HH:MM ZONE[...]"
+  const full = formatDisplayTime(exact, zone.timeZone);
+  return <time dateTime={exact} title={`${mtime} · ${zone.note}`}>{`${full.slice(5, 16)}${full.slice(19)}`}</time>;
 }
 
 function joinPath(base: string, name: string): string {
@@ -153,6 +161,7 @@ function FolderNode({
                   <FileLink
                     root={root}
                     path={joinPath(path, e.name)}
+                    originInstance={filesReadOrigin(list)}
                     testId={`artifacts-tree-file-${joinPath(path, e.name)}`}
                     style={{ paddingLeft: `${(depth + 1) * 12 + 24}px` }}
                     className="block w-full truncate py-0.5 text-left font-mono text-[11px] text-on-surface-variant hover:text-on-surface hover:underline"
@@ -208,6 +217,7 @@ function FolderFileList({ root, path }: { root: string; path: string }) {
               <FileLink
                 root={root}
                 path={joinPath(path, f.name)}
+                originInstance={filesReadOrigin(list)}
                 testId={`artifacts-file-open-${f.name}`}
                 className="group flex w-full items-center gap-3 px-3 py-1.5 text-left"
               >
@@ -225,7 +235,7 @@ function FolderFileList({ root, path }: { root: string; path: string }) {
                 </span>
                 <span className="shrink-0 text-on-surface-variant">·</span>
                 <span data-testid={`artifacts-file-mtime-${f.name}`} className="shrink-0 text-on-surface-variant">
-                  {formatMtime(f.mtime)}
+                  <Mtime mtime={f.mtime} />
                 </span>
               </FileLink>
             </li>

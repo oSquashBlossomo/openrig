@@ -146,7 +146,7 @@ describe("TanStack Query hooks", () => {
     render(<Wrapper><GraphHarness rigId="r1" /></Wrapper>);
 
     await waitFor(() => expect(screen.getByTestId("state").textContent).toBe("nodes: 2"));
-    expect(mockFetch).toHaveBeenCalledWith("/api/rigs/r1/graph");
+    expect(mockFetch).toHaveBeenCalledWith("/api/rigs/r1/graph", expect.objectContaining({ signal: expect.any(AbortSignal) }));
   });
 
   // Test 4: useSnapshots returns snapshot list

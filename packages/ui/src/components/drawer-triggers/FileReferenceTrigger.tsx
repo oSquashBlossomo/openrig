@@ -1,4 +1,9 @@
 // V1 attempt-3 Phase 4 — FileReferenceTrigger.
+//
+// Opens the drawer FileViewer with the caller's exact payload. Attribution
+// (originInstance/project/anchor) travels inside FileViewerData unchanged;
+// FileViewer captures the known selection at open time only when the caller
+// supplied no originInstance.
 
 import { type ReactNode, type CSSProperties } from "react";
 import { useDrawerSelection } from "../AppShell.js";

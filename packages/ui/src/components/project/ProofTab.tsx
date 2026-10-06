@@ -25,6 +25,7 @@ import { MarkdownViewer } from "../markdown/MarkdownViewer.js";
 import { SectionHeader } from "../ui/section-header.js";
 import { EmptyState } from "../ui/empty-state.js";
 import { FileLink } from "../ui/FileLink.js";
+import { filesReadOrigin, useOpenFileTarget, useScopeMarkdownSource } from "./project-file-source.js";
 // OPR.0.4.4.20: Lightbox extracted (verbatim) for reuse by the Review surface.
 import { Lightbox } from "./Lightbox.js";
 
@@ -90,6 +91,11 @@ function ProofSliceCard({
 
   // proof/ listing — lazy (enabled:!!root). Disabled until the path resolves.
   const proofList = useFilesList(resolved ? resolved.rootName : null, proofRel);
+  // Producing origin of the listed proof files and the served PROOF.md source
+  // (canonical resolvedPath, truncation, local admission) for inline links.
+  const listOrigin = filesReadOrigin(proofList);
+  const proofSource = useScopeMarkdownSource(proofMd);
+  const openFileTarget = useOpenFileTarget();
   const files = (proofList.data?.entries ?? []).filter((e) => e.type === "file");
   const images = files.filter((f) => IMAGE_RE.test(f.name));
   const otherFiles = files.filter((f) => !IMAGE_RE.test(f.name));
@@ -183,6 +189,8 @@ function ProofSliceCard({
           <MarkdownViewer
             content={proofMd.content!}
             assetBasePath={resolved ? proofAssetBase(resolved.rootName, resolved.relPath) : undefined}
+            source={proofSource}
+            onOpenFile={openFileTarget}
             hideFrontmatter
             hideRawToggle
           />
@@ -225,6 +233,7 @@ function ProofSliceCard({
                   root={resolved!.rootName}
                   path={`proof/${f.name}`}
                   readPath={`${proofRel}/${f.name}`}
+                  originInstance={listOrigin}
                   className="text-on-surface-variant underline decoration-outline-variant underline-offset-2 hover:text-on-surface"
                 >
                   proof/{f.name}

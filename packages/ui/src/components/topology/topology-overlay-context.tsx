@@ -70,13 +70,18 @@ const TopologyOverlayContext = createContext<TopologyOverlayContextValue>({
  *  highlighting). Returns null when the pathname isn't on a rig-scoped
  *  route. */
 export function parseActiveRigId(pathname: string): string | null {
-  const seat = pathname.match(/^\/topology\/seat\/([^/]+)\//);
-  if (seat) return decodeURIComponent(seat[1]!);
-  const pod = pathname.match(/^\/topology\/pod\/([^/]+)\//);
-  if (pod) return decodeURIComponent(pod[1]!);
-  const rig = pathname.match(/^\/topology\/rig\/([^/]+)$/);
-  if (rig) return decodeURIComponent(rig[1]!);
-  return null;
+  const segment =
+    pathname.match(/^\/topology\/seat\/([^/]+)\//)?.[1]
+    ?? pathname.match(/^\/topology\/pod\/([^/]+)\//)?.[1]
+    ?? pathname.match(/^\/topology\/rig\/([^/]+)$/)?.[1];
+  if (segment === undefined) return null;
+  // The pathname is serialized (encoded once). A malformed escape in a
+  // crafted URL is "no active rig", never a shell-level render crash.
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return null;
+  }
 }
 
 export function TopologyOverlayProvider({ children }: { children: ReactNode }) {

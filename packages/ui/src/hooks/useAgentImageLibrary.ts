@@ -3,6 +3,7 @@
 // useContextPackLibrary (PL-014) shape.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { readAgentImages, readAgentImagePreview } from "../lib/agent-image-reads.js";
 
 export interface AgentImageEntry {
   id: string;
@@ -15,7 +16,7 @@ export interface AgentImageEntry {
   /** Source seat's cwd at snapshot time. null when the manifest predates
    *  source_cwd support (back-compat). The Use-as-starter
    *  snippet emits `cwd: <sourceCwd>` when this is non-null. */
-  sourceCwd: string | null;
+  sourceCwd?: string | null;
   notes: string | null;
   createdAt: string;
   sourceType: "user_file" | "workspace" | "builtin";
@@ -60,36 +61,24 @@ export interface AgentImagePreview {
   starterSnippet: string;
 }
 
-async function fetchAgentImages(): Promise<AgentImageEntry[]> {
-  const res = await fetch("/api/agent-images/library");
-  if (!res.ok) {
-    if (res.status === 503) return [];
-    throw new Error(`HTTP ${res.status}`);
-  }
-  const body = await res.json().catch(() => null);
-  return Array.isArray(body) ? body : [];
-}
-
 export function useAgentImageLibrary() {
   return useQuery({
     queryKey: ["agent-images", "library"],
-    queryFn: fetchAgentImages,
+    queryFn: ({ signal }) => readAgentImages(signal),
     staleTime: 30_000,
+    retry: false,
+    placeholderData: undefined,
   });
-}
-
-async function fetchAgentImagePreview(id: string): Promise<AgentImagePreview> {
-  const res = await fetch(`/api/agent-images/library/${encodeURIComponent(id)}/preview`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
 }
 
 export function useAgentImagePreview(id: string | null) {
   return useQuery({
     queryKey: ["agent-images", "preview", id],
-    queryFn: () => fetchAgentImagePreview(id!),
+    queryFn: ({ signal }) => readAgentImagePreview(id, signal),
     enabled: !!id,
     staleTime: 30_000,
+    retry: false,
+    placeholderData: undefined,
   });
 }
 

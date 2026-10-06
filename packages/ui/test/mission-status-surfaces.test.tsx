@@ -1,3 +1,4 @@
+import type { ResolvedSetting } from "../src/hooks/useSettings.js";
 // VM-005 (release-0.4.7) — TIER A: the DIFFERENTIAL suite at the observable
 // (ARCH-RULING-b3-differential-test-architecture-2026-07-11, sha 632ff319…).
 //
@@ -89,9 +90,9 @@ function setupFetch(opts: {
       return new Response(
         JSON.stringify({
           settings: {
-            "workspace.name": { value: "testws" },
-            "workspace.root": { value: "/ws" },
-          },
+            "workspace.name": { value: "testws", source: "file", defaultValue: "testws" },
+            "workspace.root": { value: "/ws", source: "file", defaultValue: "/default/.openrig/workspace" },
+          } satisfies Record<string, ResolvedSetting>,
         }),
         { status: 200 },
       );

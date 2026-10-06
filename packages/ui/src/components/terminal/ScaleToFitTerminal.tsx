@@ -1,23 +1,6 @@
-// OPR.0.4.0.39 - scale-to-fit wrapper for the unified static/live terminal mirror.
-//
-// Founder spec (spec-dev2-authored-2026-06-22): the static and live terminals are
-// THE SAME fixed geometry (the live xterm's 90x27). Rather than pan/clip a fixed
-// 90-col block inside a narrow column, we render it at its natural width and CSS-
-// transform scale the WHOLE block to fit the available space (the same wrapper
-// scales BOTH the static plate and the live xterm identically, so the glass->opaque
-// flip on click stays the same size in the same place - the mirror).
-//
-// Two fit modes (scale is measured via ResizeObserver, not guessed):
-//   - "width" (default, the grid/graph/table cells): fit the available WIDTH, never
-//     UPSCALE past the native geometry (cap at 1), origin top-left. The block is
-//     fixed-width so this is true fit-width (the full terminal width is always
-//     visible, never cut off - founder: "prefer too small over cut off"). The outer
-//     height is the scaled natural height so surrounding layout flows.
-//   - "contain" (the node-detail panel, which gives the terminal a big dedicated
-//     area): fit BOTH width and height of the container (so the terminal fills the
-//     panel as much as its 90x27 aspect allows), ALLOWING upscale up to a cap so it
-//     uses the space, centered, never clipped. The off-axis margin is balanced
-//     (letterboxed) instead of a top-left gap with dead space.
+// Scale static preview excerpts to their available container. Live terminals
+// use FocusedTerminal's font fitting and actual native pane geometry instead;
+// CSS transforms would break xterm mouse/selection coordinates.
 
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
@@ -53,7 +36,7 @@ export function ScaleToFitTerminal({ children, testId, className, fit = "width" 
     const measure = () => {
       const availableWidth = outer.clientWidth;
       // scrollWidth/Height report the UN-transformed natural size of the fixed
-      // 90x27 block, regardless of the scale transform already applied.
+      // preview block, regardless of the scale transform already applied.
       const naturalWidth = inner.scrollWidth;
       const naturalHeight = inner.scrollHeight;
       if (naturalWidth <= 0 || naturalHeight <= 0 || availableWidth <= 0) return;

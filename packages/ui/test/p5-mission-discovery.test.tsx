@@ -1,3 +1,4 @@
+import type { ResolvedSetting } from "../src/hooks/useSettings.js";
 // V1 attempt-3 Phase 5 P5-5 + P5-6 — filesystem-based mission discovery +
 // MissionStatusBadge live PROGRESS.md fetch.
 //
@@ -95,9 +96,9 @@ function setupFetch(opts: RenderTreeOpts) {
       if (opts.settingsAvailable === false) {
         return new Response("not implemented", { status: 404 });
       }
-      const settings: Record<string, { value: unknown }> = {};
+      const settings: Record<string, ResolvedSetting> = {};
       if (opts.workspaceRoot !== null) {
-        settings["workspace.root"] = { value: opts.workspaceRoot };
+        settings["workspace.root"] = { value: opts.workspaceRoot, source: "file", defaultValue: "/default/.openrig/workspace" };
       }
       return new Response(JSON.stringify({ settings }), { status: 200 });
     }

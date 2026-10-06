@@ -4,7 +4,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { ActiveLensStore } from "../domain/active-lens-store.js";
-import type { SpecLibraryService } from "../domain/spec-library-service.js";
+import { SpecLibraryIdentityError, type SpecLibraryService } from "../domain/spec-library-service.js";
 import { SpecReviewService, SpecReviewError } from "../domain/spec-review-service.js";
 import {
   getWorkflowReview,
@@ -83,8 +83,8 @@ export function specLibraryRoutes(): Hono {
     const kind = c.req.query("kind") as "rig" | "agent" | "workflow" | undefined;
     const entries = lib.list(kind ? { kind } : undefined);
     return c.json(entries.map((entry) => {
-      // Preserve the authored/catalog path and also identify its actual source.
-      // Consumers still read through the existing file-root boundary.
+      // File entries use a canonical source address; workflow provenance keeps
+      // its existing cache contract. File reads still require the root boundary.
       let resolvedSourcePath: string | null = null;
       try { resolvedSourcePath = realpathSync(entry.sourcePath); } catch { /* missing/denied source stays explicit */ }
       return { ...entry, resolvedSourcePath };
@@ -99,7 +99,12 @@ export function specLibraryRoutes(): Hono {
     // Guard: don't match sub-paths like /review or /sync or /active-lens
     if (id === "sync" || id === "review" || id === "active-lens") return c.notFound();
 
-    const result = lib.get(id);
+    let result;
+    try { result = lib.get(id); }
+    catch (error) {
+      if (error instanceof SpecLibraryIdentityError) return c.json({ code: error.code, error: error.message }, 409);
+      throw error;
+    }
     if (!result) {
       return c.json({ error: `Spec '${id}' not found in library` }, 404);
     }
@@ -112,7 +117,12 @@ export function specLibraryRoutes(): Hono {
     const svc = c.get("specReviewService" as never) as SpecReviewService;
     const id = c.req.param("id");
 
-    const result = lib.get(id);
+    let result;
+    try { result = lib.get(id); }
+    catch (error) {
+      if (error instanceof SpecLibraryIdentityError) return c.json({ code: error.code, error: error.message }, 409);
+      throw error;
+    }
     if (!result) {
       return c.json({ error: `Spec '${id}' not found in library` }, 404);
     }
@@ -192,7 +202,7 @@ export function specLibraryRoutes(): Hono {
     if (!result.ok) {
       const status = result.code === "not_found" ? 404
         : result.code === "read_only" ? 409
-        : result.code === "conflict" ? 409
+        : result.code === "conflict" || result.code === "legacy_spec_id" || result.code === "source_changed" ? 409
         : 400;
       return c.json(result, status);
     }
@@ -212,7 +222,7 @@ export function specLibraryRoutes(): Hono {
     if (!result.ok) {
       const status = result.code === "not_found" ? 404
         : result.code === "read_only" ? 409
-        : result.code === "conflict" ? 409
+        : result.code === "conflict" || result.code === "legacy_spec_id" || result.code === "source_changed" ? 409
         : 400;
       return c.json(result, status);
     }

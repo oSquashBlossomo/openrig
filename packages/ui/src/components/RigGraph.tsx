@@ -16,6 +16,9 @@ import { useTopologyActivity } from "../hooks/useTopologyActivity.js";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion.js";
 import { useSelectedHostId } from "../hooks/useHosts.js";
 import { LOCAL_HOST_ID } from "../lib/host-param.js";
+import { projectRigGraph } from "./topology/rig-graph-projection.js";
+import { GraphPartialNotice } from "./topology/GraphPartialNotice.js";
+import { freshTopologyVisitState, topologyTarget, useKnownSelectedHost } from "./topology/topology-navigation.js";
 import {
   applyHotPotatoEdges,
   buildTopologySessionIndex,
@@ -122,8 +125,12 @@ export function RigGraph({
 }) {
   const { data, isPending: loading, error: queryError } = useRigGraph(rigId ?? "");
   const discoveredSessions = useDiscoveredSessionsConditional(showDiscovered);
-  const allRawNodes = data?.nodes ?? [];
-  const allRawEdges = data?.edges ?? [];
+  // The shared transport validates containers only; entries are untrusted.
+  // Malformed/duplicate/dangling entries are dropped and disclosed while
+  // usable siblings render with their exact served identities.
+  const projection = useMemo(() => projectRigGraph(data), [data]);
+  const allRawNodes = projection.nodes;
+  const allRawEdges = projection.edges;
 
   // P5.1-5 pod-scope filter: when podScope set, restrict nodes to those
   // whose pod matches; restrict edges to those between filtered nodes.
@@ -164,6 +171,7 @@ export function RigGraph({
   // remote selection the node click still navigates (read drill-in) but the
   // bare-local focus POST must never fire.
   const graphIsRemote = useSelectedHostId() !== LOCAL_HOST_ID;
+  const linkSource = useKnownSelectedHost();
   const [focusMessage, setFocusMessage] = useState<FocusMessage | null>(null);
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -428,17 +436,21 @@ export function RigGraph({
       }
 
       const nodeData = node.data as {
-        logicalId: string;
-        binding: { cmuxSurface?: string | null } | null;
+        logicalId?: unknown;
+        binding?: { cmuxSurface?: string | null } | null;
       };
+      // A node without an exact logical id has no detail page to open.
+      if (typeof nodeData.logicalId !== "string" || !nodeData.logicalId) return;
+      const logicalId = nodeData.logicalId;
 
       // V1 polish slice Phase 5.1 P5.1-2: navigate to center page
       // (canonical agent-detail = LiveNodeDetails). Parity with Explorer
-      // tree click + topology table row click (P5.1-7).
-      navigate({
-        to: "/topology/seat/$rigId/$logicalId",
-        params: { rigId, logicalId: encodeURIComponent(nodeData.logicalId) },
-      });
+      // tree click + topology table row click (P5.1-7). Raw params through
+      // the shared builder (encoded once by the router), source-qualified.
+      const target = topologyTarget({ scope: { kind: "seat", rigId, logicalId }, sourceHost: linkSource });
+      if (target) {
+        navigate({ to: target.to, params: target.params, search: target.search, state: freshTopologyVisitState } as never);
+      }
 
       if (graphIsRemote) {
         return;
@@ -451,7 +463,7 @@ export function RigGraph({
 
       try {
         const res = await fetch(
-          `/api/rigs/${encodeURIComponent(rigId)}/nodes/${encodeURIComponent(nodeData.logicalId)}/focus`,
+          `/api/rigs/${encodeURIComponent(rigId)}/nodes/${encodeURIComponent(logicalId)}/focus`,
           { method: "POST" }
         );
 
@@ -473,7 +485,7 @@ export function RigGraph({
         showFocusMessage({ text: "Focus failed", type: "error" });
       }
     },
-    [placementMode, podMetaById, rigId, setPlacementTarget, navigate, setSelection, showFocusMessage, graphIsRemote]
+    [placementMode, podMetaById, rigId, setPlacementTarget, navigate, setSelection, showFocusMessage, graphIsRemote, linkSource]
   );
 
   if (rigId === null) {
@@ -500,6 +512,19 @@ export function RigGraph({
   }
 
   if (activityNodes.length === 0) {
+    // Entries existed but none was usable: that is not an empty topology.
+    if (projection.issues.length > 0) {
+      return (
+        <div className="p-spacing-6">
+          <Alert data-testid="graph-unusable">
+            <AlertDescription>
+              This rig&apos;s graph could not be drawn: none of its {projection.issues.length} entr{projection.issues.length === 1 ? "y was" : "ies were"} usable.
+            </AlertDescription>
+          </Alert>
+          <GraphPartialNotice issues={projection.issues} />
+        </div>
+      );
+    }
     return <EmptyTopologyGhost />;
   }
 
@@ -531,6 +556,11 @@ export function RigGraph({
           {focusMessage.text}
         </div>
       )}
+      {projection.issues.length > 0 ? (
+        <div className="absolute bottom-4 left-1/2 z-20 -translate-x-1/2 border border-outline-variant bg-surface-lowest/95 px-3 py-1.5">
+          <GraphPartialNotice issues={projection.issues} />
+        </div>
+      ) : null}
       {placementMode && !graphIsRemote && (
         <div
           data-testid="graph-placement-banner"

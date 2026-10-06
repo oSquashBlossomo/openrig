@@ -22,7 +22,12 @@ let OriginalEventSource: typeof EventSource | undefined;
 
 beforeEach(async () => {
   mockFetch.mockReset();
-  mockFetch.mockImplementation(async () => new Response("[]"));
+  // Topology bodies mount only behind a successfully read source host
+  // (TopologySourceGate), so the fixture serves a real /api/hosts payload.
+  mockFetch.mockImplementation(async (url: string) =>
+    String(url) === "/api/hosts"
+      ? new Response(JSON.stringify({ ownName: "localhost", selected: "local", hosts: [] }))
+      : new Response("[]"));
   OriginalEventSource = globalThis.EventSource;
   globalThis.EventSource = createMockEventSourceClass() as unknown as typeof EventSource;
   const { queryClient } = await import("../src/lib/query-client.js");

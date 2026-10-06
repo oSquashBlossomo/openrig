@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useSseQueryRefresh } from "../lib/sse-query-refresh.js";
 import {
   subscribeTopologyEvents,
   subscribeTopologyEventStatus,
@@ -13,21 +13,24 @@ export interface UseRigEventsResult {
 }
 
 export function useRigEvents(rigId: string | null): UseRigEventsResult {
-  const queryClient = useQueryClient();
+  const refresh = useSseQueryRefresh(rigId);
   const [connected, setConnected] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
   const hasErroredRef = useRef(false);
+  const receiptsRef = useRef(new Set<object>());
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const invalidateGraph = useCallback(() => {
+  const invalidateGraph = useCallback((receipt: object) => {
     if (!rigId) return;
+    receiptsRef.current.add(receipt);
     if (debounceTimerRef.current) return;
     debounceTimerRef.current = setTimeout(() => {
       debounceTimerRef.current = null;
       // Only invalidate the graph query; this matches previous behavior.
-      queryClient.invalidateQueries({ queryKey: ["rig", rigId, "graph"] });
+      refresh(["rig", rigId, "graph"], receiptsRef.current);
+      receiptsRef.current.clear();
     }, DEBOUNCE_MS);
-  }, [rigId, queryClient]);
+  }, [rigId, refresh]);
 
   useEffect(() => {
     if (!rigId) {
@@ -48,18 +51,19 @@ export function useRigEvents(rigId: string | null): UseRigEventsResult {
       }
       if (status.connected && hasErroredRef.current) {
         hasErroredRef.current = false;
-        invalidateGraph();
+        invalidateGraph(status);
       }
     });
 
     const unsubscribeEvents = subscribeTopologyEvents((event) => {
       if (event.rigId !== rigId) return;
-      invalidateGraph();
+      invalidateGraph(event);
     });
 
     return () => {
       unsubscribeEvents();
       unsubscribeStatus();
+      receiptsRef.current.clear();
       if (debounceTimerRef.current) {
         clearTimeout(debounceTimerRef.current);
         debounceTimerRef.current = null;

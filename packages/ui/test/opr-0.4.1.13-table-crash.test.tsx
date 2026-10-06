@@ -68,8 +68,18 @@ beforeEach(() => {
 
 afterEach(() => cleanup());
 
-function withQueryClient(ui: ReactNode) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+// Presentation boundary: the table now reads node inventory through the
+// validating reader, which (correctly) rejects these malformed rows before
+// they reach the table. The defensive filter/sort code still guards rows that
+// reach it from the shared ["rig", id, "nodes", host] cache, so these crash
+// regressions seed that cache with the SAME raw fixture rows (no fields are
+// manufactured) and keep them fresh so no validating refetch replaces them.
+async function withQueryClient(ui: ReactNode, rigIds: string[] = ["rig-bad", "rig-ok"]) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  for (const rigId of rigIds) {
+    const response = (await mockFetch(`/api/rigs/${rigId}/nodes`)) as Response;
+    queryClient.setQueryData(["rig", rigId, "nodes", "local"], await response.json());
+  }
   return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
 }
 
@@ -91,7 +101,7 @@ describe("OPR.0.4.1.13 — table-view crash repro (malformed row + filter)", () 
   });
 
   it("renders a malformed row (null rigName/logicalId) without crashing", async () => {
-    withQueryClient(<TopologyTableView />);
+    await withQueryClient(<TopologyTableView />);
     await waitFor(() => {
       expect(screen.getAllByTestId(/^topology-table-row-/).length).toBeGreaterThanOrEqual(2);
     });
@@ -100,7 +110,7 @@ describe("OPR.0.4.1.13 — table-view crash repro (malformed row + filter)", () 
   });
 
   it("does NOT crash when the user FILTERS with a malformed row present (the trigger)", async () => {
-    withQueryClient(<TopologyTableView />);
+    await withQueryClient(<TopologyTableView />);
     await waitFor(() => {
       expect(screen.getAllByTestId(/^topology-table-row-/).length).toBeGreaterThanOrEqual(2);
     });
@@ -139,7 +149,7 @@ describe("OPR.0.4.1.13 — table-view crash repro (malformed row + filter)", () 
       return new Response("[]");
     });
 
-    withQueryClient(<TopologyTableView />);
+    await withQueryClient(<TopologyTableView />, Array.from({ length: 6 }, (_, i) => `rig-${i}`));
     await waitFor(() => {
       expect(screen.getAllByTestId(/^topology-table-row-/).length).toBeGreaterThan(10);
     });

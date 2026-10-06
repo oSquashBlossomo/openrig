@@ -1,5 +1,5 @@
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { withHostParam } from "../lib/host-param.js";
+import { useQuery } from "@tanstack/react-query";
+import { isTopologyRigSummary, topologyRead } from "../lib/topology-read.js";
 import { useSelectedHostId } from "./useHosts.js";
 
 export interface RigSummary {
@@ -16,23 +16,14 @@ export interface RigSummary {
   lifecycleState?: "running" | "recoverable" | "stopped" | "degraded" | "attention_required";
 }
 
-async function fetchSummary(hostId: string, signal?: AbortSignal): Promise<RigSummary[]> {
-  // OPR.0.4.6.MH2 FR-2 — the selected host rides the query envelope; the
-  // local daemon's read-through returns the origin shape verbatim. Local
-  // keeps today's bare path unchanged (withHostParam is identity for local).
-  // slice-04: forward the TanStack query AbortSignal so cancelled fetches abort.
-  const res = await fetch(withHostParam("/api/rigs/summary", hostId), { signal });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
 export function useRigSummary() {
   const hostId = useSelectedHostId();
   return useQuery({
     queryKey: ["rigs", "summary", hostId],
-    queryFn: ({ signal }) => fetchSummary(hostId, signal),
-    // FR-6: keep the previous host's view (truthfully labeled by the
-    // indicator) while the newly selected host's data crosses the network.
-    placeholderData: keepPreviousData,
+    queryFn: ({ signal }) => topologyRead<RigSummary[]>("/api/rigs/summary", hostId, signal, isTopologyRigSummary),
+    // Shared with spatial observers: a hung read becomes an error after one
+    // five-second attempt, including when this observer starts it first.
+    retry: false,
+    placeholderData: undefined,
   });
 }

@@ -80,22 +80,15 @@ export function ProgressiveTerminal({
     return () => live.release(terminalKey);
   }, [mode, live, terminalKey]);
 
-  // OPR.0.4.0.39 (founder spec): static and live are the SAME 90x27 geometry, both
-  // wrapped in the shared ScaleToFitTerminal so they scale identically to the column
-  // (fit-width, never clip). The glass->opaque flip on click is the only change - the
-  // live xterm appears at the same size in the same place (the mirror).
+  // Static is a bounded polling excerpt. Live mirrors actual pane geometry;
+  // its font fitting keeps xterm selection correct without CSS transforms.
+  // min-w-0 keeps a readable-floor pane panning inside its own wrapper instead
+  // of widening the grid cell/flex row that hosts it.
   if (mode === "live") {
-    // OPR.0.4.0.39 (selection fix): the LIVE xterm scales via fontSize (FocusedTerminal's
-    // own fit), NOT a CSS transform. A CSS transform:scale ancestor breaks xterm's
-    // mouse/selection hit-testing (it divides a post-transform offset by the pre-
-    // transform cell size - #6023), so dragging selects the wrong cells. FocusedTerminal
-    // fills this container and fontSize-fits 90x27 to it, pixel-matching the static plate
-    // (which keeps its transform - native DOM selection follows transforms fine). Same
-    // signed-off look, native-correct selection.
     return (
       <div
         data-testid={`${testIdPrefix}-live`}
-        className={[fit === "contain" ? "h-full w-full" : "w-full", className].filter(Boolean).join(" ")}
+        className={[fit === "contain" ? "h-full w-full min-w-0" : "w-full min-w-0", className].filter(Boolean).join(" ")}
       >
         <FocusedTerminal sessionName={sessionName} fit={fit} initialText={initialText} />
       </div>

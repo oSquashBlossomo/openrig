@@ -15,6 +15,8 @@
 // release-validation, not this cadence.
 
 import { useQuery } from "@tanstack/react-query";
+import { boundedJsonRead } from "../lib/bounded-json-read.js";
+import { isObject, OperatorReadError } from "../lib/operator-read.js";
 
 // --- Contract mirror (packages/daemon/src/domain/review/types.ts, MH5 block) ---
 
@@ -87,10 +89,15 @@ export const FLEET_POLL_INTERVAL_MS = 30_000;
 
 export const FLEET_QUERY_KEY = ["review", "fleet"] as const;
 
-async function fetchFleet(): Promise<ComposedFleet> {
-  const res = await fetch("/api/review/fleet");
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return (await res.json()) as ComposedFleet;
+async function fetchFleet(signal: AbortSignal): Promise<ComposedFleet> {
+  const value = await boundedJsonRead<ComposedFleet>("/api/review/fleet", { signal });
+  // These containers are dereferenced/mapped by both existing Fleet consumers.
+  // Keep server counts and partial/unreachable host facts verbatim.
+  if (!isObject(value) || !isObject(value.rollup) || !Array.isArray(value.rollup.exceptionsByKind)
+    || !isObject(value.needsYou) || !Array.isArray(value.needsYou.items) || !Array.isArray(value.hosts) || !Array.isArray(value.settled)) {
+    throw new OperatorReadError("invalid_contract", "Fleet response lacks its composed collections.");
+  }
+  return value;
 }
 
 /** The ONE fleet read both locked surfaces share. `enabled` lets the
@@ -101,8 +108,12 @@ async function fetchFleet(): Promise<ComposedFleet> {
 export function useFleet(opts: { enabled?: boolean } = {}) {
   return useQuery<ComposedFleet>({
     queryKey: FLEET_QUERY_KEY,
-    queryFn: fetchFleet,
+    queryFn: ({ signal }) => {
+      if (opts.enabled === false) throw new OperatorReadError("invalid_request", "Fleet read is disabled by its caller.");
+      return fetchFleet(signal);
+    },
     enabled: opts.enabled ?? true,
+    retry: false, placeholderData: undefined,
     staleTime: FLEET_POLL_FLOOR_MS,
     refetchInterval: FLEET_POLL_INTERVAL_MS,
     // HG-8 (banked): the string variant — boolean `true` is gated by the

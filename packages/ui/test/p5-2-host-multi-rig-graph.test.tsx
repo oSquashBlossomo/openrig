@@ -275,9 +275,9 @@ describe("HostMultiRigGraph (P5.2-1 reachability — ritual #6)", () => {
       (await findByTestId("rig-group-node-rig-2")).getAttribute("data-collapsed"),
     ).toBe("false");
     await waitFor(() => {
-      expect(mockFetch).toHaveBeenCalledWith("/api/rigs/rig-1/graph");
-      expect(mockFetch).toHaveBeenCalledWith("/api/rigs/rig-2/graph");
-      expect(mockFetch).toHaveBeenCalledWith("/api/rigs/rig-3/graph");
+      expect(mockFetch).toHaveBeenCalledWith("/api/rigs/rig-1/graph", expect.objectContaining({ signal: expect.any(AbortSignal) }));
+      expect(mockFetch).toHaveBeenCalledWith("/api/rigs/rig-2/graph", expect.objectContaining({ signal: expect.any(AbortSignal) }));
+      expect(mockFetch).toHaveBeenCalledWith("/api/rigs/rig-3/graph", expect.objectContaining({ signal: expect.any(AbortSignal) }));
     });
   });
 
@@ -287,13 +287,30 @@ describe("HostMultiRigGraph (P5.2-1 reachability — ritual #6)", () => {
     expect(await findByTestId("host-multi-rig-graph")).toBeTruthy();
     await waitFor(() => {
       expect(mockFetch).toHaveBeenCalledWith("/api/ps?host=vps-a", expect.objectContaining({ signal: expect.any(AbortSignal) }));
-      expect(mockFetch).toHaveBeenCalledWith("/api/rigs/rig-1/graph?host=vps-a");
-      expect(mockFetch).toHaveBeenCalledWith("/api/rigs/rig-2/graph?host=vps-a");
-      expect(mockFetch).toHaveBeenCalledWith("/api/rigs/rig-3/graph?host=vps-a");
+      expect(mockFetch).toHaveBeenCalledWith("/api/rigs/rig-1/graph?host=vps-a", expect.objectContaining({ signal: expect.any(AbortSignal) }));
+      expect(mockFetch).toHaveBeenCalledWith("/api/rigs/rig-2/graph?host=vps-a", expect.objectContaining({ signal: expect.any(AbortSignal) }));
+      expect(mockFetch).toHaveBeenCalledWith("/api/rigs/rig-3/graph?host=vps-a", expect.objectContaining({ signal: expect.any(AbortSignal) }));
     });
     expect(
       mockFetch.mock.calls.some(([url]) => String(url) === "/api/rigs/rig-1/graph"),
     ).toBe(false);
+  });
+
+  it("aborts graph fan-out when the host graph unmounts", async () => {
+    const signals: AbortSignal[] = [];
+    mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.startsWith("/api/ps")) return Promise.resolve(Response.json(PS_RESPONSE));
+      if (url.includes("/graph")) {
+        signals.push(init!.signal!);
+        return new Promise<Response>(() => {});
+      }
+      return Promise.resolve(Response.json([]));
+    });
+    const { unmount } = withQueryClient(<HostMultiRigGraph />, { selectedHost: "vps-a" });
+    await waitFor(() => expect(signals).toHaveLength(3));
+    expect(signals.every(signal => !signal.aborted)).toBe(true);
+    unmount();
+    expect(signals.every(signal => signal.aborted)).toBe(true);
   });
 
   it("rig group body click toggles collapse state (P5.2-5)", async () => {
