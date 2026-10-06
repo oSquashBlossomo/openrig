@@ -93,7 +93,15 @@ validated `main` base revision and reads the diff via GitHub; PR code is not
 executed. The environment's branch restriction also blocks feature-branch
 workflow definitions from receiving the Claude secret. External
 contributions can receive Codex review and an independent local Claude review.
-Claude runs have a timeout and turn limit. Subscription usage still applies.
+Claude runs have a 20-minute timeout and a 40-turn limit. Subscription usage
+still applies. Each model turn counts, including one spent on a denied tool
+and the closing reply after the comment is posted. At 20 turns, most reviews
+of 25-40 file PRs ended red with `error_max_turns`, sometimes after the review had
+already been posted ([#21](https://github.com/oSquashBlossomo/openrig/issues/21)).
+The prompt lists the only tools available, reads the file list and diff once,
+batches extra file reads, posts one comment by turn 30, and then stops. A
+review that still runs out of turns fails the job; check whether its comment
+was posted before treating the review as missing.
 The workflow uses the temporary repository GitHub token with read-only code
 access and permission to post PR comments. This avoids the Claude app's
 `pull_request_target` OIDC exchange issue. Comments are posted by

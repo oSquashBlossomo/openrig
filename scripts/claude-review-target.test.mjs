@@ -107,6 +107,19 @@ test("review tools cannot execute shell commands or read credential files", () =
   assert.ok(!review.with.claude_args.includes("Bash("));
 });
 
+test("review turn budget fits a large PR and stays bounded", () => {
+  const job = workflow.jobs["claude-review"];
+  const review = job.steps.find(step => step.name === "Review pull request");
+  const turns = review.with.claude_args.match(/(?:^|\s)--max-turns (\d+)(?:\s|$)/);
+  assert.ok(turns, "claude_args must set --max-turns");
+  assert.ok(Number(turns[1]) >= 40 && Number(turns[1]) <= 60, `unexpected --max-turns ${turns[1]}`);
+  assert.equal(job["timeout-minutes"], 20);
+  // The prompt must spend turns on reading once, post once, and stop after posting.
+  assert.match(review.with.prompt, /get_pull_request_files \(perPage 100\) once/);
+  assert.match(review.with.prompt, /add_issue_comment exactly once/);
+  assert.match(review.with.prompt, /After the comment is posted, stop/);
+});
+
 test("PR reviews use the repository-scoped comment token without app OIDC exchange", () => {
   const review = workflow.jobs["claude-review"].steps.find(step => step.name === "Review pull request");
   assert.equal(review.with.github_token, "${{ github.token }}");
