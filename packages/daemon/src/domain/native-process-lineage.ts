@@ -98,13 +98,32 @@ function codexResumeToken(args: string[]): string | null | undefined {
 
 // Managed fresh/resume launches name the current Claude identity explicitly.
 // A fork's --resume names its parent, so it cannot prove the new occupant.
+function advisorOnlySettings(value: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+    const entries = Object.entries(parsed);
+    return entries.length === 1 && entries[0]![0] === "advisorModel" && typeof entries[0]![1] === "string";
+  } catch { return false; }
+}
+
 function claudeSessionToken(args: string[]): string | null {
   let token: string | null = null;
+  const seen = new Set<string>();
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]!;
     if (index === 0 && /^\(\d+\.\d+\.\d+[^)]*\)$/.test(arg)) continue;
-    if (["--permission-mode", "--model", "--name"].includes(arg)) { index += 1; continue; }
-    if (/^--(?:permission-mode|model|name)=/.test(arg) || arg === "--dangerously-skip-permissions") continue;
+    const option = arg.match(/^--(permission-mode|model|name|effort|settings)(?:=(.*))?$/);
+    if (option) {
+      const key = option[1]!;
+      const value = option[2] ?? args[++index];
+      if (seen.has(key) || !value || value.startsWith("-")) return null;
+      seen.add(key);
+      if (key === "effort" && !["low", "medium", "high", "xhigh", "max"].includes(value)) return null;
+      if (key === "settings" && !advisorOnlySettings(value)) return null;
+      continue;
+    }
+    if (arg === "--dangerously-skip-permissions") continue;
     const identity = arg.match(/^--(?:session-id|resume)(?:=(.*))?$/);
     if (!identity) return null; // Unknown argv is not positive identity proof.
     const value = identity[1] ?? args[++index];
@@ -115,14 +134,22 @@ function claudeSessionToken(args: string[]): string | null {
 }
 
 // Delivery-only reading of a Claude argv, which also accepts --settings (the
-// strict selector above does not). null: the argv parsed and names no session.
+// strict selector above permits only advisor-only JSON). null: the argv parsed and names no session.
 // "unparsed": an argument was not recognised, so the argv proves nothing.
 function claudeSessionIdentity(args: string[]): string | null | { unparsed: true } {
   const unparsed = { unparsed: true } as const;
   let token: string | null = null;
+  let effortSeen = false;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]!;
     if (index === 0 && /^\(\d+\.\d+\.\d+[^)]*\)$/.test(arg)) continue;
+    const effort = arg.match(/^--effort(?:=(.*))?$/);
+    if (effort) {
+      const value = effort[1] ?? args[++index];
+      if (effortSeen || !value || !["low", "medium", "high", "xhigh", "max"].includes(value)) return unparsed;
+      effortSeen = true;
+      continue;
+    }
     if (["--permission-mode", "--model", "--name", "--settings"].includes(arg)) {
       const value = args[++index];
       if (!value || value.startsWith("-")) return unparsed;

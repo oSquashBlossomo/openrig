@@ -52,6 +52,7 @@ export interface SuccessorNode {
   model?: string | null;
   /** #75: the seat's configured effort (nodes.effort). Carried to successor launch. */
   effort?: string | null;
+  advisorModel?: string | null;
   /** 0.5.2-07 A4-profile: the seat's SPEC-pinned codex config profile (nodes.codex_config_profile).
    *  Same continuity rationale as model — populated by the caller from node provenance; absent → the
    *  adapter emits no -p flag (unchanged for legacy/unpinned seats). */
@@ -329,7 +330,7 @@ export class SuccessorSessionLauncher {
       // 0.5.2-07: the successor reads the seat's SPEC-pinned model (adapter emits -m/--model).
       model: node.model ?? undefined,
       // #75: the successor reads the seat's configured effort.
-      effort: node.effort ?? undefined,
+      effort: node.effort ?? undefined, advisorModel: node.advisorModel ?? undefined,
       // 0.5.2-07 A4-profile: the successor reads the seat's SPEC-pinned codex config profile (adapter emits -p).
       codexConfigProfile: node.codexConfigProfile ?? undefined,
     };

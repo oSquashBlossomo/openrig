@@ -225,12 +225,15 @@ describe("Profile resolver + precedence engine", () => {
         defaults: { effort: "low" },
         profiles: { default: { preferences: { effort: "medium" }, uses: { skills: ["skill-a"], guidance: [], subagents: [], plugins: [], runtimeResources: [] } } },
       })),
-      member: makeMember({ effort: "high" }),
+      member: makeMember({ effort: "high", advisorModel: "off" }),
     });
 
     const result = resolveNodeConfig(ctx);
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.config.effort).toBe("high");
+    if (result.ok) {
+      expect(result.config.effort).toBe("high");
+      expect(result.config.advisorModel).toBe("off");
+    }
   });
 
   it("profile preference effort overrides spec defaults", () => {

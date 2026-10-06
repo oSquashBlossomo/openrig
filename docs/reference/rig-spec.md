@@ -277,8 +277,12 @@ directory's `CLAUDE.md`, including blocks written by other rigs.
 | `cwd` | string | yes | — | Working directory for the agent. Resolved relative to the rig root (the directory containing the rig spec). Use `"."` for the rig root itself. Can be overridden at launch time with `rig up --cwd`. |
 | `label` | string | no | — | Human-readable member name. Shown in UI when present. |
 | `model` | string | no | — | Model override. Runtime-specific (e.g., `claude-opus-4-6` for Claude Code). |
+| `effort` | string | no | — | Native reasoning effort for this seat, emitted on each managed launch. |
+| `advisor_model` | string | no | — | Claude Code only: explicit advisor model id, or `off`. Omit to inherit native defaults. Passed as a session-local settings override on fresh, resume and fork launches; shared project and user settings are untouched. |
 | `restore_policy` | string | no | `resume_if_possible` | Restore behavior. One of: `resume_if_possible`, `relaunch_fresh`, `checkpoint_only`. |
 | `startup` | StartupBlock | no | — | Member-level startup files and actions. Applied only to this member. |
+
+Per-seat model configuration can also be persisted with `rig seat set-model <seat> --model <id> --effort <level> --advisor <model|off|inherit> --reason <text>`. Omitted flags preserve existing values; `inherit` removes the seat override. The change is audited and applies to later managed launches. The running native conversation is not restarted. Snapshot restore uses the configuration captured in that snapshot, so take a new snapshot after configuration changes when it should become the recovery default.
 
 ### Pi (`runtime: pi`)
 

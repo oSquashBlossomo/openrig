@@ -1,3 +1,4 @@
+import "./helpers/isolated-claude-config.js";
 import fs from "node:fs";
 import os from "node:os";
 import nodePath from "node:path";
@@ -790,4 +791,27 @@ describe("Claude Code runtime adapter", () => {
   // (c) pre-existing user-authored hooks PRESERVED untouched; (d) source
   // grep confirms provisionActivityHooks/upsertCommandHook/etc. removed
   // from adapter source.
+});
+
+describe("per-seat advisor settings", () => {
+  it.each(["fresh", "resume", "fork"])("%s includes only the session-local advisor override", async kind => {
+    const tmux = mockTmux();
+    const fs = mockFs();
+    const adapter = new ClaudeCodeAdapter({ tmux, fsOps: fs, sleep: async () => {}, sessionIdFactory: () => "new-native-id" });
+    const options = kind === "fresh" ? { name: "seat" } : kind === "resume" ? { name: "seat", resumeToken: "exact-native-id" } : { name: "seat", forkSource: { kind: "native_id" as const, value: "parent-native-id" } };
+    await adapter.launchHarness({ ...makeBinding(), model: "claude-opus-5-5", effort: "xhigh", advisorModel: "claude-fable-5-1" }, options);
+    const command = (tmux.sendText as ReturnType<typeof vi.fn>).mock.calls[0]![1];
+    expect(command).toContain(` --settings '{"advisorModel":"claude-fable-5-1"}'`);
+    expect(command).toContain(" --effort 'xhigh'");
+    expect(command).toContain(kind === "fresh" ? "--session-id new-native-id" : kind === "resume" ? "--resume exact-native-id" : "--resume parent-native-id --fork-session");
+    expect((fs as unknown as { _store: Record<string, string> })._store).toEqual({});
+  });
+  it("omitting advisor preserves every command byte", async () => {
+    const tmux = mockTmux();
+    const adapter = new ClaudeCodeAdapter({ tmux, fsOps: mockFs(), sleep: async () => {} });
+    await adapter.launchHarness(makeBinding(), { name: "seat", resumeToken: "exact-native-id" });
+    await adapter.launchHarness({ ...makeBinding(), advisorModel: "off" }, { name: "seat", resumeToken: "exact-native-id" });
+    const calls = (tmux.sendText as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls[1]![1].replace(` --settings '{"advisorModel":""}'`, "")).toBe(calls[0]![1]);
+  });
 });

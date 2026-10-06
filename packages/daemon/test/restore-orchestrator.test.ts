@@ -404,7 +404,7 @@ describe("RestoreOrchestrator", () => {
     }
   });
 
-  it("attemptResume forwards effort to claude and codex resume adapters", async () => {
+  it("attemptResume forwards effort and Claude advisor without leaking to Codex", async () => {
     const claudeResume = vi.fn(async () => ({ ok: true as const }));
     const codexResume = vi.fn(async () => ({ ok: true as const }));
     const orch = createOrchestrator({
@@ -426,6 +426,7 @@ describe("RestoreOrchestrator", () => {
       "sonnet",
       "floor",
       "high",
+      "claude-fable-5-1",
     );
     expect(claudeResume).toHaveBeenCalledWith(
       "claude-session",
@@ -437,6 +438,7 @@ describe("RestoreOrchestrator", () => {
       undefined,
       node.id,
       "high",
+      "claude-fable-5-1",
     );
 
     // Codex forwards effort
@@ -4073,7 +4075,7 @@ describe("RestoreOrchestrator", () => {
     function seedPodAware(resume: boolean) {
       const rig = rigRepo.createRig("test-rig");
       db.prepare("INSERT INTO pods (id, rig_id, label) VALUES (?, ?, ?)").run("pod-261", rig.id, "Dev");
-      const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code", podId: "pod-261" });
+      const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: "claude-code", podId: "pod-261", model: "claude-opus-5-5", effort: "xhigh", advisorModel: "claude-fable-5-1" });
       const session = sessionRegistry.registerSession(node.id, "dev-impl@test-rig");
       sessionRegistry.updateStatus(session.id, "running");
       if (resume) sessionRegistry.updateResumeToken(session.id, "claude_id", "resume-token-261");
@@ -4173,11 +4175,14 @@ describe("RestoreOrchestrator", () => {
 
     it("same-native resume: replay stays contained (no startup files delivered), stored built-ins notwithstanding", async () => {
       const { snap, deliverStartup, adapter } = seedPodAware(true);
+      expect(snap.data.nodes[0]).toMatchObject({ model: "claude-opus-5-5", effort: "xhigh", advisorModel: "claude-fable-5-1" });
       const orch = createOrchestrator({ listProcesses: nativeLineage("claude-code", "resume-token-261") });
       const result = await orch.restore(snap.id, { adapters: { "claude-code": adapter }, fsOps: { exists: notOld } });
       expect(result.ok).toBe(true);
       const delivered = deliverStartup.mock.calls.flatMap((c) => c[0] as unknown[]);
       expect(delivered).toEqual([]);
+      expect(adapter.launchHarness.mock.calls[0]![0]).toMatchObject({ model: "claude-opus-5-5", effort: "xhigh", advisorModel: "claude-fable-5-1" });
+      expect(adapter.launchHarness.mock.calls[0]![1]).toMatchObject({ resumeToken: "resume-token-261" });
     });
   });
 });

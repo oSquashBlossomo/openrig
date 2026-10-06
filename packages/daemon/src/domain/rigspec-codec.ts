@@ -158,6 +158,7 @@ export class RigSpecCodec {
         if (m.codexConfigProfile) member["codex_config_profile"] = m.codexConfigProfile;
         if (m.model) member["model"] = m.model;
         if (m.effort) member["effort"] = m.effort;
+        if (m.advisorModel) member["advisor_model"] = m.advisorModel;
         // OPR.0.4.6.FAC1: role round-trips through spec serialization.
         if (m.role) member["role"] = m.role;
         // OPR.0.4.8.3 Seam B: per-seat permission_policy ref round-trips through spec serialization.
@@ -234,6 +235,7 @@ export class LegacyRigSpecCodec {
         if (node.role != null) n["role"] = node.role;
         if (node.model != null) n["model"] = node.model;
         if (node.effort != null) n["effort"] = node.effort;
+        if (node.advisorModel != null) n["advisor_model"] = node.advisorModel;
         if (node.cwd != null) n["cwd"] = node.cwd;
         if (node.surfaceHint != null) n["surface_hint"] = node.surfaceHint;
         if (node.workspace != null) n["workspace"] = node.workspace;

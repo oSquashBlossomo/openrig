@@ -118,3 +118,15 @@ describe("Claude rewritten process titles", () => {
     expect(await verify(vi.fn().mockReturnValueOnce(processRows()).mockReturnValueOnce(changed))).toBeNull();
   });
 });
+
+describe("Claude advisor launch identity", () => {
+  const native = (options: string): NativeProcessRow[] => [{ pid: 10, ppid: 1, pgid: 10, tpgid: 10, executableName: "claude", startedAt, command: `claude --effort xhigh ${options} --resume ${token}` }];
+  const proof = (options: string) => verifyClaudePaneProcess({ target: "%1", tmux: { getPanePid: async () => 10 }, listProcesses: () => native(options), expectedToken: token });
+  it("accepts the exact advisor-only native override", async () => {
+    expect((await proof(`--settings '{"advisorModel":"claude-fable-5-1"}'`))?.process.pid).toBe(10);
+    expect((await proof(`--settings '{"advisorModel":""}'`))?.process.pid).toBe(10);
+  });
+  it.each([`--settings '{"permissions":{"defaultMode":"auto"}}'`, `--settings broken`, `--settings '{"advisorModel":true}'`, `--settings '{"advisorModel":"x","extra":1}'`, `--effort invalid`, `--effort high --effort xhigh`, `--fork-session`, `--settings '{"advisorModel":"x"}' --settings '{"advisorModel":"y"}'`])("rejects indeterminate or conflicting native options: %s", async options => {
+    expect(await proof(options)).toBeNull();
+  });
+});

@@ -66,6 +66,7 @@ export interface SeatRefusal {
     | "seat_ref_required"
     | "seat_not_found"
     | "seat_ambiguous"
+    | "invalid_model_configuration"
     | "missing_model"
     | "missing_reason"
     | "permission_selection_refused"
@@ -120,6 +121,7 @@ export type LaunchFreshResult =
       generation: string;
       model: string | null;
       effort?: string | null;
+      advisorModel?: string | null;
       startupPolicyHash: string;
       supersededSessionIds: string[];
     }
@@ -182,7 +184,7 @@ export class SeatLifecycleService {
     this.activityOracle = deps.activityOracle ?? null;
   }
 
-  async setModel(input: { seatRef: string; model: string; reason: string; operator?: string | null }): Promise<SetModelResult> {
+  async setModel(input: { seatRef: string; model: string; effort?: string; advisor?: string; reason: string; operator?: string | null }): Promise<SetModelResult> {
     const required = this.requireReason(input.reason);
     if (required) return required;
     if (!input.model?.trim()) {
@@ -194,7 +196,20 @@ export class SeatLifecycleService {
     const model = input.model.trim();
     const seat = this.describe(resolved);
     const from = resolved.entry.model ?? null;
-    if (from === model) {
+    const node = this.rigRepo.getRig(seat.rigId)!.nodes.find(n => n.id === seat.nodeId)!;
+    const effortFrom = node.effort ?? null;
+    const advisorFrom = node.advisorModel ?? null;
+    const allowedEfforts = node.runtime === "claude-code" ? ["low", "medium", "high", "xhigh", "max", "inherit"] : ["none", "minimal", "low", "medium", "high", "xhigh", "inherit"];
+    if (input.effort !== undefined && (!["claude-code", "codex"].includes(node.runtime ?? "") || !allowedEfforts.includes(input.effort))) {
+      return { ok: false, code: "invalid_model_configuration", message: `Unsupported effort for ${node.runtime}; use ${allowedEfforts.join(", ")}.` };
+    }
+    if (input.advisor !== undefined && (node.runtime !== "claude-code" || !/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(input.advisor) || input.advisor === "on")) {
+      return { ok: false, code: "invalid_model_configuration", message: "Advisor requires a Claude seat and an explicit model id, off or inherit." };
+    }
+    const effortTo = input.effort === undefined ? effortFrom : input.effort === "inherit" ? null : input.effort;
+    const advisorTo = input.advisor === undefined ? advisorFrom : input.advisor === "inherit" ? null : input.advisor;
+    const configurationAudit = input.effort !== undefined || input.advisor !== undefined ? { effortFrom, effortTo, advisorFrom, advisorTo } : {};
+    if (from === model && effortFrom === effortTo && advisorFrom === advisorTo) {
       // Honest no-op: the persisted value already IS the target; no event is minted.
       return { ok: true, seat, from, to: model, changed: false };
     }
@@ -202,6 +217,11 @@ export class SeatLifecycleService {
     let persisted: PersistedEvent | null = null;
     const tx = this.db.transaction(() => {
       this.rigRepo.setNodeModel(resolved.nodeId, model);
+      if (input.effort !== undefined) {
+        if (effortTo === null) this.rigRepo.clearNodeEffort(resolved.nodeId);
+        else this.rigRepo.setNodeEffort(resolved.nodeId, effortTo);
+      }
+      if (input.advisor !== undefined) this.rigRepo.setNodeAdvisorModel(resolved.nodeId, advisorTo);
       persisted = this.eventBus.persistWithinTransaction({
         type: "node.model_changed",
         rigId: seat.rigId,
@@ -209,6 +229,7 @@ export class SeatLifecycleService {
         logicalId: seat.logicalId,
         from,
         to: model,
+        ...configurationAudit,
         reason: input.reason.trim(),
         operator: input.operator ?? null,
       });
@@ -425,7 +446,7 @@ export class SeatLifecycleService {
       || !this.startupOrchestrator.canContinueFresh(node.id, session.id)) return { ok: false as const, code: "continuation_unavailable", message: "Startup changed during the readiness check. Refresh." };
     const result = await this.startupOrchestrator.startNode({
       rigId: seat.rigId, nodeId: node.id, sessionId: session.id,
-      binding: { ...binding, cwd: node.cwd ?? ".", model: node.model ?? undefined, effort: node.effort ?? undefined, codexConfigProfile: node.codexConfigProfile ?? undefined },
+      binding: { ...binding, cwd: node.cwd ?? ".", model: node.model ?? undefined, effort: node.effort ?? undefined, advisorModel: node.advisorModel ?? undefined, codexConfigProfile: node.codexConfigProfile ?? undefined },
       adapter, plan: startup.context.plan, resolvedStartupFiles: startup.context.resolvedStartupFiles,
       startupActions: startup.context.startupActions, isRestore: false,
       sessionName: session.session_name, skipHarnessLaunch: true, continueFreshStartup: true, includeDurableObligations: true, allowFreshFallback: false,
@@ -646,7 +667,7 @@ export class SeatLifecycleService {
         newGeneration: null,
         startupPolicyHash: startup.context.hash,
         model: node.model,
-        effort: node.effort ?? null,
+        effort: node.effort ?? null, advisorModel: node.advisorModel ?? null,
         reason: input.reason,
         operator: input.operator,
         errors: ["new occupant generation was not persisted"],
@@ -668,7 +689,7 @@ export class SeatLifecycleService {
         ...launch.binding,
         cwd: node.cwd ?? ".",
         model: node.model ?? undefined,
-        effort: node.effort ?? undefined,
+        effort: node.effort ?? undefined, advisorModel: node.advisorModel ?? undefined,
         codexConfigProfile: node.codexConfigProfile ?? undefined,
         launchPosture,
       },
@@ -691,7 +712,7 @@ export class SeatLifecycleService {
         newGeneration: generation,
         startupPolicyHash: startup.context.hash,
         model: node.model,
-        effort: node.effort ?? null,
+        effort: node.effort ?? null, advisorModel: node.advisorModel ?? null,
         reason: input.reason,
         operator: input.operator,
         errors: startupResult.errors,
@@ -752,7 +773,7 @@ export class SeatLifecycleService {
         nativeSessionId,
         ...(nativeSessionId ? {} : { nativeSessionIdReason: "scrape_miss" }),
         model: node.model,
-        effort: node.effort ?? null,
+        effort: node.effort ?? null, advisorModel: node.advisorModel ?? null,
         startupPolicyHash: startup.context.hash,
         reason: input.reason.trim(),
         operator: input.operator ?? null,
@@ -784,7 +805,7 @@ export class SeatLifecycleService {
       sessionId: launch.session.id,
       generation,
       model: node.model,
-      effort: node.effort ?? undefined,
+      effort: node.effort ?? undefined, advisorModel: node.advisorModel ?? undefined,
       startupPolicyHash: startup.context.hash,
       supersededSessionIds,
     };
@@ -995,6 +1016,7 @@ export class SeatLifecycleService {
     startupPolicyHash: string;
     model: string | null;
     effort?: string | null;
+    advisorModel?: string | null;
     reason: string;
     operator?: string | null;
     errors: string[];

@@ -185,6 +185,9 @@ export function validateAgentSpec(raw: unknown): ValidationResult {
         advisories.push(...lifecycleResult.advisories);
       }
     }
+    if (defaults["advisor_model"] !== undefined && (typeof defaults["advisor_model"] !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(defaults["advisor_model"]) || ["on", "inherit"].includes(defaults["advisor_model"]))) {
+      errors.push("defaults.advisor_model: requires an explicit model id or off");
+    }
     if (defaults["effort"] !== undefined && (typeof defaults["effort"] !== "string" || !(defaults["effort"] as string).trim())) {
       advisories.push(`defaults.effort: non-string value "${defaults["effort"]}" ignored; effort must be a text value`);
     }
@@ -214,6 +217,9 @@ export function validateAgentSpec(raw: unknown): ValidationResult {
         const prefs = p["preferences"];
         if (prefs && typeof prefs === "object") {
           const prefsObj = prefs as Record<string, unknown>;
+          if (prefsObj["advisor_model"] !== undefined && (typeof prefsObj["advisor_model"] !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(prefsObj["advisor_model"]) || ["on", "inherit"].includes(prefsObj["advisor_model"]))) {
+            errors.push(`profiles.${profileName}.preferences.advisor_model: requires an explicit model id or off`);
+          }
           if (prefsObj["effort"] !== undefined && (typeof prefsObj["effort"] !== "string" || !(prefsObj["effort"] as string).trim())) {
             advisories.push(`profiles.${profileName}.preferences.effort: non-string value "${prefsObj["effort"]}" ignored; effort must be a text value`);
           }
@@ -369,6 +375,7 @@ export function normalizeAgentSpec(raw: Record<string, unknown>): AgentSpec {
     result.defaults = {
       runtime: defaults["runtime"] as string | undefined,
       model: defaults["model"] as string | undefined,
+      advisorModel: typeof defaults["advisor_model"] === "string" && defaults["advisor_model"].trim() ? defaults["advisor_model"].trim() : undefined,
       effort: typeof defaults["effort"] === "string" && defaults["effort"].trim()
         ? defaults["effort"].trim()
         : undefined,
@@ -502,6 +509,7 @@ function normalizeProfile(raw: Record<string, unknown>): ProfileSpec {
       ? {
           runtime: (raw["preferences"] as Record<string, unknown>)["runtime"] as string | undefined,
           model: (raw["preferences"] as Record<string, unknown>)["model"] as string | undefined,
+          advisorModel: typeof (raw["preferences"] as Record<string, unknown>)["advisor_model"] === "string" ? ((raw["preferences"] as Record<string, unknown>)["advisor_model"] as string).trim() || undefined : undefined,
           effort: typeof (raw["preferences"] as Record<string, unknown>)["effort"] === "string" && ((raw["preferences"] as Record<string, unknown>)["effort"] as string).trim()
             ? ((raw["preferences"] as Record<string, unknown>)["effort"] as string).trim()
             : undefined,

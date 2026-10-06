@@ -9,6 +9,7 @@ export interface NodeBinding extends Binding {
   cwd: string;
   model?: string;
   effort?: string;
+  advisorModel?: string;
   codexConfigProfile?: string;
   /** OPR.0.4.8.3 Seam B: the seat's RESOLVED launch posture from its permission_policy
    * attachment (member > rig precedence, resolved by the core resolver at materialize /

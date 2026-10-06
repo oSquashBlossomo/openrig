@@ -173,6 +173,8 @@ defaults:
 |-------|------|----------|---------|-------------|
 | `runtime` | string | no | — | Default runtime for this agent. Can be overridden by the rig spec member's `runtime` field. |
 | `model` | string | no | — | Default model. Can be overridden by the rig spec member's `model` field. |
+| `effort` | string | no | — | Default native reasoning effort. Member and profile preferences take precedence. |
+| `advisor_model` | string | no | — | Claude advisor model id or `off`. Member and profile preferences take precedence; omitted values inherit native defaults. This is a session-local launch override. |
 | `lifecycle` | Lifecycle | no | see below | Lifecycle behavior defaults. |
 
 ### Lifecycle Defaults
@@ -248,6 +250,8 @@ profiles:
 | `preferences` | object | no | — | Runtime/model preferences for this profile. |
 | `preferences.runtime` | string | no | — | Preferred runtime. |
 | `preferences.model` | string | no | — | Preferred model. |
+| `preferences.effort` | string | no | — | Preferred native reasoning effort. |
+| `preferences.advisor_model` | string | no | — | Claude advisor model id or `off`; overrides agent defaults. |
 | `uses` | Uses | no | all empty | Selects which declared resources are active for this profile. |
 | `startup` | StartupBlock | no | — | Profile-level startup files and actions. Merged with agent-level startup via layering. |
 | `lifecycle` | Lifecycle | no | — | Profile-level lifecycle overrides. |

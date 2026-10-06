@@ -32,6 +32,7 @@ export interface ResolvedNodeConfig {
   runtime: string;
   model: string | undefined;
   effort: string | undefined;
+  advisorModel: string | undefined;
   cwd: string;
   restorePolicy: string;
   /** OPR.0.5.6.20 — resolved continuity mode (canonical vocabulary; most-specific-wins). */
@@ -141,6 +142,11 @@ export function resolveNodeConfig(ctx: ResolutionContext): ResolutionResult {
   const model = member.model
     ?? profile.preferences?.model
     ?? spec.defaults?.model;
+
+  const advisorModel = member.advisorModel ?? profile.preferences?.advisorModel ?? spec.defaults?.advisorModel;
+  if (advisorModel !== undefined && (runtime !== "claude-code" || !/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(advisorModel) || ["on", "inherit"].includes(advisorModel))) {
+    return { ok: false, errors: ["advisor_model requires a Claude seat and an explicit model id or off"] };
+  }
 
   const rawEffort = member.effort
     ?? profile.preferences?.effort
@@ -299,6 +305,7 @@ export function resolveNodeConfig(ctx: ResolutionContext): ResolutionResult {
       runtime,
       model,
       effort,
+      advisorModel,
       cwd,
       restorePolicy: restorePolicyResult.policy,
       compactionStrategy: compactionResult.strategy,
