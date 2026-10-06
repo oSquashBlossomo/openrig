@@ -128,9 +128,11 @@ uses the GitHub connector's structured tools; built-in shell/file tools are
 disabled, because the runner holds the Claude token. Its GitHub tools are
 read-only apart from posting the comment. It reads the PR conversation, review
 threads and reviews so it does not repeat findings that were already resolved,
-and treats all of this as untrusted evidence. Anyone who can comment could try
-to steer it through a comment; the worst outcome is a misleading advisory
-comment. GitHub code search does not index this fork (a fork needs more stars
+and treats all of this as untrusted evidence. It skips a finding only when the
+current head fixed it or an owner, member or collaborator disproved it, and it
+lists every skipped finding so a wrongly dropped one stays visible. Anyone who
+can comment could still try to steer it; the worst outcome is a misleading
+advisory comment. GitHub code search does not index this fork (a fork needs more stars
 than its parent), so the reviewer traces callers with `get_file_contents` and
 labels what it cannot confirm. Merge workflow updates into main before testing
 the automatic path.
