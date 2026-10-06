@@ -206,9 +206,13 @@ interface FocusedTerminalProps {
    *  keyboard index or a phone tap) so focus and the software keyboard stay
    *  where the operator is. */
   autoFocus?: boolean;
+  /** Called when the server closes the socket definitively (no automatic
+   *  reconnect follows), with the reason shown. Lets a host that admitted
+   *  this viewer release it and offer its own retry. */
+  onClosed?: (reason: string) => void;
 }
 
-export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", initialText, beforeConnect, autoFocus = true }: FocusedTerminalProps) {
+export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", initialText, beforeConnect, autoFocus = true, onClosed }: FocusedTerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   // OPR.0.4.0.39: the fit wrapper fills the available container; the inner
   // containerRef holds the natural-sized xterm. We measure the wrapper (available)
@@ -250,6 +254,8 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
   beforeConnectRef.current = beforeConnect;
   const autoFocusRef = useRef(autoFocus);
   autoFocusRef.current = autoFocus;
+  const onClosedRef = useRef(onClosed);
+  onClosedRef.current = onClosed;
   // Reconnect entry point (set below); the socket's close handler uses it so a
   // reconnect passes through admission too.
   const reconnectRef = useRef<(gen: number) => void>(() => {});
@@ -417,11 +423,11 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
         // health positively reports the control plane unhealthy. Every specific
         // broker/session reason (session not found / pipe-pane failed / tmux
         // session terminated) is preserved verbatim.
-        if (evt.reason === GENERIC_BROKER_UNAVAILABLE && controlPlaneUnhealthyRef.current) {
-          setError(DAEMON_CONTROL_PLANE_UNHEALTHY);
-        } else {
-          setError(evt.reason || "Terminal unavailable: session not found on this daemon");
-        }
+        const message = evt.reason === GENERIC_BROKER_UNAVAILABLE && controlPlaneUnhealthyRef.current
+          ? DAEMON_CONTROL_PLANE_UNHEALTHY
+          : evt.reason || "Terminal unavailable: session not found on this daemon";
+        setError(message);
+        onClosedRef.current?.(message);
         return;
       }
       const term = termRef.current as { write(data: string): void } | null;

@@ -37,6 +37,7 @@ import { ConnectedInstanceNote, displayValue, ReadError, ReadStatus, Timestamp, 
 import { WorkflowTopologyGraph } from "./WorkflowTopologyGraph.js";
 import { InstanceTrailTimeline } from "./InstanceTrailTimeline.js";
 import { FailureOccurrenceChooser } from "./FailureOccurrenceChooser.js";
+import { SequentialFailurePanel } from "./SequentialFailurePanel.js";
 import { WorkflowAbortPanel, WorkflowRevisionPanel } from "./WorkflowControls.js";
 import { WorkflowBindingPanel, WorkflowFrontierPanel, WorkflowObligationsPanel } from "./WorkflowFrontier.js";
 import { useConnectedWorkflowSpec, useOpenLibraryEntry, type ConnectedWorkflowSpec, type SpecReadFreshness } from "./workflow-spec-identity.js";
@@ -323,6 +324,8 @@ export function WorkflowInstancePage({
             <FailureOccurrenceChooser instance={instance} failures={failures} />
           </div>
         ) : null}
+        {/* Renders only for a served serial failure, or to keep its own attempt's outcome visible. */}
+        <SequentialFailurePanel instance={instance} failures={failures} />
 
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_26rem]">
           <div className="min-w-0 space-y-6">

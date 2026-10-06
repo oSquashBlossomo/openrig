@@ -1069,6 +1069,9 @@ export class WorkflowRuntime {
   async resume(input: {
     instanceId: string;
     occurrenceId?: string;
+    /** Optional UI selection for the serial executor's recorded failure.
+     * Existing CLI callers omit it; occurrence recovery has its own identity. */
+    expectedFailure?: { version: number; failedPacketId: string; stepId: string };
     decision?: string;
     actorSession: string;
   }): Promise<{
@@ -1080,8 +1083,24 @@ export class WorkflowRuntime {
     exceptionItemsClosed: number;
     absorbedReplay?: boolean;
   }> {
+    const expected = input.expectedFailure;
+    if (expected !== undefined && (
+      !expected || typeof expected !== "object" || Array.isArray(expected)
+      || !Number.isSafeInteger(expected.version) || expected.version < 0
+      || typeof expected.failedPacketId !== "string" || !expected.failedPacketId.trim()
+      || typeof expected.stepId !== "string" || !expected.stepId.trim()
+      || input.occurrenceId !== undefined
+    )) {
+      throw new WorkflowProjectorError("resume_selection_invalid",
+        "Sequential resume requires an exact version, failedPacketId and stepId, without occurrenceId.");
+    }
     const occurrences = this.instanceStore.listFailureOccurrences(input.instanceId);
     if (input.occurrenceId !== undefined || occurrences.length > 0) {
+      if (expected !== undefined) {
+        throw new WorkflowProjectorError("resume_failure_changed",
+          "This instance uses failure occurrences; re-read it and choose an exact occurrence.",
+          { instanceId: input.instanceId });
+      }
       return this.resumeFailureOccurrence(input);
     }
     let result!: {
@@ -1096,6 +1115,17 @@ export class WorkflowRuntime {
 
     this.eventBus.withNotifyEnvelope((register) => {
       const instance = this.instanceStore.getByIdOrThrow(input.instanceId);
+      // Compare against the same transaction snapshot that will mint the
+      // redrive. A stale dialog must never resume a newer failure episode.
+      if (expected !== undefined && (
+        instance.version !== expected.version
+        || instance.lastContinuationDecision?.closedPacket !== expected.failedPacketId
+        || instance.lastContinuationDecision?.currentStep !== expected.stepId
+      )) {
+        throw new WorkflowProjectorError("resume_failure_changed",
+          "The selected sequential failure changed; re-read the instance before resuming.",
+          { instanceId: input.instanceId, expectedVersion: expected.version, actualVersion: instance.version });
+      }
       if (instance.status !== "failed") {
         throw new WorkflowProjectorError(
           "instance_not_failed",

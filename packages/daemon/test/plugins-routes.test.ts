@@ -10,7 +10,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { Hono } from "hono";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -27,7 +27,9 @@ interface TestEnv {
 }
 
 function setup(): TestEnv {
-  const root = mkdtempSync(join(tmpdir(), "plugins-routes-"));
+  // Library identities use real paths; macOS tmpdir() may be the /var alias
+  // of /private/var. Keep fixture paths on the same canonical authority.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "plugins-routes-")));
   const openrigPluginsDir = join(root, "openrig-plugins");
   const claudeCacheDir = join(root, "claude-cache");
   const codexCacheDir = join(root, "codex-cache");
@@ -72,6 +74,9 @@ describe("plugins HTTP routes", () => {
 
   beforeEach(() => {
     env = setup();
+    // createDaemon projects bundled skills into HOME as well as OPENRIG_HOME.
+    // Both startup cases must stay within the disposable fixture.
+    vi.stubEnv("HOME", env.root);
   });
 
   afterEach(() => {

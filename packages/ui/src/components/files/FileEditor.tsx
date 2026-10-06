@@ -18,7 +18,7 @@
 // route or host never saves or discards them implicitly.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useIsMutating, useQueryClient } from "@tanstack/react-query";
 import { useFilesWrite, type FilesReadResponse, type FileWriteResult } from "../../hooks/useFiles.js";
 import {
   analyzeFileText,
@@ -29,7 +29,7 @@ import {
 } from "../../lib/files-text-draft.js";
 import { fileOriginAdmission, fileTargetKey } from "./file-source.js";
 import { useKnownSelectedHost } from "./useFileAdmission.js";
-import { isDraftDirty, useFileDraft, useFileDraftStore, type FileDraft, type FileDraftBase } from "./file-drafts.js";
+import { isDraftDirty, nextDraftGeneration, useFileDraft, useFileDraftStore, type FileDraft, type FileDraftBase } from "./file-drafts.js";
 
 export type FileEditability =
   | { editable: true }
@@ -129,8 +129,16 @@ export function FileEditor({ root, path, read, originInstance }: {
   const draft = useFileDraft(store, key);
   const editability = useMemo(() => assessFileEditability(read), [read]);
   const readBase = useMemo(() => baseFromRead(read), [read]);
-  const write = useFilesWrite();
+  // Keyed per exact file target: a Save keeps this file "saving" across an
+  // unmount/remount (navigating away and back), never for another file.
+  const writeKey = useMemo(() => ["files", "write", key], [key]);
+  const write = useFilesWrite({ mutationKey: writeKey });
+  const saving = useIsMutating({ mutationKey: writeKey, exact: true }) > 0 || write.isPending;
   const qc = useQueryClient();
+  // Local indicators (saved / notice / error) belong to this mounted editor
+  // only; a completion after navigation updates the persistent draft record.
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const choiceRef = useRef<HTMLFieldSetElement>(null);
   const [composing, setComposing] = useState(false);
@@ -171,12 +179,14 @@ export function FileEditor({ root, path, read, originInstance }: {
     setNotice(null);
     const current = store.get(key);
     if (current) {
-      const keep = current.mixedChoice || current.conflict || current.saved || !sameBase(current.base, read);
+      // A pending Save still belongs to this draft: typing back to the base
+      // text while it is in flight is an edit, not a discard.
+      const keep = current.mixedChoice || current.conflict || current.saved || saving || !sameBase(current.base, read);
       if (nextLf === current.base.lfText && !keep) store.delete(key);
       else store.set({ ...current, draftLf: nextLf });
     } else if (nextLf !== base.lfText) {
       const record: FileDraft = {
-        key, originInstance: origin, root, path,
+        key, generation: nextDraftGeneration(), originInstance: origin, root, path,
         base: { raw: base.raw, lfText: base.lfText, mtime: base.mtime, contentHash: base.contentHash },
         draftLf: nextLf,
       };
@@ -237,7 +247,13 @@ export function FileEditor({ root, path, read, originInstance }: {
       return;
     }
     const savedRaw = prepared.content;
-    write.mutate(
+    // commit() above guarantees a record for a dirty draft.
+    const generation = store.get(key)?.generation;
+    // The completion runs on the mutateAsync promise, which settles even if
+    // this editor has unmounted (TanStack skips per-call mutate callbacks
+    // without an observer). It writes only to this exact target's draft and
+    // only for the generation it was sent for.
+    write.mutateAsync(
       {
         root,
         path,
@@ -246,21 +262,30 @@ export function FileEditor({ root, path, read, originInstance }: {
         expectedContentHash: working.contentHash,
         actor: "ui-files-edit-mode",
       },
-      {
-        onSuccess: (result: FileWriteResult) => {
-          const record: FileDraft = store.get(key) ?? { key, originInstance: origin, root, path, base: working, draftLf: candidate };
+    ).then(
+        (result: FileWriteResult) => {
+          const record = store.get(key);
+          if (!record || record.generation !== generation) {
+            // The draft this Save was sent for was discarded (and possibly
+            // replaced by a newer one). Never recreate it or attribute this
+            // response to another draft. A landed write is reconciled by the
+            // read refresh; a newer draft keeps its own base and text.
+            if (!("conflict" in result) && mounted.current) setNotice("A save sent before that draft was discarded has landed on disk.");
+            return;
+          }
           if ("conflict" in result) {
             store.set({ ...record, conflict: { currentMtime: result.currentMtime, currentContentHash: result.currentContentHash } });
           } else {
             store.set({ ...record, conflict: undefined, saved: { raw: savedRaw, contentHash: result.newContentHash } });
-            setSavedIndicator(true);
-            setTimeout(() => setSavedIndicator(false), 2000);
+            if (mounted.current) {
+              setSavedIndicator(true);
+              setTimeout(() => { if (mounted.current) setSavedIndicator(false); }, 2000);
+            }
           }
         },
-        onError: (err) => {
-          setSaveError(err instanceof Error ? err.message : String(err));
+        (err: unknown) => {
+          if (mounted.current) setSaveError(err instanceof Error ? err.message : String(err));
         },
-      },
     );
   };
 
@@ -282,11 +307,11 @@ export function FileEditor({ root, path, read, originInstance }: {
         <button
           type="button"
           data-testid="files-editor-save"
-          disabled={!dirty || write.isPending || composing}
+          disabled={!dirty || saving || composing}
           onClick={save}
           className="touch-target border border-emerald-500 bg-emerald-50 px-2 py-0.5 uppercase tracking-[0.10em] text-emerald-900 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {write.isPending ? "saving…" : "save"}
+          {saving ? "saving…" : "save"}
         </button>
         <button
           type="button"

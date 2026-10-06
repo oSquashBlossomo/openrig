@@ -22,11 +22,34 @@ import { cn } from "../lib/utils.js";
 import { useRigStatus } from "../hooks/useRigStatus.js";
 
 export function RigStatusControl({ rigId, rigName }: { rigId: string; rigName: string }) {
-  const { data: status, isLoading } = useRigStatus(rigId);
+  const { data: status, isLoading, error, refetch, isFetching } = useRigStatus(rigId);
   const [modalOpen, setModalOpen] = useState(false);
 
   // Defensive: render the placeholder until a well-formed status object arrives
   // (a malformed/empty response must never crash the topology page).
+  if (!isLoading && !status && error) {
+    // A failed read is not a pending one: say so and offer Retry.
+    return (
+      <div
+        data-testid={`rig-status-control-${rigId}`}
+        data-status="unavailable"
+        role="status"
+        className="inline-flex items-center gap-2 border border-stone-300 bg-white/60 px-3 py-1.5 font-mono text-[9px] text-secondary"
+      >
+        Rig status unavailable ({error instanceof Error ? error.message : String(error)})
+        <button
+          type="button"
+          data-testid={`rig-status-retry-${rigId}`}
+          onClick={() => void refetch()}
+          disabled={isFetching}
+          className="border border-stone-400 px-1.5 py-0.5 uppercase tracking-wide hover:bg-white disabled:opacity-50"
+        >
+          {isFetching ? "Retrying…" : "Retry"}
+        </button>
+      </div>
+    );
+  }
+
   if (isLoading || !status || typeof status.rigName !== "string" || !Array.isArray(status.src)) {
     return (
       <div

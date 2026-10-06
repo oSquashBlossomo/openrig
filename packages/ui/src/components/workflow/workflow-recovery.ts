@@ -2,7 +2,7 @@
 // replayed automatically; the exact retained target is read back first.
 
 import type { WorkflowFailureOccurrence, WorkflowInstanceWithDeadline, WorkflowOperation, WorkflowReconciliation } from "../../lib/workflow-contracts.js";
-import type { WorkflowAbortInput, WorkflowResumeInput, WorkflowRevisionInput } from "../../hooks/useWorkflowMutations.js";
+import type { WorkflowAbortInput, WorkflowResumeInput, WorkflowRevisionInput, WorkflowSequentialResumeInput } from "../../hooks/useWorkflowMutations.js";
 import type { OperatorReadError } from "../../lib/operator-read.js";
 
 export type ResumeReadback =
@@ -24,6 +24,24 @@ export function readBackResume(instanceId: string, attempt: Readonly<WorkflowRes
   return occurrence.resumeDecision === (attempt.decision ?? null) && occurrence.redrivePacketId !== null
     ? { kind: "committed", occurrence }
     : { kind: "resolved-differently", occurrence };
+}
+
+export type SequentialResumeReadback =
+  /** Still failed at exactly the submitted version, packet and step: nothing
+   * committed as of this read. Any later landing is guarded by the same bytes. */
+  | { kind: "same-failure"; instance: WorkflowInstanceWithDeadline }
+  /** The instance moved on. A status or version alone cannot show whether this
+   * request or another actor's resume committed, so the outcome stays unknown. */
+  | { kind: "changed"; instance: WorkflowInstanceWithDeadline }
+  | { kind: "missing" };
+
+export function readBackSequentialResume(instanceId: string, attempt: Readonly<WorkflowSequentialResumeInput>, instance: WorkflowInstanceWithDeadline | undefined): SequentialResumeReadback {
+  if (!instance || instance.instanceId !== instanceId) return { kind: "missing" };
+  const decision = instance.lastContinuationDecision;
+  const expected = attempt.expectedFailure;
+  return instance.status === "failed" && instance.version === expected.version
+    && decision?.closedPacket === expected.failedPacketId && decision?.currentStep === expected.stepId
+    ? { kind: "same-failure", instance } : { kind: "changed", instance };
 }
 
 export type AbortReadback = { kind: "committed" } | { kind: "terminal-other"; status: string } | { kind: "not-aborted"; status: string };

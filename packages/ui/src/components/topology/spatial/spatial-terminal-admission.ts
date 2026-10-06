@@ -38,6 +38,7 @@ export type AdmissionRefusal =
   | "no-pane"
   | "native-identity"
   | "changed"
+  | "closed"
   | "unreadable";
 
 export type AdmissionVerdict =

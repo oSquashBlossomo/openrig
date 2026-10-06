@@ -165,3 +165,26 @@ export function workflowFailureChoices(instance: WorkflowInstanceWithDeadline, f
     : !sameInstance ? "unavailable" : choices.length === 0 ? "none" : choices.length === 1 ? "single" : "multiple";
   return { state, choices: state === "terminal" ? [] : choices, occurrences: failures, requiresExplicitSelection: true as const };
 }
+
+export type WorkflowSequentialFailureState =
+  | { state: "eligible"; selection: { version: number; failedPacketId: string; stepId: string } }
+  | { state: "ineligible"; reason: "terminal" | "not-failed" | "occurrences-unavailable" | "occurrence-backed" | "failure-unrecorded" };
+
+/** A serial executor's failure has no occurrence row; its identity is the
+ * instance's served version plus the recorded failed packet and step. Only a
+ * failed instance whose every served occurrence projection is an EMPTY array
+ * qualifies. Absent projections or any occurrence row never fall into this
+ * path, and nothing is inferred from display text. */
+export function workflowSequentialFailure(instance: WorkflowInstanceWithDeadline, failures = instance.failureOccurrences): WorkflowSequentialFailureState {
+  if (instance.status === "completed" || instance.status === "aborted") return { state: "ineligible", reason: "terminal" };
+  if (instance.status !== "failed") return { state: "ineligible", reason: "not-failed" };
+  const served = [failures, instance.failureOccurrences].filter((f) => f !== undefined);
+  if (!served.length || !served.every(Array.isArray)) return { state: "ineligible", reason: "occurrences-unavailable" };
+  if (served.some((f) => f!.length > 0)) return { state: "ineligible", reason: "occurrence-backed" };
+  const decision = instance.lastContinuationDecision;
+  const failedPacketId = isObject(decision) ? decision.closedPacket : undefined;
+  const stepId = isObject(decision) ? decision.currentStep : undefined;
+  if (!Number.isSafeInteger(instance.version) || instance.version < 0 || !isText(failedPacketId) || !failedPacketId.trim() || !isText(stepId) || !stepId.trim())
+    return { state: "ineligible", reason: "failure-unrecorded" };
+  return { state: "eligible", selection: { version: instance.version, failedPacketId, stepId } };
+}

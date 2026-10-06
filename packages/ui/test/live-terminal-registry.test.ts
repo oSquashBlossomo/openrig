@@ -109,4 +109,33 @@ describe("LiveTerminalRegistry (OPR.0.4.0.1 global cap + oldest-eviction)", () =
     expect(a).toHaveBeenCalledTimes(1);
     expect(reg.size).toBe(3);
   });
+
+  it("setCap lowers in place: the oldest live terminals are evicted down to the new cap", () => {
+    const reg = new LiveTerminalRegistry(3);
+    const a = vi.fn(); const b = vi.fn(); const c = vi.fn();
+    reg.requestLive("a", a);
+    reg.requestLive("b", b);
+    reg.requestLive("c", c);
+    reg.setCap(1);
+    expect(a).toHaveBeenCalledTimes(1);
+    expect(b).toHaveBeenCalledTimes(1);
+    expect(c).not.toHaveBeenCalled();
+    expect(reg.size).toBe(1);
+    expect(reg.isLive("c")).toBe(true);
+  });
+
+  it("setCap raises in place: every live terminal stays counted and nothing is reverted", () => {
+    const reg = new LiveTerminalRegistry(1);
+    const a = vi.fn();
+    reg.requestLive("a", a);
+    reg.setCap(2);
+    expect(a).not.toHaveBeenCalled();
+    expect(reg.isLive("a")).toBe(true);
+    const b = vi.fn();
+    reg.requestLive("b", b);
+    expect(reg.size).toBe(2);
+    reg.requestLive("c", vi.fn()); // the raised cap still binds: evicts a
+    expect(a).toHaveBeenCalledTimes(1);
+    expect(reg.size).toBe(2);
+  });
 });

@@ -4,13 +4,16 @@ import { hasShape, isInteger, isObject, isText, optional, isBoolean, operatorSco
 import { isWorkflowOperation, type WorkflowOperation } from "../lib/workflow-contracts.js";
 
 export interface WorkflowResumeInput { occurrenceId: string; actorSession: string; decision?: string }
+/** The serial executor's single recorded failure, exactly as last read. */
+export interface WorkflowSequentialFailure { version: number; failedPacketId: string; stepId: string }
+export interface WorkflowSequentialResumeInput { expectedFailure: WorkflowSequentialFailure; actorSession: string; decision?: string }
 export interface WorkflowResumeResult extends Record<string, unknown> {
   instanceId: string; stepId: string; newPacketId: string; ownerSession: string; resumeCount: number; exceptionItemsClosed: number; absorbedReplay?: boolean;
 }
 export interface WorkflowRevisionInput { operationKey: string; expectedVersion: number; expectedDigest: string; actorSession: string; reason: string }
 export interface WorkflowAbortInput { reason: string; actorSession: string }
 export interface WorkflowAbortResult extends Record<string, unknown> { instanceId: string; closedPacketIds: string[]; status: "aborted" }
-export interface WorkflowMutationAttempt { readonly instanceId: string; readonly kind: "resume" | "revision" | "abort"; readonly payload: Readonly<WorkflowResumeInput | WorkflowRevisionInput | WorkflowAbortInput> }
+export interface WorkflowMutationAttempt { readonly instanceId: string; readonly kind: "resume" | "revision" | "abort"; readonly payload: Readonly<WorkflowResumeInput | WorkflowSequentialResumeInput | WorkflowRevisionInput | WorkflowAbortInput> }
 export type WorkflowMutationErrorCode = "unsupported_scope" | "invalid_request" | "cancelled" | "rejected" | "outcome_unknown";
 export class WorkflowMutationError extends Error {
   constructor(readonly code: WorkflowMutationErrorCode, message: string, readonly attempt?: WorkflowMutationAttempt,
@@ -34,6 +37,7 @@ const knownRejectionStatus: Readonly<Record<string, number>> = {
   instance_not_failed: 409, instance_not_resumable: 409, spec_not_cached: 409,
   resume_step_unrecoverable: 409, resume_step_missing_from_spec: 409,
   next_owner_unresolved: 400, harness_pin_unsatisfied: 409, bound_rig_not_found: 409,
+  resume_failure_changed: 409, resume_selection_invalid: 400,
   "actorSession is required": 400,
 };
 // These abort errors are raised before withNotifyEnvelope commits. In
@@ -52,7 +56,8 @@ async function postWorkflow<T>(attempt: WorkflowMutationAttempt, validate: (v: u
   const controller = new AbortController();
   let response: Response | undefined;
   const unknown = (reason: string, serverCode?: string, details?: unknown) => new WorkflowMutationError("outcome_unknown",
-    `${reason} The mutation may have committed. Inspect ${attempt.kind === "revision" ? "the retained operation key" : attempt.kind === "abort" ? "the instance status" : "the exact failure occurrence and redrive receipt"} before deciding another action.`, attempt, response?.status, serverCode, details);
+    `${reason} The mutation may have committed. Inspect ${attempt.kind === "revision" ? "the retained operation key" : attempt.kind === "abort" ? "the instance status"
+      : "expectedFailure" in attempt.payload ? "the instance's current version and recorded failure" : "the exact failure occurrence and redrive receipt"} before deciding another action.`, attempt, response?.status, serverCode, details);
   let rejectAbort!: (error: WorkflowMutationError) => void;
   const aborted = new Promise<never>((_, reject) => { rejectAbort = reject; });
   const abort = (reason: string) => { rejectAbort(unknown(reason)); controller.abort(); void response?.body?.cancel().catch(() => {}); };
@@ -101,6 +106,20 @@ export async function resumeWorkflowOccurrence(scope: OperatorInstanceScope, ins
   return postWorkflow(attempt, (v): v is WorkflowResumeResult => hasShape(v, { instanceId: x => x === instanceId, stepId: nonempty,
     newPacketId: nonempty, ownerSession: nonempty, resumeCount: isInteger, exceptionItemsClosed: isInteger, absorbedReplay: optional(isBoolean) }), options);
 }
+/** Serial (non-occurrence) failure: no occurrence ID exists, so the request is
+ * guarded by the exact version/failed packet/step read from the instance. */
+export async function resumeWorkflowSequential(scope: OperatorInstanceScope, instanceId: string, input: WorkflowSequentialResumeInput, options: OperatorReadOptions = {}): Promise<WorkflowResumeResult> {
+  validateTarget(scope, instanceId);
+  const expected = input?.expectedFailure;
+  if (!isObject(expected) || !Number.isSafeInteger(expected.version) || expected.version < 0 || !nonempty(expected.failedPacketId) || !nonempty(expected.stepId)
+    || !nonempty(input.actorSession) || (input.decision !== undefined && !isText(input.decision)))
+    throw new WorkflowMutationError("invalid_request", "Sequential resume requires the read version, failed packet and step, and an actor; decision bytes must be a string.");
+  const expectedFailure = Object.freeze({ version: expected.version, failedPacketId: expected.failedPacketId, stepId: expected.stepId });
+  const payload = Object.freeze({ actorSession: input.actorSession, ...(input.decision !== undefined ? { decision: input.decision } : {}), expectedFailure });
+  const attempt = Object.freeze({ instanceId, kind: "resume" as const, payload });
+  return postWorkflow(attempt, (v): v is WorkflowResumeResult => hasShape(v, { instanceId: x => x === instanceId, stepId: x => x === expectedFailure.stepId,
+    newPacketId: nonempty, ownerSession: nonempty, resumeCount: isInteger, exceptionItemsClosed: isInteger, absorbedReplay: optional(isBoolean) }), options);
+}
 export async function reviseWorkflow(scope: OperatorInstanceScope, instanceId: string, input: WorkflowRevisionInput, options: OperatorReadOptions = {}): Promise<WorkflowOperation> {
   validateTarget(scope, instanceId);
   if (!input || !nonempty(input.operationKey) || !Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 0 || !nonempty(input.expectedDigest)
@@ -130,6 +149,15 @@ export function useWorkflowResume(instanceId: string | null, scope: OperatorInst
   const mutation = useMutation<WorkflowResumeResult, WorkflowMutationError, WorkflowResumeInput>({
     mutationKey: ["workflow", ...operatorScopeKey(scope), "resume", instanceId], retry: false,
     mutationFn: input => resumeWorkflowOccurrence(scope, instanceId ?? "", input),
+    onSettled: () => { void queryClient.invalidateQueries({ queryKey: ["workflow", ...operatorScopeKey(scope)] }); },
+  });
+  return { ...mutation, ...operatorScopeState(scope) };
+}
+export function useWorkflowSequentialResume(instanceId: string | null, scope: OperatorInstanceScope = LOCAL_OPERATOR_INSTANCE) {
+  const queryClient = useQueryClient();
+  const mutation = useMutation<WorkflowResumeResult, WorkflowMutationError, WorkflowSequentialResumeInput>({
+    mutationKey: ["workflow", ...operatorScopeKey(scope), "resume-sequential", instanceId], retry: false,
+    mutationFn: input => resumeWorkflowSequential(scope, instanceId ?? "", input),
     onSettled: () => { void queryClient.invalidateQueries({ queryKey: ["workflow", ...operatorScopeKey(scope)] }); },
   });
   return { ...mutation, ...operatorScopeState(scope) };

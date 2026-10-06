@@ -20,6 +20,10 @@ export interface FileDraftBase {
 
 export interface FileDraft {
   key: string;
+  /** Identity of this draft from creation until it is discarded or saved
+   *  away. A Save is attributed to the generation it was sent for, so a late
+   *  response never lands on a draft created after an explicit Discard. */
+  generation: number;
   originInstance: string | null;
   root: string;
   path: string;
@@ -32,6 +36,12 @@ export interface FileDraft {
   conflict?: { currentMtime: string; currentContentHash: string };
   /** A write of `raw` landed; the next read with this hash rebases. */
   saved?: { raw: string; contentHash: string };
+}
+
+let lastGeneration = 0;
+/** A fresh, never reused draft generation (per page). */
+export function nextDraftGeneration(): number {
+  return ++lastGeneration;
 }
 
 export function isDraftDirty(draft: FileDraft): boolean {

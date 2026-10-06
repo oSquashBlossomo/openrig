@@ -37,13 +37,15 @@ function kernelToAggregate(state: KernelState | undefined): RigAggStatus {
 }
 
 export function KernelStatusCard() {
-  const { data: kernel, isLoading } = useKernelStatus();
+  const { data: kernel, isLoading, error } = useKernelStatus();
   const { data: rigs } = useRigSummary();
   const [modalOpen, setModalOpen] = useState(false);
 
   const kernelRig = rigs?.find((r) => r.name === "kernel");
 
   if (isLoading || !kernel) {
+    // A failed read with nothing retained is not "loading": disclose it.
+    const failed = !isLoading && error;
     return (
       <RigStatusCard
         rigId="kernel"
@@ -53,7 +55,7 @@ export function KernelStatusCard() {
         seatsRunning={0}
         seatsTotal={0}
         recoverable={false}
-        src={["kernel-status: loading…"]}
+        src={[failed ? `kernel-status: read failed (${error instanceof Error ? error.message : String(error)}); retrying` : "kernel-status: loading…"]}
         primaryLabel="Restore kernel ▸"
         primaryDisabled
         testId="kernel-status-card"

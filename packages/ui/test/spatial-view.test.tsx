@@ -278,6 +278,36 @@ describe("SpatialTopologyView", () => {
     expect(document.activeElement).toBe(chipFor("coordinator"));
   });
 
+  it("the search field keeps its accessible name while the Clear button is shown", async () => {
+    renderView();
+    await ready();
+    expect(screen.getByRole("searchbox", { name: "Search seats" })).toBe(screen.getByTestId("spatial-search"));
+    fireEvent.change(screen.getByTestId("spatial-search"), { target: { value: "builder" } });
+    const clear = screen.getByRole("button", { name: "Clear search" });
+    expect(screen.getByRole("searchbox", { name: "Search seats" })).toBe(screen.getByTestId("spatial-search"));
+    // Browsers fold an embedded control's name into a wrapping <label>
+    // ("Search seats Clear search"); jsdom's accname does not, so pin the
+    // field's own name source instead of the label's contents.
+    const input = screen.getByTestId("spatial-search");
+    expect(input.closest("label")?.contains(clear)).toBe(true);
+    expect(input.getAttribute("aria-label")).toBe("Search seats");
+  });
+
+  it("closing the workspace by keyboard returns focus to that seat's index row, not the page", async () => {
+    renderView();
+    await ready();
+    const row = rowFor("builder1");
+    row.focus();
+    fireEvent.click(row);
+    await waitFor(() => expect(document.activeElement).toBe(chipFor("builder1")));
+    const close = screen.getByTestId("spatial-workspace-close");
+    close.focus();
+    fireEvent.click(close);
+    await waitFor(() => expect(screen.queryByTestId("spatial-workspace")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(rowFor("builder1")));
+    expect(rowFor("builder1").getAttribute("data-spatial-key")).toMatch(/\/agent\/n2$/);
+  });
+
   it("camera HUD and stage keyboard shortcuts drive the controller", async () => {
     renderView();
     await ready();
@@ -309,6 +339,33 @@ describe("SpatialTopologyView", () => {
     await waitFor(() => expect(screen.getByTestId("spatial-inspector-name").textContent).toBe("builder1"));
     fireEvent.keyDown(input, { key: "Escape" });
     expect(screen.getByTestId("stub-renderer").getAttribute("data-matches")).toBe("none");
+  });
+
+  it("search Enter selects the first match in the index's order, not the graph's node order", async () => {
+    // A seat added to an earlier pod later (rig expand) comes after another
+    // pod's seats in the served node list; the index still groups by pod.
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === "/api/rigs/summary") return json([{ id: "ra", name: "acme-build", nodeCount: 2 }]);
+      if (url === "/api/rigs/ra/graph") return json({
+        nodes: [
+          { id: "pod-p1", type: "podGroup", data: { podId: "p1", podNamespace: "lead" } },
+          { id: "pod-p2", type: "podGroup", data: { podId: "p2", podNamespace: "builders" } },
+          { id: "n-late", type: "rigNode", parentId: "pod-p2", data: { logicalId: "builders.worker", status: "running" } },
+          { id: "n-first", type: "rigNode", parentId: "pod-p1", data: { logicalId: "lead.worker", status: "running" } },
+        ],
+        edges: [],
+      });
+      return json({}, 404);
+    });
+    const { router } = renderView();
+    await ready();
+    const input = screen.getByTestId("spatial-search");
+    fireEvent.change(input, { target: { value: "worker" } });
+    const rows = within(screen.getByTestId("spatial-seat-index-compact")).getAllByTestId("spatial-agent-row");
+    expect(rows[0]!.getAttribute("data-spatial-key")).toContain("/agent/n-first");
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(router.history.location.href).toContain("n-first"));
+    expect(controller.focus).toHaveBeenLastCalledWith(expect.stringContaining("/agent/n-first"));
   });
 
   // Navigation contract change: the selection is exact URL intent. A seat

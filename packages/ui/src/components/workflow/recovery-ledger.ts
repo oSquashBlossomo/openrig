@@ -14,7 +14,9 @@ import { useCallback, useState, useSyncExternalStore } from "react";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { operatorScopeKey, type OperatorInstanceScope } from "../../lib/operator-read.js";
 
-export type WorkflowMutationKind = "resume" | "revision" | "abort";
+// "resume-sequential" is filed separately from occurrence resume: its attempt
+// carries an expected failure, never an occurrence ID.
+export type WorkflowMutationKind = "resume" | "resume-sequential" | "revision" | "abort";
 
 export interface RecoveryTarget {
   readonly scope: OperatorInstanceScope;
