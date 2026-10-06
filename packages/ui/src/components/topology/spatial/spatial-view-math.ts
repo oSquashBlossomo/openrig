@@ -322,13 +322,36 @@ export function layoutLabels(candidates: readonly LabelCandidate[], options: Lab
   return { visible, choice, offsets, suppressed };
 }
 
+/** Label density. "compact" is the small-stage (phone, short landscape or a
+ *  squeezed tablet stage) presentation: one-line names, smaller type. */
+export type LabelDensity = "full" | "compact";
+
+/** A compact seat name is clipped (ellipsis) at this width; the full name is
+ *  always in the selection card, the inspector and the seat index. */
+export const COMPACT_LABEL_MAX_WIDTH_PX = 176;
+
 /**
  * Label box estimate from text length. The labels are set in JetBrains Mono
  * (advance 0.6em), so character counts give stable widths without forcing a
  * DOM layout read every frame. Sizes mirror spatial.css.
  */
-export function estimateLabelSize(kind: LabelKind, text: string, meta: string | null): { w: number; h: number } {
+export function estimateLabelSize(kind: LabelKind, text: string, meta: string | null, density: LabelDensity = "full"): { w: number; h: number } {
   const len = (s: string | null) => (s ? [...s].length : 0);
+  if (density === "compact") {
+    if (kind === "rig") {
+      // 9.5px uppercase, 0.1em tracking; padding 6+6, border 2. Name only.
+      return { w: Math.ceil(len(text) * (9.5 * 0.7) + 14), h: 16 };
+    }
+    if (kind === "pod") {
+      // 9px lowercase; padding 4+4. Name only.
+      return { w: Math.ceil(len(text) * (9 * 0.62) + 8), h: 13 };
+    }
+    // Agent: 10px name (clipped), shape marker + padding 12 + 5, border 2;
+    // a 9px status line only when it is shown (selected / hovered).
+    const name = Math.min(len(text) * (10 * 0.6), COMPACT_LABEL_MAX_WIDTH_PX - 19);
+    const w = Math.max(name, len(meta) * (9 * 0.64)) + 19;
+    return { w: Math.ceil(Math.min(w, COMPACT_LABEL_MAX_WIDTH_PX)), h: meta ? 28 : 16 };
+  }
   if (kind === "rig") {
     // 11px uppercase, 0.14em tracking; meta 9px, 0.08em; padding 7+8, border 2.
     const w = Math.max(len(text) * (11 * 0.74), len(meta) * (9 * 0.68)) + 17;
@@ -342,4 +365,25 @@ export function estimateLabelSize(kind: LabelKind, text: string, meta: string | 
   // Agent: name 10.5px over meta 9px; padding 14 + 6, border 2.
   const w = Math.max(len(text) * (10.5 * 0.6), len(meta) * (9 * 0.64)) + 22;
   return { w: Math.ceil(w), h: meta ? 32 : 19 };
+}
+
+/**
+ * Touch pick tolerance: the point closest to (x, y) within `radius` px, or
+ * null. A finger covers far more than a small puck's projected size, so a
+ * tap that just misses a seat should still select it; a tap in clear space
+ * (nothing within the radius) stays an empty-space tap. Ties go to the
+ * lower key, so the choice is deterministic.
+ */
+export function nearestWithin(points: Iterable<{ key: string; x: number; y: number }>, x: number, y: number, radius: number): string | null {
+  let best: string | null = null;
+  let bestDistance = radius;
+  for (const p of points) {
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+    const d = Math.hypot(p.x - x, p.y - y);
+    if (d < bestDistance || (d === bestDistance && best !== null && p.key < best)) {
+      best = p.key;
+      bestDistance = d;
+    }
+  }
+  return bestDistance <= radius ? best : null;
 }

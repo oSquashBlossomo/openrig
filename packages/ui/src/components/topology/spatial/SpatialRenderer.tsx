@@ -21,6 +21,13 @@
 //   - Labels are placed by a bounded screen-space collision pass each frame:
 //     selected/hovered labels always show, then problem seats, search hits,
 //     rig names, pod names and ambient seat names, each only where it fits.
+//   - Density: "compact" (a small stage: phone, short landscape) shows
+//     one-line seat names with a shape status marker, the status line only on
+//     the selected/hovered seat, name-only rig/pod labels and a small ambient
+//     cap. A density change restyles the existing labels in place and paints
+//     once; it never rebuilds the scene.
+//   - Touch taps that just miss a puck snap to the nearest seat within a few
+//     px (mouse picking stays exact); a tap in clear space still clears.
 //   - Auto-framing follows streaming data until the operator commands the
 //     camera (drag, orbit, zoom, preset, fit, focus); Reset hands it back.
 //   - Camera continuity is a value, not GPU state: the controller can
@@ -82,8 +89,10 @@ import {
   estimateLabelSize,
   frameBox,
   layoutLabels,
+  nearestWithin,
   type LabelAnchor,
   type LabelCandidate,
+  type LabelDensity,
   type LabelKind,
   type Rect,
 } from "./spatial-view-math.js";
@@ -102,6 +111,9 @@ export interface SpatialCameraController {
   /** Apply a saved pose instantly. False (and nothing changes) when it is
    *  invalid or was taken against materially different layout bounds. */
   restore(snapshot: SpatialCameraSnapshot): boolean;
+  /** Stage overlays (camera HUD, key) changed size: re-read them so labels
+   *  stay clear of them, and paint once. */
+  refreshOverlays(): void;
 }
 
 export interface SpatialRendererProps {
@@ -122,6 +134,8 @@ export interface SpatialRendererProps {
   initialCamera?: SpatialCameraSnapshot | null;
   /** Reported when the camera settles after a change, and on teardown. */
   onCameraSettle?: (snapshot: SpatialCameraSnapshot) => void;
+  /** Label density for the stage size; "compact" on small stages. */
+  density?: LabelDensity;
 }
 
 const FOV = 38;
@@ -132,6 +146,12 @@ const CLICK_SLOP_PX = 6;
 /** Ambient (non-priority) seat labels need this much projected seat spacing. */
 const AMBIENT_LABEL_SPACING_PX = 44;
 const MAX_AMBIENT_LABELS = 80;
+/** Compact: ambient seat names need more room and far fewer labels show. */
+const COMPACT_AMBIENT_LABEL_SPACING_PX = 64;
+const COMPACT_ALWAYS_LABEL_SEATS = 6;
+const MAX_COMPACT_LABELS = 16;
+/** A finger tap within this many px of a seat's centre selects it. */
+const TOUCH_PICK_RADIUS_PX = 24;
 
 interface AgentVisual {
   key: string;
@@ -162,6 +182,9 @@ interface LabelEntry {
   anchorIndex: number;
   /** Last applied horizontal clamp offset, px. */
   offset: number;
+  text: string;
+  meta: string | null;
+  metaElement: HTMLElement | null;
 }
 
 interface EdgeVisual {
@@ -223,6 +246,7 @@ interface Engine {
     hoveredKey: string | null;
     matchKeys: ReadonlySet<string> | null;
     palette: SpatialPalette;
+    density: LabelDensity;
   };
 }
 
@@ -488,6 +512,7 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
           hoveredKey: propsRef.current.hoveredKey,
           matchKeys: propsRef.current.matchKeys,
           palette,
+          density: propsRef.current.density ?? "full",
         },
       };
       engineRef.current = engine;
@@ -529,6 +554,19 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
         const key = hit?.object.userData.spatialKey;
         return typeof key === "string" ? key : null;
       };
+      // Touch tolerance: the nearest seat centre within TOUCH_PICK_RADIUS_PX
+      // of the tap, in screen space. One projection per seat, only on a tap.
+      const pickNear = (clientX: number, clientY: number): string | null => {
+        const rect = canvas.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return null;
+        const points: Array<{ key: string; x: number; y: number }> = [];
+        for (const visual of engine.agents.values()) {
+          visual.group.getWorldPosition(_pickPoint).project(camera);
+          if (_pickPoint.z < -1 || _pickPoint.z > 1) continue;
+          points.push({ key: visual.key, x: rect.left + (_pickPoint.x + 1) * 0.5 * rect.width, y: rect.top + (1 - _pickPoint.y) * 0.5 * rect.height });
+        }
+        return nearestWithin(points, clientX, clientY, TOUCH_PICK_RADIUS_PX);
+      };
       // A selection belongs to one tap: a primary pointer (isPrimary, primary
       // button) pressed while no other pointer of ANY type is down on the
       // canvas, released by that same pointer without ever moving past the
@@ -562,7 +600,8 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
         releasePointer(e.pointerId);
         if (!candidate || e.button !== 0) return;
         if (Math.hypot(e.clientX - candidate.x, e.clientY - candidate.y) > CLICK_SLOP_PX) return;
-        propsRef.current.onSelect(pick(e.clientX, e.clientY));
+        const exact = pick(e.clientX, e.clientY);
+        propsRef.current.onSelect(exact ?? (e.pointerType === "touch" || e.pointerType === "pen" ? pickNear(e.clientX, e.clientY) : null));
       };
       const onPointerCancel = (e: PointerEvent) => releasePointer(e.pointerId);
       // A release or cancel that does not target the canvas (pointer not
@@ -709,6 +748,10 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
         },
         snapshot: () => engine.snapshot(),
         restore: (snapshot) => engine.restore(snapshot),
+        refreshOverlays: () => {
+          engine.measureOccluders();
+          requestRender();
+        },
       };
       // Reduced motion turning on mid-move: land the tween on its destination
       // (a valid, intended pose) and drop damping inertia, then paint once;
@@ -860,6 +903,17 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
     engine.requestRender();
   }, [props.selectedKey, props.hoveredKey, props.matchKeys]);
 
+  // --- Label density (stage size) restyles labels in place ------------------
+  useEffect(() => {
+    const engine = engineRef.current;
+    const density = props.density ?? "full";
+    if (!engine || engine.state.density === density) return;
+    engine.state.density = density;
+    applyLabelDensity(engine);
+    engine.measureOccluders();
+    engine.requestRender();
+  }, [props.density]);
+
   // --- Reduced motion toggles damping live ----------------------------------
   useEffect(() => {
     const engine = engineRef.current;
@@ -930,11 +984,20 @@ function registerLabel(
 ) {
   const { w, h } = estimateLabelSize(kind, text, meta);
   object.element.dataset.spatialLabel = kind;
+  object.element.classList.toggle("is-compact", engine.state.density === "compact");
   const resolved = anchors.map((a) => ({ local: v3(a.at), cx: a.cx, cy: a.cy }));
   object.position.copy(resolved[0]!.local);
   object.center.set(resolved[0]!.cx, resolved[0]!.cy);
   parent.add(object);
-  engine.labelEntries.push({ object, kind, key, w, h, priority, anchors: resolved, anchorIndex: 0, offset: 0 });
+  const metaElement = object.element.querySelector<HTMLElement>(".spatial-label__meta");
+  engine.labelEntries.push({ object, kind, key, w, h, priority, anchors: resolved, anchorIndex: 0, offset: 0, text, meta, metaElement });
+}
+
+/** Density restyle in place: class toggles only; sizes and status lines are
+ *  resolved by the next placement pass. */
+function applyLabelDensity(engine: Engine) {
+  const compact = engine.state.density === "compact";
+  for (const entry of engine.labelEntries) entry.object.element.classList.toggle("is-compact", compact);
 }
 
 function makeLabel(className: string, text: string, sub?: string): CSS2DObject {
@@ -1112,6 +1175,8 @@ function buildContent(engine: Engine, model: SpatialModel, layout: SpatialLayout
       status.label,
     );
     label.element.style.setProperty("--spatial-tone", hslCss(palette.tones[status.tone]));
+    // Status shape for compact labels (not colour alone; see spatial.css).
+    label.element.dataset.tone = status.tone;
     const urgent = status.problems.length > 0 || status.tone === "needs_input" || status.tone === "blocked";
     if (urgent) label.element.classList.add("is-urgent");
     registerLabel(engine, group, label, "agent", agent.key, agent.displayName, status.label, [
@@ -1205,6 +1270,7 @@ function applyInteractionState(engine: Engine) {
 }
 
 const _labelPoint = new Vector3();
+const _pickPoint = new Vector3();
 
 /**
  * Screen-space label placement, run after each WebGL render and before the
@@ -1222,7 +1288,18 @@ function placeLabels(engine: Engine) {
   // Projected seat spacing decides whether ambient seat names have room.
   const distance = camera.position.distanceTo(engine.controls.target);
   const pxPerUnit = h / (2 * Math.max(distance, 1e-3) * Math.tan((camera.fov * Math.PI) / 360));
-  const ambient = engine.agents.size <= 18 || SPATIAL_LAYOUT.agentSpacing * pxPerUnit >= AMBIENT_LABEL_SPACING_PX;
+  const compact = engine.state.density === "compact";
+  const ambient = compact
+    ? engine.agents.size <= COMPACT_ALWAYS_LABEL_SEATS || SPATIAL_LAYOUT.agentSpacing * pxPerUnit >= COMPACT_AMBIENT_LABEL_SPACING_PX
+    : engine.agents.size <= 18 || SPATIAL_LAYOUT.agentSpacing * pxPerUnit >= AMBIENT_LABEL_SPACING_PX;
+  // Compact shows a status line only on the selected/hovered seat; the DOM
+  // `hidden` state is kept in step so the painted box matches its estimate.
+  const showsMeta = (entry: LabelEntry) =>
+    !compact || (entry.kind === "agent" && (entry.key === selectedKey || entry.key === hoveredKey));
+  for (const entry of engine.labelEntries) {
+    const shown = showsMeta(entry);
+    if (entry.metaElement && entry.metaElement.hidden === shown) entry.metaElement.hidden = !shown;
+  }
 
   const candidates: LabelCandidate[] = [];
   // Candidate anchor index -> entry.anchors index (culled anchors are skipped).
@@ -1258,14 +1335,13 @@ function placeLabels(engine: Engine) {
       id,
       ...anchors[0]!,
       alternatives: anchors.slice(1),
-      w: entry.w,
-      h: entry.h,
+      ...(compact ? estimateLabelSize(entry.kind, entry.text, showsMeta(entry) ? entry.meta : null, "compact") : { w: entry.w, h: entry.h }),
       tier,
       depth,
       clampX: entry.kind !== "agent",
     });
   }
-  const result = layoutLabels(candidates, { width: w, height: h, occluders: engine.occluders, maxVisible: MAX_AMBIENT_LABELS });
+  const result = layoutLabels(candidates, { width: w, height: h, occluders: engine.occluders, maxVisible: compact ? MAX_COMPACT_LABELS : MAX_AMBIENT_LABELS });
   for (const entry of engine.labelEntries) {
     const id = `${entry.kind}:${entry.key}`;
     entry.object.visible = result.visible.has(id);

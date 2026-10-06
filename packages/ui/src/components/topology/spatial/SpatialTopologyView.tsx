@@ -18,12 +18,21 @@
 // (spatial-visit-store.ts) restored once when the visit's content is ready.
 // A selection names an exact graph node; when that node is filtered out,
 // temporarily unreadable or gone, the intent stays and the inspector says so.
+//
+// Small stage (phone portrait, short phone landscape, a squeezed tablet
+// stage), decided from the stage's own measured size, not the device:
+// compact labels, camera controls collapsed to Fit + More, the legend behind
+// a Key toggle, and — when the layout is stacked — a compact selection card
+// under the stage whose Details disclose the full inspector. Nothing is
+// hidden: the index and search still list every seat.
 
 import {
   Suspense,
   lazy,
   useCallback,
   useEffect,
+  useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -33,7 +42,7 @@ import {
   type LazyExoticComponent,
 } from "react";
 import { useRouter } from "@tanstack/react-router";
-import { Box, Crosshair, Expand, List as ListIcon, Minus, Plus, RotateCcw, Search, SquareDashed, X } from "lucide-react";
+import { Box, Crosshair, Ellipsis, Expand, List as ListIcon, Minus, Plus, RotateCcw, Search, SquareDashed, X } from "lucide-react";
 import { useSelectedHostId } from "../../../hooks/useHosts.js";
 import { usePrefersReducedMotion } from "../../../hooks/usePrefersReducedMotion.js";
 import { useShellViewport } from "../../../hooks/useShellViewport.js";
@@ -67,6 +76,7 @@ import { useTheme } from "../../ThemeProvider.js";
 import { ErrorBoundary } from "../../ui/ErrorBoundary.js";
 import { SpatialInspector } from "./SpatialInspector.js";
 import { SpatialNodeList } from "./SpatialNodeList.js";
+import { SpatialSelectionCard } from "./SpatialSelectionCard.js";
 import { hslCss, readSpatialPalette, type SpatialPalette } from "./spatial-palette.js";
 import { SPATIAL_SCENE_BUDGET, sceneBudgetVerdict, type SpatialBudgetVerdict } from "./spatial-view-math.js";
 import type { SpatialCameraController, SpatialRendererFailure, SpatialRendererProps } from "./SpatialRenderer.js";
@@ -133,6 +143,38 @@ const FAILURE_COPY: Record<SpatialViewFailure, string> = {
   "init-error": "The 3D renderer failed to start.",
   "load-error": "The 3D renderer's code could not be downloaded (a network error, or the app was updated since this page loaded).",
 };
+
+/** A stage narrower or shorter than this gets the compact presentation. */
+export const COMPACT_STAGE = { width: 600, height: 380 } as const;
+
+/** Content-box size of an element via ResizeObserver; 0×0 until measured
+ *  (and whenever the element is absent), which means "not compact". */
+function useElementSize(el: HTMLElement | null): { w: number; h: number } {
+  const [size, setSize] = useState({ w: 0, h: 0 });
+  useLayoutEffect(() => {
+    // Read once before paint so a phone never flashes the full-density
+    // controls; ResizeObserver keeps it current (rotation, split view).
+    if (!el) {
+      setSize((prev) => (prev.w === 0 && prev.h === 0 ? prev : { w: 0, h: 0 }));
+      return;
+    }
+    const rect = el.getBoundingClientRect();
+    const w = Math.round(rect.width);
+    const h = Math.round(rect.height);
+    setSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      const rect = entries[entries.length - 1]?.contentRect;
+      if (!rect) return;
+      const w = Math.round(rect.width);
+      const h = Math.round(rect.height);
+      setSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [el]);
+  return size;
+}
 
 const LEGEND: Array<{ tone: SpatialTone; label: string }> = [
   { tone: "active", label: "running" },
@@ -264,6 +306,14 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
   const SpatialRenderer = useMemo(() => acquireRenderer(loadRenderer), [loadRenderer, rendererEpoch]);
   const [rendererReady, setRendererReady] = useState(false);
   const controllerRef = useRef<SpatialCameraController | null>(null);
+  // Compact stage state: measured stage, the collapsed overlays and the
+  // card's disclosure (kept across seat changes within this view).
+  const [stageEl, setStageEl] = useState<HTMLDivElement | null>(null);
+  const stageSize = useElementSize(stageEl);
+  const compactStage = stageSize.w > 0 && (stageSize.w < COMPACT_STAGE.width || stageSize.h < COMPACT_STAGE.height);
+  const [hudOpen, setHudOpen] = useState(false);
+  const [keyOpen, setKeyOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const model = data.model;
   const layout = useMemo(() => (model ? layoutSpatialModel(model) : null), [model]);
@@ -552,6 +602,16 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nav.visitId, modelReady, writeSnapshot]);
 
+  // Overlays changed size (compact toggles, rotation): labels re-read them.
+  useEffect(() => {
+    controllerRef.current?.refreshOverlays?.();
+  }, [compactStage, hudOpen, keyOpen, rendererReady]);
+  const stageRefCallback = useCallback((el: HTMLDivElement | null) => {
+    stageRef.current = el;
+    setStageEl(el);
+  }, []);
+  const useCard = !isWideLayout && compactStage && mode === "scene";
+
   const isRemote = hostId !== LOCAL_HOST_ID;
   const rigName = scope.kind !== "host" ? model?.rigs[0]?.rigName ?? null : null;
   const counts = model?.counts;
@@ -694,16 +754,17 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
           >
             {mode === "scene" ? (
               <div
-                ref={stageRef}
+                ref={stageRefCallback}
                 data-testid="spatial-stage"
+                data-density={compactStage ? "compact" : "full"}
                 tabIndex={0}
                 role="group"
                 aria-roledescription="3D topology scene"
-                aria-label={`3D topology: ${model.counts.rigs} rigs, ${model.counts.pods} pods, ${model.counts.agents} seats, ${model.counts.edges} links. Arrow keys orbit, plus and minus zoom, F fits, T top view, I isometric, R resets. Use the seat index to select seats.`}
+                aria-label={`3D topology: ${model.counts.rigs} rigs, ${model.counts.pods} pods, ${model.counts.agents} seats, ${model.counts.edges} links. Drag or arrow keys orbit, pinch or plus and minus zoom, F fits, T top view, I isometric, R resets. Use the seat index to select seats.`}
                 onKeyDown={onStageKeyDown}
                 className={cn(
                   "spatial-stage relative min-h-0 min-w-0 overflow-hidden",
-                  !isWideLayout && "h-[56vh] min-h-[18rem]",
+                  !isWideLayout && "spatial-stage--stacked",
                 )}
               >
                 {overBudget && budget ? (
@@ -740,6 +801,7 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
                           onReady={() => setRendererReady(true)}
                           initialCamera={cameraRef.current}
                           onCameraSettle={onCameraSettle}
+                          density={compactStage ? "compact" : "full"}
                         />
                       ) : null}
                     </Suspense>
@@ -747,9 +809,9 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
                 )}
                 {!failure && !overBudget ? (
                   <>
-                    <CameraHud controllerRef={controllerRef} ready={rendererReady} />
-                    <Legend palette={palette} />
-                    {isWideLayout ? (
+                    <CameraHud controllerRef={controllerRef} ready={rendererReady} compact={compactStage} open={hudOpen} onOpenChange={setHudOpen} />
+                    <Legend palette={palette} compact={compactStage} open={keyOpen} onOpenChange={setKeyOpen} />
+                    {isWideLayout && !compactStage ? (
                       <div aria-hidden="true" className="pointer-events-none absolute bottom-3 right-3 z-10 font-mono text-[9px] text-on-surface-variant">
                         drag orbit · right-drag pan · scroll zoom · double-click focus
                       </div>
@@ -815,7 +877,21 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
                     <button type="button" onClick={clearQuery} className="underline hover:text-on-surface">Clear search</button>
                   </div>
                 ) : null}
-                {selectionView.kind === "none" || selectionView.kind === "ok" ? (
+                {useCard && (selectionView.kind === "none" || selectionView.kind === "ok") ? (
+                  <SpatialSelectionCard
+                    model={model}
+                    agent={selectedAgent}
+                    status={selectedAgent ? statusByKey.get(selectedAgent.key) ?? null : null}
+                    palette={palette}
+                    canFocus={sceneActive && rendererReady}
+                    detailsOpen={detailsOpen}
+                    onDetailsOpenChange={setDetailsOpen}
+                    onSelect={selectFromIndex}
+                    onFocus={(key) => controllerRef.current?.focus(key)}
+                    linkSource={linkSource}
+                    from={fromScope}
+                  />
+                ) : selectionView.kind === "none" || selectionView.kind === "ok" ? (
                   <SpatialInspector
                     model={model}
                     agent={selectedAgent}
@@ -1024,7 +1100,14 @@ function SpatialFallback({ failure, onRetry, onList }: { failure: SpatialViewFai
   );
 }
 
-function CameraHud({ controllerRef, ready }: { controllerRef: React.MutableRefObject<SpatialCameraController | null>; ready: boolean }) {
+function CameraHud({ controllerRef, ready, compact, open, onOpenChange }: {
+  controllerRef: React.MutableRefObject<SpatialCameraController | null>;
+  ready: boolean;
+  /** Small stage: Fit + a More toggle; the rest is one tap away. */
+  compact: boolean;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   const run = (fn: (c: SpatialCameraController) => void) => () => {
     const c = controllerRef.current;
     if (c) fn(c);
@@ -1037,6 +1120,55 @@ function CameraHud({ controllerRef, ready }: { controllerRef: React.MutableRefOb
     { id: "zoom-out", label: "Zoom out", icon: <Minus aria-hidden="true" className="h-3.5 w-3.5" />, onClick: run((c) => c.zoom(1.25)) },
     { id: "reset", label: "Reset camera", icon: <Crosshair aria-hidden="true" className="h-3.5 w-3.5" />, onClick: run((c) => c.reset()) },
   ];
+  if (compact) {
+    const [fit, ...rest] = buttons;
+    const button = (b: typeof buttons[number], extra?: string) => (
+      <button
+        key={b.id}
+        type="button"
+        data-testid={`spatial-camera-${b.id}`}
+        aria-label={b.label}
+        title={b.label}
+        disabled={!ready}
+        onClick={b.onClick}
+        className={cn("spatial-hud-button touch-target !w-8 !px-0", extra)}
+      >
+        {b.icon}
+      </button>
+    );
+    return (
+      <div
+        role="toolbar"
+        aria-label="Camera"
+        data-testid="spatial-camera-hud"
+        data-spatial-occluder=""
+        data-compact=""
+        onKeyDown={(e) => {
+          if (e.key === "Escape" && open) {
+            e.stopPropagation();
+            onOpenChange(false);
+          }
+        }}
+        className="absolute right-2 top-2 z-10 flex flex-col items-end"
+      >
+        <div className="flex">
+          {button(fit!)}
+          <button
+            type="button"
+            data-testid="spatial-camera-more"
+            aria-label="More camera controls"
+            title="More camera controls"
+            aria-expanded={open}
+            onClick={() => onOpenChange(!open)}
+            className="spatial-hud-button touch-target -ml-px !w-8 !px-0"
+          >
+            <Ellipsis aria-hidden="true" className="h-3.5 w-3.5" />
+          </button>
+        </div>
+        {open ? <div className="mt-1 flex flex-col">{rest.map((b, i) => button(b, i > 0 ? "-mt-px" : undefined))}</div> : null}
+      </div>
+    );
+  }
   return (
     <div role="toolbar" aria-label="Camera" data-testid="spatial-camera-hud" data-spatial-occluder="" className="absolute right-3 top-3 z-10 flex flex-col">
       {buttons.map((b, i) => (
@@ -1057,7 +1189,60 @@ function CameraHud({ controllerRef, ready }: { controllerRef: React.MutableRefOb
   );
 }
 
-function Legend({ palette }: { palette: SpatialPalette }) {
+function Legend({ palette, compact, open, onOpenChange }: {
+  palette: SpatialPalette;
+  /** Small stage: collapsed behind a Key toggle; status as shape + text. */
+  compact: boolean;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const legendId = useId();
+  if (compact) {
+    return (
+      <div
+        data-spatial-occluder=""
+        onKeyDown={(e) => {
+          if (e.key === "Escape" && open) {
+            e.stopPropagation();
+            onOpenChange(false);
+          }
+        }}
+        className="absolute bottom-2 left-2 z-10 flex flex-col-reverse items-start gap-1"
+      >
+        <button
+          type="button"
+          data-testid="spatial-key-toggle"
+          aria-expanded={open}
+          aria-controls={legendId}
+          onClick={() => onOpenChange(!open)}
+          className="spatial-hud-button touch-target"
+        >
+          Key
+        </button>
+        {open ? (
+          <div
+            id={legendId}
+            data-testid="spatial-legend"
+            className="border border-outline-variant bg-background/90 px-2 py-1.5 font-mono text-[9px] text-on-surface-variant backdrop-blur-sm"
+          >
+            <ul className="grid grid-cols-2 gap-x-3 gap-y-0.5">
+              {LEGEND.map((item) => (
+                <li key={item.tone} className="flex items-center gap-1.5">
+                  <span aria-hidden="true" data-tone={item.tone} className="spatial-mark" style={{ "--spatial-tone": hslCss(palette.tones[item.tone]) } as React.CSSProperties} />
+                  {item.label}
+                </li>
+              ))}
+              <li className="flex items-center gap-1.5">
+                <span aria-hidden="true" data-tone="active" className="spatial-mark is-stale" style={{ "--spatial-tone": hslCss(palette.inkMuted) } as React.CSSProperties} />
+                stale sample
+              </li>
+            </ul>
+            <div className="mt-1 border-t border-outline-variant pt-1">platform = pod · dashed = cross-pod · spike = attention</div>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
   return (
     <div
       data-testid="spatial-legend"

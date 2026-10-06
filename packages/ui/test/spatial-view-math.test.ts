@@ -10,6 +10,8 @@ import {
   frameBox,
   layoutLabels,
   sceneBudgetVerdict,
+  nearestWithin,
+  COMPACT_LABEL_MAX_WIDTH_PX,
   type LabelCandidate,
   type Rect,
 } from "../src/components/topology/spatial/spatial-view-math.js";
@@ -203,5 +205,49 @@ describe("sceneBudgetVerdict", () => {
     expect(sceneBudgetVerdict({ ...base, agents: SPATIAL_SCENE_BUDGET.seats }).withinBudget).toBe(true);
     expect(sceneBudgetVerdict({ ...base, agents: SPATIAL_SCENE_BUDGET.seats + 1 }).withinBudget).toBe(false);
     expect(sceneBudgetVerdict({ ...base, edges: SPATIAL_SCENE_BUDGET.links + 1 }).withinBudget).toBe(false);
+  });
+});
+
+// Phone/compact density: one-line seat names and quieter rig/pod names, so a
+// 430px stage keeps the actual scene visible. Sizes are estimates the
+// collision pass relies on; they must shrink for compact and stay positive.
+describe("compact label density", () => {
+  it("compact boxes are smaller than full ones for every kind, and a seat name drops its status line", () => {
+    for (const kind of ["rig", "pod", "agent"] as const) {
+      const full = estimateLabelSize(kind, "coordinator", "running · 2 pending");
+      const compact = estimateLabelSize(kind, "coordinator", null, "compact");
+      expect(compact.w).toBeGreaterThan(0);
+      expect(compact.h).toBeGreaterThan(0);
+      expect(compact.w * compact.h).toBeLessThan(full.w * full.h);
+    }
+    const nameOnly = estimateLabelSize("agent", "coordinator", null, "compact");
+    const withStatus = estimateLabelSize("agent", "coordinator", "needs input", "compact");
+    expect(nameOnly.h).toBeLessThan(withStatus.h);
+  });
+
+  it("caps a compact seat name's width (the full name stays in the card and index)", () => {
+    const long = estimateLabelSize("agent", "x".repeat(120), null, "compact");
+    expect(long.w).toBeLessThanOrEqual(COMPACT_LABEL_MAX_WIDTH_PX);
+  });
+});
+
+describe("nearestWithin (touch pick tolerance)", () => {
+  const points = [
+    { key: "a", x: 100, y: 100 },
+    { key: "b", x: 130, y: 100 },
+    { key: "c", x: 400, y: 300 },
+  ];
+  it("returns the closest point inside the radius", () => {
+    expect(nearestWithin(points, 112, 100, 24)).toBe("a");
+    expect(nearestWithin(points, 120, 101, 24)).toBe("b");
+  });
+  it("returns null when nothing is within the radius (an empty-space tap still clears)", () => {
+    expect(nearestWithin(points, 250, 200, 24)).toBeNull();
+  });
+  it("breaks an exact tie by key, deterministically", () => {
+    expect(nearestWithin([{ key: "z", x: 0, y: 0 }, { key: "m", x: 20, y: 0 }], 10, 0, 24)).toBe("m");
+  });
+  it("ignores non-finite projections", () => {
+    expect(nearestWithin([{ key: "a", x: Number.NaN, y: 0 }], 0, 0, 24)).toBeNull();
   });
 });

@@ -182,6 +182,99 @@
   }
 }
 
+/* Compact density (small stage: phone portrait/landscape, a squeezed tablet
+   stage). One-line names in smaller type so the scene itself stays visible;
+   the status line is shown (via the `hidden` attribute) only on the selected
+   or hovered seat, and status is carried by a SHAPE as well as colour. */
+.spatial-label__meta[hidden] {
+  display: none;
+}
+
+.spatial-label--rig.is-compact {
+  padding: 2px 6px;
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+}
+
+.spatial-label--pod.is-compact {
+  padding: 0 4px;
+  font-size: 9px;
+}
+
+.spatial-label--agent.is-compact {
+  max-width: 11rem;
+  padding: 1px 5px 1px 12px;
+  font-size: 10px;
+}
+
+.spatial-label--agent.is-compact .spatial-label__text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.spatial-label--agent.is-compact::before {
+  left: 3.5px;
+  top: 5px;
+}
+
+/* Compact keeps the state's shape for a stale sample (faded below) instead
+   of the full-density hollow dot; must precede the hollow-shape rules. */
+.spatial-label--agent.is-compact.is-stale::before {
+  background: var(--spatial-tone, hsl(var(--outline)));
+  box-shadow: none;
+}
+
+/* Status shapes (labels, key, selection card). data-tone names the state:
+   running = filled circle, needs input = diamond, blocked = square,
+   idle = open circle, no signal = open square; stale = faded. */
+.spatial-mark {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: var(--spatial-tone);
+}
+
+.spatial-mark[data-tone="needs_input"],
+.spatial-label--agent.is-compact[data-tone="needs_input"]::before {
+  border-radius: 0;
+  transform: rotate(45deg) scale(0.85);
+}
+
+.spatial-mark[data-tone="blocked"],
+.spatial-label--agent.is-compact[data-tone="blocked"]::before {
+  border-radius: 0;
+}
+
+.spatial-mark[data-tone="idle"],
+.spatial-label--agent.is-compact[data-tone="idle"]::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--spatial-tone);
+}
+
+.spatial-mark[data-tone="unknown"],
+.spatial-label--agent.is-compact[data-tone="unknown"]::before {
+  border-radius: 0;
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--spatial-tone);
+}
+
+.spatial-mark.is-stale,
+.spatial-label--agent.is-compact.is-stale::before {
+  opacity: 0.55;
+}
+
+/* Stacked stage height (phones, tablet portrait): a share of the SMALL
+   viewport (browser bars expanded), so part of the page always remains
+   outside the stage to scroll by — the canvas itself captures touch for
+   orbit/pinch. 56vh is the pre-svh fallback. */
+.spatial-stage--stacked {
+  height: 56vh;
+  height: 56svh;
+  min-height: 16rem;
+}
+
 /* HUD controls over the stage. */
 .spatial-hud-button {
   display: inline-flex;

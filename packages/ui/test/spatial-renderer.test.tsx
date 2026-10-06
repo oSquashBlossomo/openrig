@@ -735,3 +735,138 @@ describe("SpatialRenderer color and labels", () => {
     });
   });
 });
+
+// Phone / compact stage: the scene must stay visible. Seat names are one
+// line (status text only on the selected seat), the ambient label count is
+// small, and a density switch (rotation, split view) restyles the existing
+// labels in place instead of rebuilding the scene. Touch taps that just miss
+// a small puck snap to the nearest seat; a far tap still clears.
+function manySeatSetup(seats = 24) {
+  const nodes: Array<Record<string, unknown>> = [];
+  for (const pod of ["core", "build", "review"]) nodes.push({ id: `pod-${pod}`, type: "podGroup", data: { podNamespace: pod } });
+  for (let i = 0; i < seats; i++) {
+    const pod = ["core", "build", "review"][i % 3]!;
+    nodes.push({ id: `s${i}`, type: "rigNode", parentId: `pod-${pod}`, data: { logicalId: `${pod}.seat-${i}`, status: "running", ...(i === 4 ? { startupStatus: "failed" } : {}) } });
+  }
+  const model = buildSpatialModel("local", [parseSpatialRig("local", { rigId: "r", rigName: "rig", graph: { nodes, edges: [] } })]);
+  const base = setup();
+  return { ...base, props: { ...base.props, model, layout: layoutSpatialModel(model) }, keys: [...model.agentsByKey.keys()] };
+}
+
+function agentLabels(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>("[data-spatial-label='agent']")];
+}
+const isShown = (el: HTMLElement) => el.style.display !== "none";
+const metaOf = (el: HTMLElement) => el.querySelector<HTMLElement>(".spatial-label__meta");
+
+describe("SpatialRenderer compact (phone) density", () => {
+  function phoneViewport() {
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => 430 });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 480 });
+  }
+
+  it("shows few one-line seat names; only the selected seat carries its status line", async () => {
+    phoneViewport();
+    const { props, keys } = manySeatSetup();
+    const { rerender } = render(<SpatialRenderer {...props} density="compact" />);
+    flushFrames();
+    const layer = document.querySelector<HTMLElement>(".spatial-label-layer")!;
+    expect(Number(layer.dataset.visibleLabels)).toBeLessThanOrEqual(16);
+    for (const label of agentLabels().filter(isShown)) expect(metaOf(label)?.hidden).toBe(true);
+
+    const selected = keys[7]!;
+    rerender(<SpatialRenderer {...props} density="compact" selectedKey={selected} />);
+    flushFrames();
+    const selectedLabel = agentLabels().find((el) => el.classList.contains("is-selected"))!;
+    expect(isShown(selectedLabel)).toBe(true);
+    expect(metaOf(selectedLabel)?.hidden).toBe(false);
+    for (const label of agentLabels().filter((el) => isShown(el) && el !== selectedLabel)) expect(metaOf(label)?.hidden).toBe(true);
+  });
+
+  it("switching density restyles the same label elements without a rebuild and paints once", async () => {
+    phoneViewport();
+    const { props } = manySeatSetup(6);
+    const { rerender } = render(<SpatialRenderer {...props} density="compact" />);
+    flushFrames();
+    const before = agentLabels();
+    expect(before.filter(isShown).every((el) => metaOf(el)?.hidden === true)).toBe(true);
+
+    rerender(<SpatialRenderer {...props} density="full" />);
+    expect(rafQueue.size).toBe(1);
+    flushFrames();
+    const after = agentLabels();
+    expect(after).toHaveLength(before.length);
+    after.forEach((el, i) => expect(el).toBe(before[i]));
+    expect(after.filter(isShown).length).toBeGreaterThan(0);
+    for (const label of after.filter(isShown)) expect(metaOf(label)?.hidden).toBe(false);
+  });
+
+  it("a touch tap that just misses a seat selects it; a far tap clears; a precise mouse miss never snaps", async () => {
+    const { Raycaster } = await import("three");
+    vi.spyOn(Raycaster.prototype, "intersectObjects").mockImplementation(() => []);
+    const { props, controllerRef, onSelect, keys } = manySeatSetup(6);
+    render(<SpatialRenderer {...props} />);
+    flushFrames();
+    const canvas = gl.instances[0]!.domElement;
+    vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue({
+      x: 0, y: 0, left: 0, top: 0, width: 800, height: 500, right: 800, bottom: 500, toJSON: () => ({}),
+    });
+    Object.assign(canvas, { setPointerCapture: vi.fn(), releasePointerCapture: vi.fn(), hasPointerCapture: () => false });
+    const target = keys[2]!;
+    // Focus centres the camera on the seat: it now projects to the stage centre.
+    act(() => controllerRef.current!.focus(target));
+    flushFrames();
+    const tap = (x: number, y: number, pointerType: "touch" | "mouse", id: number) => act(() => {
+      canvas.dispatchEvent(pointerEvent("pointerdown", { id, x, y, pointerType }));
+      canvas.dispatchEvent(pointerEvent("pointerup", { id, x, y, pointerType }));
+      flushFrames();
+    });
+    tap(412, 258, "touch", 21);
+    expect(onSelect).toHaveBeenLastCalledWith(target);
+    tap(780, 30, "touch", 22);
+    expect(onSelect).toHaveBeenLastCalledWith(null);
+    tap(412, 258, "mouse", 1);
+    expect(onSelect).toHaveBeenLastCalledWith(null);
+    expect(onSelect).toHaveBeenCalledTimes(3);
+  });
+
+  it("touch tolerance never turns a pinch, a drag or a cancelled touch near a seat into a selection", async () => {
+    const { Raycaster } = await import("three");
+    vi.spyOn(Raycaster.prototype, "intersectObjects").mockImplementation(() => []);
+    const { props, controllerRef, onSelect, keys } = manySeatSetup(6);
+    render(<SpatialRenderer {...props} />);
+    flushFrames();
+    const canvas = gl.instances[0]!.domElement;
+    vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue({
+      x: 0, y: 0, left: 0, top: 0, width: 800, height: 500, right: 800, bottom: 500, toJSON: () => ({}),
+    });
+    Object.assign(canvas, { setPointerCapture: vi.fn(), releasePointerCapture: vi.fn(), hasPointerCapture: () => false });
+    act(() => controllerRef.current!.focus(keys[2]!));
+    flushFrames();
+    const send = (type: string, init: PointerInit) => act(() => { canvas.dispatchEvent(pointerEvent(type, init)); flushFrames(); });
+    // Stationary two-finger tap right beside the seat.
+    send("pointerdown", { id: 31, x: 405, y: 252 });
+    send("pointerdown", { id: 32, x: 440, y: 260, isPrimary: false });
+    send("pointerup", { id: 32, x: 440, y: 260, isPrimary: false });
+    send("pointerup", { id: 31, x: 405, y: 252 });
+    // A drag that ends on the seat.
+    send("pointerdown", { id: 33, x: 300, y: 250 });
+    send("pointermove", { id: 33, x: 360, y: 250 });
+    send("pointerup", { id: 33, x: 404, y: 251 });
+    // A cancelled touch on the seat.
+    send("pointerdown", { id: 34, x: 404, y: 251 });
+    send("pointercancel", { id: 34, x: 404, y: 251 });
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("refreshOverlays re-reads stage overlays and schedules exactly one frame", () => {
+    const { props, controllerRef } = manySeatSetup(6);
+    render(<SpatialRenderer {...props} density="compact" />);
+    flushFrames();
+    expect(rafQueue.size).toBe(0);
+    act(() => controllerRef.current!.refreshOverlays());
+    expect(rafQueue.size).toBe(1);
+    flushFrames();
+    expect(rafQueue.size).toBe(0);
+  });
+});

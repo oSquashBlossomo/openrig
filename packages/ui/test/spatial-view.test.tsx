@@ -19,6 +19,7 @@ const controller = vi.hoisted(() => ({
   zoom: vi.fn(),
   orbit: vi.fn(),
   focus: vi.fn(),
+  refreshOverlays: vi.fn(),
 }));
 
 vi.mock("../src/components/topology/spatial/SpatialRenderer.js", async () => {
@@ -27,6 +28,7 @@ vi.mock("../src/components/topology/spatial/SpatialRenderer.js", async () => {
     model: { agentsByKey: Map<string, unknown> };
     selectedKey: string | null;
     matchKeys: ReadonlySet<string> | null;
+    density?: string;
     controllerRef: { current: unknown };
     onSelect: (key: string | null) => void;
     onReady?: () => void;
@@ -46,6 +48,7 @@ vi.mock("../src/components/topology/spatial/SpatialRenderer.js", async () => {
         "data-testid": "stub-renderer",
         "data-selected": props.selectedKey ?? "",
         "data-matches": props.matchKeys ? String(props.matchKeys.size) : "none",
+        "data-density": props.density ?? "full",
       },
       [...props.model.agentsByKey.keys()].map((key) =>
         React.createElement("button", { key, type: "button", "data-testid": "stub-pick", "data-key": key, onClick: () => props.onSelect(key) }),
@@ -466,8 +469,140 @@ describe("SpatialTopologyView layout", () => {
     const grid = screen.getByTestId("spatial-grid");
     expect(classesOf(grid)).not.toContain("absolute");
     expect(classesOf(grid)).toContain("grid-cols-1");
-    expect(classesOf(screen.getByTestId("spatial-stage"))).toEqual(expect.arrayContaining(["h-[56vh]", "min-h-[18rem]"]));
+    // Bounded by a share of the small viewport (spatial.css), so the page
+    // always keeps area outside the touch-capturing canvas to scroll by.
+    expect(classesOf(screen.getByTestId("spatial-stage"))).toContain("spatial-stage--stacked");
     expect(classesOf(screen.getByTestId("spatial-inspector-region"))).not.toContain("overflow-auto");
     expect(classesOf(screen.getByTestId("spatial-index-region"))).toEqual(expect.arrayContaining(["max-h-[70vh]", "overflow-auto"]));
+  });
+});
+
+// Phone stage: the view measures its own stage (no device detection) and a
+// small stage (phone portrait, short landscape) gets the compact scene —
+// collapsed camera controls and key, one-line labels — with the selected
+// seat in a compact card OUTSIDE the scene whose Details disclose the full
+// inspector. Every seat stays reachable through search and the index.
+describe("SpatialTopologyView phone stage", () => {
+  type Observed = { el: Element; cb: ResizeObserverCallback };
+  let observed: Observed[] = [];
+  const originalWidth = window.innerWidth;
+
+  beforeEach(() => {
+    observed = [];
+    vi.stubGlobal("ResizeObserver", class {
+      private cb: ResizeObserverCallback;
+      constructor(cb: ResizeObserverCallback) { this.cb = cb; }
+      observe(el: Element) { observed.push({ el, cb: this.cb }); }
+      unobserve() {}
+      disconnect() { observed = observed.filter((o) => o.cb !== this.cb); }
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: originalWidth });
+    window.dispatchEvent(new Event("resize"));
+  });
+
+  function viewport(width: number) {
+    Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: width });
+    window.dispatchEvent(new Event("resize"));
+  }
+  function stageIs(width: number, height: number) {
+    const stage = screen.getByTestId("spatial-stage");
+    const entry = { target: stage, contentRect: { width, height } } as unknown as ResizeObserverEntry;
+    act(() => { for (const o of observed.filter((o) => o.el === stage)) o.cb([entry], {} as ResizeObserver); });
+  }
+
+  it("a phone-sized stage gets compact labels, collapsed controls and key, and an empty-state hint outside the scene", async () => {
+    viewport(430);
+    renderView();
+    await screen.findByTestId("stub-renderer", {}, { timeout: 5000 });
+    stageIs(398, 480);
+    expect(screen.getByTestId("stub-renderer").getAttribute("data-density")).toBe("compact");
+    // Camera: Fit + More only; the rest is one tap away and refreshes label occluders.
+    expect(screen.getByTestId("spatial-camera-fit")).toBeTruthy();
+    expect(screen.queryByTestId("spatial-camera-zoom-in")).toBeNull();
+    const more = screen.getByTestId("spatial-camera-more");
+    expect(more.getAttribute("aria-expanded")).toBe("false");
+    controller.refreshOverlays.mockClear();
+    fireEvent.click(more);
+    expect(more.getAttribute("aria-expanded")).toBe("true");
+    for (const id of ["iso", "top", "zoom-in", "zoom-out", "reset"]) expect(screen.getByTestId(`spatial-camera-${id}`)).toBeTruthy();
+    expect(controller.refreshOverlays).toHaveBeenCalled();
+    // Key collapsed; opening it shows shape markers with text, not colour alone.
+    expect(screen.queryByTestId("spatial-legend")).toBeNull();
+    fireEvent.click(screen.getByTestId("spatial-key-toggle"));
+    const legend = screen.getByTestId("spatial-legend");
+    expect(legend.textContent).toContain("needs input");
+    expect(legend.querySelectorAll(".spatial-mark[data-tone]").length).toBeGreaterThanOrEqual(5);
+    // No inspector wall under the stage: a one-line hint instead.
+    expect(screen.getByTestId("spatial-selection-card-empty").textContent).toMatch(/tap a seat/i);
+    expect(screen.queryByTestId("spatial-inspector-empty")).toBeNull();
+  });
+
+  it("a tapped seat opens a compact card; Details disclose the full inspector; the URL keeps the exact node", async () => {
+    viewport(430);
+    const { router } = renderView();
+    await screen.findByTestId("stub-renderer", {}, { timeout: 5000 });
+    stageIs(398, 480);
+    fireEvent.click(screen.getAllByTestId("stub-pick").find((b) => b.getAttribute("data-key")?.endsWith("/n3"))!);
+    const card = await screen.findByTestId("spatial-selection-card");
+    expect(within(card).getByTestId("spatial-card-name").textContent).toBe("reviewer");
+    expect(within(card).getByTestId("spatial-card-context").textContent).toContain("acme-build / builders");
+    expect(within(card).getByTestId("spatial-card-status").textContent).toContain("identity mismatch");
+    expect(within(card).getByTestId("spatial-open-seat").getAttribute("href")).toContain("/topology/seat/ra/builders.reviewer");
+    // Progressive disclosure: evidence and problems only after Details.
+    expect(screen.queryByTestId("spatial-inspector-problems")).toBeNull();
+    const details = within(card).getByTestId("spatial-card-details");
+    expect(details.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(details);
+    expect(details.getAttribute("aria-expanded")).toBe("true");
+    const body = within(card).getByTestId("spatial-card-detail");
+    expect(details.getAttribute("aria-controls")).toBe(body.id);
+    expect(within(body).getByTestId("spatial-inspector-problems").textContent).toContain("pane runs zsh");
+    expect(within(body).queryByTestId("spatial-inspector-name")).toBeNull();
+    expect(within(card).getAllByTestId("spatial-open-seat")).toHaveLength(1);
+    expect(router.state.location.search).toMatchObject({ selectedRig: "ra", selectedNode: "n3" });
+    // Choosing another seat from the index keeps Details open on the new seat.
+    fireEvent.click(rowFor("coordinator"));
+    await waitFor(() => expect(screen.getByTestId("spatial-card-name").textContent).toBe("coordinator"));
+    expect(screen.getByTestId("spatial-card-detail")).toBeTruthy();
+  });
+
+  it("rotation to a roomy stage restores the full inspector and controls, and back again, keeping the selection", async () => {
+    viewport(430);
+    renderView();
+    await screen.findByTestId("stub-renderer", {}, { timeout: 5000 });
+    stageIs(398, 480);
+    fireEvent.click(screen.getAllByTestId("stub-pick").find((b) => b.getAttribute("data-key")?.endsWith("/n1"))!);
+    await screen.findByTestId("spatial-selection-card");
+    // Short landscape phone stage is still compact.
+    viewport(932);
+    stageIs(900, 300);
+    expect(screen.getByTestId("stub-renderer").getAttribute("data-density")).toBe("compact");
+    expect(screen.getByTestId("spatial-selection-card")).toBeTruthy();
+    // Tablet portrait: roomy stage, full inspector and full camera column.
+    viewport(834);
+    stageIs(802, 660);
+    expect(screen.getByTestId("stub-renderer").getAttribute("data-density")).toBe("full");
+    expect(screen.queryByTestId("spatial-selection-card")).toBeNull();
+    expect(screen.getByTestId("spatial-inspector-name").textContent).toBe("coordinator");
+    expect(screen.getByTestId("spatial-camera-zoom-in")).toBeTruthy();
+    expect(screen.getByTestId("spatial-legend")).toBeTruthy();
+    viewport(430);
+    stageIs(398, 480);
+    expect(screen.getByTestId("spatial-card-name").textContent).toBe("coordinator");
+    expect(screen.getByTestId("stub-renderer").getAttribute("data-selected")).toMatch(/\/n1$/);
+  });
+
+  it("a squeezed stage in the wide layout uses compact labels but keeps the side inspector", async () => {
+    viewport(1194);
+    renderView();
+    await screen.findByTestId("stub-renderer", {}, { timeout: 5000 });
+    stageIs(520, 700);
+    expect(screen.getByTestId("stub-renderer").getAttribute("data-density")).toBe("compact");
+    fireEvent.click(screen.getAllByTestId("stub-pick").find((b) => b.getAttribute("data-key")?.endsWith("/n1"))!);
+    await waitFor(() => expect(screen.getByTestId("spatial-inspector-name").textContent).toBe("coordinator"));
+    expect(screen.queryByTestId("spatial-selection-card")).toBeNull();
   });
 });
