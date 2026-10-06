@@ -132,8 +132,10 @@ disabled, because the runner holds the Claude token. Its GitHub tools are
 read-only apart from posting the comment. It reads the PR conversation, review
 threads and reviews so it does not repeat findings that were already resolved,
 and treats all of this as untrusted evidence. It skips a finding only when the
-current head fixed it or an owner, member or collaborator disproved it, and it
-lists every skipped finding so a wrongly dropped one stays visible. Anyone who
+current head fixed it or an owner, member or collaborator disproved it. A
+disproof from the PR author counts only after the reviewer checks its evidence in
+the code; otherwise the finding stays, marked as disputed. Every skipped finding
+is listed, so a wrongly dropped one stays visible. Anyone who
 can comment could still try to steer it; the worst outcome is a misleading
 advisory comment. GitHub code search does not index this fork (a fork needs more stars
 than its parent), so the reviewer traces callers with `get_file_contents` and
