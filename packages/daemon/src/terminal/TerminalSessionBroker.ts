@@ -208,7 +208,7 @@ export class TerminalSessionBroker {
   // the pane (capture-pane), so every viewer scrolls independently and nobody else's
   // live view is disturbed (multi-subscriber-safe scrollback - vs pane-global copy-mode).
   private readonly scrollOffsets = new Map<TerminalSubscriber, number>();
-  private readonly returningToLive = new Set<TerminalSubscriber>();
+  private readonly returningToLive = new Map<TerminalSubscriber, number>();
   // Broker-owned recent-output ring (AC-5): raw fanned-out bytes, bounded,
   // replayed to late subscribers so their scrollback matches the earlier ones.
   private history: string[] = [];
@@ -365,7 +365,9 @@ export class TerminalSessionBroker {
     const clamped = Math.max(0, Math.floor(offset));
     if (clamped === 0) {
       // Keep a history viewer out of delta fanout until a valid live seed is sent.
-      this.returningToLive.add(sub);
+      if ((this.scrollOffsets.get(sub) ?? 0) > 0 && !this.returningToLive.has(sub)) {
+        this.returningToLive.set(sub, 0);
+      }
       await this.repaintScreen(sub);
       return;
     }
@@ -457,7 +459,19 @@ export class TerminalSessionBroker {
   }
 
   private async repaintPending(screen: { snapshot: string; cursor: TmuxCursorPosition; position: number; stable: boolean }): Promise<void> {
-    if (this.torndown || !screen.stable || screen.position !== this.lastSize || screen.position !== this.pipeSize()) return;
+    if (this.torndown) return;
+    if (!screen.stable || screen.position !== this.lastSize || screen.position !== this.pipeSize()) {
+      // A history viewer receives no live deltas until repaint. Bound that
+      // otherwise silent wait, without interrupting viewers already streaming.
+      for (const [sub, attempts] of [...this.returningToLive]) {
+        if (attempts + 1 < MAX_DISPLAY_ATTEMPTS) this.returningToLive.set(sub, attempts + 1);
+        else {
+          try { sub.close(1011, SCREEN_BUSY); } catch { /* dead subscriber */ }
+          this.detach(sub);
+        }
+      }
+      return;
+    }
     for (const sub of [...this.pendingRepaints]) {
       if (!this.subscribers.has(sub)) continue;
       const offset = this.scrollOffsets.get(sub) ?? 0;

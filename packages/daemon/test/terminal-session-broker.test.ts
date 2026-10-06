@@ -1211,3 +1211,131 @@ it("bounds persistent null captures without ever emitting an empty authoritative
   expect(captures).toBe(4); // initial success, then exactly three failed display samples
   expect(sub.received).toEqual([]);
 });
+
+it("bounds a continuously busy return from history for only that viewer while draining every pipe byte", async () => {
+  let busy = false, count = 0;
+  const stopPipePane = vi.fn(async () => ({ ok: true }));
+  let broker: TerminalSessionBroker;
+  broker = track(new TerminalSessionBroker("busy-return@fixture", makeTmux({
+    stopPipePane,
+    getPaneCursorPosition: async () => ({ x: count % 90, y: 0, width: 90, height: 27 }),
+    capturePaneScreen: async () => {
+      if (busy) fs.appendFileSync(broker.pipeOutputPath!, `\x1b[2;1HBUSY_RETURN_${++count}`);
+      return busy ? "UNSAFE_RETURN_SNAPSHOT" : "CURRENT_LIVE";
+    },
+    capturePaneContent: async () => "HISTORICAL_SCREEN\n",
+  }), { pollMs: 5, geometryMs: 5 }));
+  const healthy = makeSub(), returning = makeSub();
+  await broker.attach(healthy); await broker.attach(returning);
+  await broker.scroll(returning, 1);
+  healthy.received.length = 0; returning.received.length = 0;
+  const pipe = broker.pipeOutputPath!;
+  busy = true; await broker.scroll(returning, 0);
+  await vi.waitFor(() => expect(returning.closed).toEqual([{ code: 1011, reason: "terminal screen remained busy; reopen to retry" }]), { timeout: 500 });
+  expect(count).toBe(3);
+  expect(returning.received).toEqual([]);
+  expect(healthy.closed).toEqual([]);
+  expect(broker.subscriberCount).toBe(1);
+  expect(broker.pipeOutputPath).toBe(pipe);
+  expect(stopPipePane).not.toHaveBeenCalled();
+  busy = false;
+  fs.appendFileSync(pipe, "AFTER_BUSY_RETURN");
+  await vi.waitFor(() => expect(healthy.received.join("")).toContain("AFTER_BUSY_RETURN"));
+  for (let index = 1; index <= count; index++) {
+    expect(healthy.received.join("").split(`BUSY_RETURN_${index}`)).toHaveLength(2);
+  }
+  expect(healthy.received.join("")).not.toContain("UNSAFE_RETURN_SNAPSHOT");
+});
+
+it("admits a briefly busy history return after a stable repaint and resumes that viewer's delta fanout", async () => {
+  let busyCaptures = 0, count = 0;
+  let broker: TerminalSessionBroker;
+  broker = track(new TerminalSessionBroker("brief-return@fixture", makeTmux({
+    getPaneCursorPosition: async () => ({ x: count, y: 0, width: 90, height: 27 }),
+    capturePaneScreen: async () => {
+      if (busyCaptures > 0) {
+        busyCaptures--; count++;
+        fs.appendFileSync(broker.pipeOutputPath!, "\x1b[2;1HDURING_RETURN");
+        return "UNSAFE_TRANSIENT_RETURN";
+      }
+      return "CURRENT_LIVE";
+    },
+    capturePaneContent: async () => "HISTORICAL_SCREEN\n",
+  }), { pollMs: 5 }));
+  const healthy = makeSub(), returning = makeSub();
+  await broker.attach(healthy); await broker.attach(returning); await broker.scroll(returning, 1);
+  returning.received.length = 0; healthy.received.length = 0;
+  busyCaptures = 1; await broker.scroll(returning, 0);
+  expect(returning.received).toEqual([]);
+  await vi.waitFor(() => expect(returning.received.some(frame => frame.includes("CURRENT_LIVE"))).toBe(true));
+  expect(returning.closed).toEqual([]);
+  expect(returning.received.join("")).not.toContain("UNSAFE_TRANSIENT_RETURN");
+  expect(returning.received).not.toContain("\x1b[2;1HDURING_RETURN");
+  expect(healthy.received.filter(frame => frame === "\x1b[2;1HDURING_RETURN")).toHaveLength(1);
+  fs.appendFileSync(broker.pipeOutputPath!, "AFTER_RETURN");
+  await vi.waitFor(() => expect(returning.received).toContain("AFTER_RETURN"));
+});
+
+it("keeps ordinary busy geometry repaints streaming without applying the history-return budget", async () => {
+  let busy = false, count = 0, width = 90;
+  let broker: TerminalSessionBroker;
+  broker = track(new TerminalSessionBroker("busy-live@fixture", makeTmux({
+    getPaneCursorPosition: async () => ({ x: count % width, y: 0, width, height: 27 }),
+    capturePaneScreen: async () => {
+      if (busy) fs.appendFileSync(broker.pipeOutputPath!, `\x1b[2;1HBUSY_LIVE_${++count}`);
+      return busy ? "UNSAFE_GEOMETRY_SNAPSHOT" : "CURRENT_LIVE";
+    },
+  }), { pollMs: 5, geometryMs: 5 }));
+  const live = makeSub(); await broker.attach(live);
+  busy = true; width = 100;
+  // A redundant request for the already-live bottom also must not create a
+  // history-return budget for a viewer that still receives live output.
+  await broker.scroll(live, 0);
+  await vi.waitFor(() => expect(count).toBeGreaterThanOrEqual(4));
+  expect(live.closed).toEqual([]);
+  expect(live.received.join("")).toContain("BUSY_LIVE_1");
+  expect(live.received.join("")).not.toContain("UNSAFE_GEOMETRY_SNAPSHOT");
+  busy = false;
+  await vi.waitFor(() => expect(live.received.at(-1)).toContain("CURRENT_LIVE"));
+  expect(live.closed).toEqual([]);
+});
+
+it("does not restart a busy history-return budget on repeated live-bottom requests", async () => {
+  let busy = false, count = 0;
+  let broker: TerminalSessionBroker;
+  broker = track(new TerminalSessionBroker("repeated-return@fixture", makeTmux({
+    capturePaneScreen: async () => {
+      if (busy) fs.appendFileSync(broker.pipeOutputPath!, `BUSY_${++count}`);
+      return busy ? "UNSAFE_RETURN" : "LIVE";
+    },
+    capturePaneContent: async () => "HISTORY\n",
+  }), { pollMs: 1000 }));
+  const sub = makeSub(); await broker.attach(sub); await broker.scroll(sub, 1);
+  busy = true;
+  await broker.scroll(sub, 0); await broker.scroll(sub, 0); await broker.scroll(sub, 0);
+  expect(count).toBe(3);
+  expect(sub.closed).toEqual([{ code: 1011, reason: "terminal screen remained busy; reopen to retry" }]);
+  expect(broker.subscriberCount).toBe(0);
+  expect(broker.pipeOutputPath).toBeNull();
+});
+
+it("cancels the busy return budget when the viewer explicitly stays in history", async () => {
+  let busy = false, count = 0;
+  let broker: TerminalSessionBroker;
+  broker = track(new TerminalSessionBroker("cancel-return@fixture", makeTmux({
+    capturePaneScreen: async () => {
+      if (busy) fs.appendFileSync(broker.pipeOutputPath!, `BUSY_${++count}`);
+      return busy ? "UNSAFE_RETURN" : "LIVE";
+    },
+    capturePaneContent: async () => "HISTORY\n",
+  }), { pollMs: 5 }));
+  const sub = makeSub(); await broker.attach(sub); await broker.scroll(sub, 1);
+  busy = true; await broker.scroll(sub, 0);
+  await broker.scroll(sub, 2);
+  await vi.waitFor(() => expect(count).toBeGreaterThanOrEqual(4));
+  expect(sub.closed).toEqual([]);
+  expect(sub.received.join("")).not.toContain("UNSAFE_RETURN");
+  busy = false; await broker.scroll(sub, 0);
+  await vi.waitFor(() => expect(sub.received.at(-1)).toContain("LIVE"));
+  expect(sub.closed).toEqual([]);
+});

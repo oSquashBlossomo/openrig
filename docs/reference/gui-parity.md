@@ -60,6 +60,13 @@ across ten suites passed on the frozen repair, including real tmux-to-xterm
 pending-wrap fixtures. Independent review also checked unchanged native
 readiness, startup and handover consumers.
 
+The final busy-return follow-up also bounds a history viewer's wait for a stable
+live repaint: after three unsafe samples, only that waiting viewer receives an
+explicit reopen notice. Already-live viewers keep streaming. Five regressions
+cover recovery, repeated requests, cancellation, cleanup and unaffected live
+viewers; the resulting ten terminal/adapter suites passed **290 tests**, with
+daemon build/type checks and independent review.
+
 ## Human-style review follow-up — October 5, 2026
 
 Astra independently explored the actual GUI through computer use before the
