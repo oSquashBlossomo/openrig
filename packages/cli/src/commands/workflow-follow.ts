@@ -19,14 +19,14 @@ import { fetchWithTimeout } from "../fetch-with-timeout.js";
  *
  * Exit codes (arch n1 — outcome codes DISTINCT from error codes):
  *   0 = workflow completed
- *   3 = workflow FAILED (the outcome-as-exit-code kubectl default —
+ *   3 = workflow failed or aborted (the outcome-as-exit-code kubectl default —
  *       a workflow that fails is a command that fails; never collides
  *       with the shipped 1=4xx / 2=5xx transport codes)
  */
 export const EXIT_WORKFLOW_FAILED = 3;
 
 /** Terminal statuses a follow run resolves on. */
-const TERMINAL_STATUSES = new Set(["completed", "failed"]);
+const TERMINAL_STATUSES = new Set(["completed", "failed", "aborted"]);
 
 export interface FollowInstanceView {
   instanceId: string;
@@ -95,6 +95,7 @@ export interface FollowOptions {
 const STATUS_GLYPH: Record<string, string> = {
   completed: "✔",
   failed: "✖",
+  aborted: "✖",
   active: "●",
   waiting: "◐",
 };
@@ -130,7 +131,7 @@ function renderEvent(event: WorkflowEvent): string | null {
 
 /** Outcome → process exit code, per the FR-1 contract. */
 export function outcomeExitCode(status: string): number {
-  if (status === "failed") return EXIT_WORKFLOW_FAILED;
+  if (status === "failed" || status === "aborted") return EXIT_WORKFLOW_FAILED;
   return 0;
 }
 
@@ -165,9 +166,25 @@ function renderSnapshot(snapshot: SnapshotResult, io: FollowIo, json: boolean): 
   }
 }
 
+/** Reconcile a reconnect/poll snapshot without repeating rendered closures. */
+function renderSnapshotUpdate(snapshot: SnapshotResult, seenClosures: Set<string>, io: FollowIo, json: boolean): number | null {
+  for (const row of snapshot.trail) {
+    if (seenClosures.has(row.priorQitemId)) continue;
+    seenClosures.add(row.priorQitemId);
+    if (json) io.out(JSON.stringify({ type: "trail", row }));
+    else io.out(renderTrailRow(row));
+  }
+  if (TERMINAL_STATUSES.has(snapshot.instance.status)) {
+    if (json) io.out(JSON.stringify({ type: "terminal", status: snapshot.instance.status }));
+    else io.out(`  ${glyphFor(snapshot.instance.status)} workflow ${snapshot.instance.status}`);
+    return outcomeExitCode(snapshot.instance.status);
+  }
+  return null;
+}
+
 /**
  * Follow one instance to a terminal state. Returns the exit code the
- * caller should set (0 completed / 3 failed / 1 transport-4xx / 2
+ * caller should set (0 completed / 3 failed or aborted / 1 transport-4xx / 2
  * transport-5xx). Never throws for stream drops — those degrade
  * honestly (reconnect notice → poll-fallback notice), per the
  * chatroom precedent: the render may fall back, it never freezes
@@ -239,10 +256,21 @@ export async function followInstance(
           }, { timeoutMs: streamConnectTimeoutMs, timeoutMessage: "Workflow stream connection timed out." });
           if (retry.ok && retry.body) {
             streamRes = retry;
-            continue;
           }
         } catch {
           // fall through to next reconnect / poll fallback
+        }
+        if (streamRes) {
+          // Repeat the initial open-before-snapshot handshake. A healthy new
+          // stream starts at current history, so an outcome during the drop
+          // must be recovered from canonical state before waiting for events.
+          const retrySnap = await fetchSnapshot(client, instanceId);
+          if (!retrySnap.ok) {
+            io.out(JSON.stringify(retrySnap.body ?? { error: "trace_failed" }, null, opts.json ? 0 : 2));
+            return retrySnap.status >= 500 ? 2 : 1;
+          }
+          const outcome = renderSnapshotUpdate(retrySnap.snapshot, seenClosures, io, opts.json);
+          if (outcome !== null) return outcome;
         }
         continue;
       }
@@ -255,18 +283,8 @@ export async function followInstance(
         io.out(JSON.stringify(poll.body ?? { error: "poll_failed" }, null, opts.json ? 0 : 2));
         return poll.status >= 500 ? 2 : 1;
       }
-      // Render only trail rows not yet seen, preserving exactly-once.
-      for (const row of poll.snapshot.trail) {
-        if (seenClosures.has(row.priorQitemId)) continue;
-        seenClosures.add(row.priorQitemId);
-        if (opts.json) io.out(JSON.stringify({ type: "trail", row }));
-        else io.out(renderTrailRow(row));
-      }
-      if (TERMINAL_STATUSES.has(poll.snapshot.instance.status)) {
-        if (opts.json) io.out(JSON.stringify({ type: "terminal", status: poll.snapshot.instance.status }));
-        else io.out(`  ${glyphFor(poll.snapshot.instance.status)} workflow ${poll.snapshot.instance.status}`);
-        return outcomeExitCode(poll.snapshot.instance.status);
-      }
+      const outcome = renderSnapshotUpdate(poll.snapshot, seenClosures, io, opts.json);
+      if (outcome !== null) return outcome;
     }
     }
   } finally {

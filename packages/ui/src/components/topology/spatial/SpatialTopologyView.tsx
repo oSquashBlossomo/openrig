@@ -18,12 +18,30 @@
 // (spatial-visit-store.ts) restored once when the visit's content is ready.
 // A selection names an exact graph node; when that node is filtered out,
 // temporarily unreadable or gone, the intent stays and the inspector says so.
+//
+// Night Atelier: the view is styled locally (spatial.css .spatial-atelier
+// scoped tokens). Selecting an exact seat docks the selected-agent workspace
+// (SpatialAgentWorkspace) — one admitted live terminal plus served details —
+// beside the scene on wide layouts (~60/40) and under a still-substantial
+// scene on stacked ones, with a tap-to-switch seat strip. With nothing
+// selected the scene keeps the room and the compact seat index stays beside
+// it. Observed traffic (useSpatialActivity) feeds the renderer's pulses and
+// the workspace's readable event history.
+//
+// Small stage (phone portrait, short phone landscape, a squeezed tablet
+// stage), decided from the stage's own measured size, not the device:
+// compact labels, camera controls collapsed to Fit + More, the legend behind
+// a Key toggle, and — when the layout is stacked — a compact selection card
+// under the stage whose Details disclose the full inspector. Nothing is
+// hidden: the index and search still list every seat.
 
 import {
   Suspense,
   lazy,
   useCallback,
   useEffect,
+  useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -33,11 +51,13 @@ import {
   type LazyExoticComponent,
 } from "react";
 import { useRouter } from "@tanstack/react-router";
-import { Box, Crosshair, Expand, List as ListIcon, Minus, Plus, RotateCcw, Search, SquareDashed, X } from "lucide-react";
+import { Box, Crosshair, Ellipsis, Expand, List as ListIcon, Minus, Plus, RotateCcw, Search, SquareDashed, X } from "lucide-react";
 import { useSelectedHostId } from "../../../hooks/useHosts.js";
 import { usePrefersReducedMotion } from "../../../hooks/usePrefersReducedMotion.js";
 import { useShellViewport } from "../../../hooks/useShellViewport.js";
 import { useSpatialTopology } from "../../../hooks/useSpatialTopology.js";
+import { useSpatialActivity } from "../../../hooks/useSpatialActivity.js";
+import type { SpatialTrafficState } from "../../../lib/spatial-activity.js";
 import { LOCAL_HOST_ID } from "../../../lib/host-param.js";
 import {
   agentMatchesQuery,
@@ -48,6 +68,7 @@ import {
   spatialScopeKey,
   tallySeatStatuses,
   type SpatialAgent,
+  type SpatialModel,
   type SpatialScope,
   type SpatialSeatStatus,
   type SpatialTone,
@@ -63,10 +84,11 @@ import {
   type TopologyNavigation,
 } from "../topology-navigation.js";
 import { cn } from "../../../lib/utils.js";
-import { useTheme } from "../../ThemeProvider.js";
 import { ErrorBoundary } from "../../ui/ErrorBoundary.js";
 import { SpatialInspector } from "./SpatialInspector.js";
+import { SpatialAgentWorkspace, SpatialSeatSwitcher } from "./SpatialAgentWorkspace.js";
 import { SpatialNodeList } from "./SpatialNodeList.js";
+import { SpatialSelectionCard } from "./SpatialSelectionCard.js";
 import { hslCss, readSpatialPalette, type SpatialPalette } from "./spatial-palette.js";
 import { SPATIAL_SCENE_BUDGET, sceneBudgetVerdict, type SpatialBudgetVerdict } from "./spatial-view-math.js";
 import type { SpatialCameraController, SpatialRendererFailure, SpatialRendererProps } from "./SpatialRenderer.js";
@@ -134,6 +156,38 @@ const FAILURE_COPY: Record<SpatialViewFailure, string> = {
   "load-error": "The 3D renderer's code could not be downloaded (a network error, or the app was updated since this page loaded).",
 };
 
+/** A stage narrower or shorter than this gets the compact presentation. */
+export const COMPACT_STAGE = { width: 600, height: 380 } as const;
+
+/** Content-box size of an element via ResizeObserver; 0×0 until measured
+ *  (and whenever the element is absent), which means "not compact". */
+function useElementSize(el: HTMLElement | null): { w: number; h: number } {
+  const [size, setSize] = useState({ w: 0, h: 0 });
+  useLayoutEffect(() => {
+    // Read once before paint so a phone never flashes the full-density
+    // controls; ResizeObserver keeps it current (rotation, split view).
+    if (!el) {
+      setSize((prev) => (prev.w === 0 && prev.h === 0 ? prev : { w: 0, h: 0 }));
+      return;
+    }
+    const rect = el.getBoundingClientRect();
+    const w = Math.round(rect.width);
+    const h = Math.round(rect.height);
+    setSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      const rect = entries[entries.length - 1]?.contentRect;
+      if (!rect) return;
+      const w = Math.round(rect.width);
+      const h = Math.round(rect.height);
+      setSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [el]);
+  return size;
+}
+
 const LEGEND: Array<{ tone: SpatialTone; label: string }> = [
   { tone: "active", label: "running" },
   { tone: "needs_input", label: "needs input" },
@@ -199,8 +253,12 @@ function scopeTitle(scope: SpatialScope, rigName: string | null): string {
 function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: SpatialScope; hostId: string; nav: TopologyNavigation; loadRenderer: SpatialRendererLoader }) {
   const router = useRouter();
   const data = useSpatialTopology(scope);
-  const { resolved: theme } = useTheme();
-  const palette = useMemo<SpatialPalette>(() => readSpatialPalette(theme), [theme]);
+  // Night Atelier is an explicit dark subtree (Option 1), independent of the
+  // app theme: the renderer palette reads the scoped tokens from this view's
+  // own .spatial-atelier root as "dark", so a light shell still gets the warm
+  // charcoal stage and matching label ink. The shell/global theme is untouched.
+  const [atelierRoot, setAtelierRoot] = useState<HTMLDivElement | null>(null);
+  const palette = useMemo<SpatialPalette>(() => readSpatialPalette("dark", atelierRoot), [atelierRoot]);
   const reducedMotion = usePrefersReducedMotion();
   const { isWideLayout } = useShellViewport();
 
@@ -264,6 +322,14 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
   const SpatialRenderer = useMemo(() => acquireRenderer(loadRenderer), [loadRenderer, rendererEpoch]);
   const [rendererReady, setRendererReady] = useState(false);
   const controllerRef = useRef<SpatialCameraController | null>(null);
+  // Compact stage state: measured stage, the collapsed overlays and the
+  // card's disclosure (kept across seat changes within this view).
+  const [stageEl, setStageEl] = useState<HTMLDivElement | null>(null);
+  const stageSize = useElementSize(stageEl);
+  const compactStage = stageSize.w > 0 && (stageSize.w < COMPACT_STAGE.width || stageSize.h < COMPACT_STAGE.height);
+  const [hudOpen, setHudOpen] = useState(false);
+  const [keyOpen, setKeyOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const model = data.model;
   const layout = useMemo(() => (model ? layoutSpatialModel(model) : null), [model]);
@@ -322,10 +388,42 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
   // setSelectedKey closes over the current model and navigation; without it
   // here, a rig graph arriving later would leave index clicks using an older
   // model that cannot resolve the new rig's seats.
+  // Explicit-selection reveal (stacked layouts): after an operator picks a
+  // seat, bring the docked workspace's heading into view and focus it
+  // (preventScroll). Only these handlers request it — never an initial URL
+  // restore, a poll/refetch, rotation, search typing or a camera move.
+  //   "always": index rows, list rows, relationship rows — the workspace
+  //             sits ABOVE them, so without this the operator would stay at
+  //             the old index position with no visible change.
+  //   "mount":  a scene tap — only when the workspace first docks; tapping
+  //             another figure while docked keeps the operator on the scene.
+  //   switcher: none — the strip sits on the heading anchor already.
+  //
+  // A request is STATE (with a nonce), so it is delivered by its own commit
+  // even when the selection does not change (re-picking the seat already
+  // selected), and it is consumed exactly once: applied when the selection is
+  // its key, dropped when another selection supersedes it or the layout
+  // changes first — a resize/rotation can never replay an old request.
+  const [revealRequest, setRevealRequest] = useState<RevealRequest | null>(null);
+  const revealNonceRef = useRef(0);
+  const dockAnchorRef = useRef<HTMLDivElement | null>(null);
+  const selectedKeyRef = useRef<string | null>(null);
+  const requestReveal = useCallback((key: string, mode: "always" | "mount") => {
+    setRevealRequest({ key, mode, nonce: ++revealNonceRef.current, fromKey: selectedKeyRef.current });
+  }, []);
   const selectFromIndex = useCallback((key: string) => {
+    requestReveal(key, "always");
+    setSelectedKey(key);
+    if (sceneActive) controllerRef.current?.focus(key);
+  }, [sceneActive, setSelectedKey, requestReveal]);
+  const selectFromSwitcher = useCallback((key: string) => {
     setSelectedKey(key);
     if (sceneActive) controllerRef.current?.focus(key);
   }, [sceneActive, setSelectedKey]);
+  const selectFromScene = useCallback((key: string | null) => {
+    if (key) requestReveal(key, "mount");
+    setSelectedKey(key);
+  }, [setSelectedKey, requestReveal]);
 
   const onRendererFailure = useCallback((reason: SpatialViewFailure) => {
     controllerRef.current = null;
@@ -404,6 +502,10 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
   const scrollRef = useRef<SpatialVisitSnapshot["scroll"]>(initialSaved?.scroll ?? { main: 0, index: 0, inspector: 0, list: 0 });
   const focusRef = useRef<SpatialVisitSnapshot["focus"]>(undefined);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const rootRefCallback = useCallback((el: HTMLDivElement | null) => {
+    rootRef.current = el;
+    setAtelierRoot(el);
+  }, []);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const indexRegionRef = useRef<HTMLDivElement | null>(null);
@@ -552,16 +654,73 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nav.visitId, modelReady, writeSnapshot]);
 
+  // Deliver an explicit-selection reveal once the URL selection is its key.
+  const selectedKeyNow = selectedAgent?.key ?? null;
+  selectedKeyRef.current = selectedKeyNow;
+  // Docked state as of the previous commit (updated after delivery below).
+  const dockedRef = useRef(selectedKeyNow !== null);
+  // A layout change drops any undelivered request; it never applies one.
+  const layoutRef = useRef(isWideLayout);
+  useEffect(() => {
+    if (layoutRef.current === isWideLayout) return;
+    layoutRef.current = isWideLayout;
+    setRevealRequest(null);
+  }, [isWideLayout]);
+  useEffect(() => {
+    const request = revealRequest;
+    if (!request) return;
+    if (selectedKeyNow !== request.key) {
+      // Still waiting for this request's selection to land in the URL.
+      if (selectedKeyNow === request.fromKey) return;
+      setRevealRequest(null); // superseded by another selection
+      return;
+    }
+    setRevealRequest(null); // consumed: delivered exactly once
+    const wasDocked = dockedRef.current;
+    const dock = dockAnchorRef.current;
+    if (!dock) return;
+    if (isWideLayout) {
+      // Wide: the index row the operator used is replaced by the switcher;
+      // keep keyboard focus on the same seat there instead of losing it.
+      const active = document.activeElement;
+      if (request.mode === "always" && (!active || active === document.body || !active.isConnected)) {
+        // Exact key comparison (no selector escaping of served identities).
+        Array.from(dock.querySelectorAll<HTMLElement>("[data-testid='spatial-seat-chip']"))
+          .find((chip) => chip.getAttribute("data-spatial-key") === selectedKeyNow)
+          ?.focus({ preventScroll: true });
+      }
+      return;
+    }
+    if (request.mode === "mount" && wasDocked) return;
+    dock.scrollIntoView?.({ block: "start", behavior: reducedMotion ? "auto" : "smooth" });
+    dock.querySelector<HTMLElement>("[data-testid='spatial-inspector-name']")?.focus({ preventScroll: true });
+    // isWideLayout / reducedMotion are read at delivery; a change never re-runs this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealRequest, selectedKeyNow]);
+  useEffect(() => {
+    dockedRef.current = selectedKeyNow !== null;
+  }, [selectedKeyNow]);
+
+  // Overlays changed size (compact toggles, rotation): labels re-read them.
+  useEffect(() => {
+    controllerRef.current?.refreshOverlays?.();
+  }, [compactStage, hudOpen, keyOpen, rendererReady]);
+  const stageRefCallback = useCallback((el: HTMLDivElement | null) => {
+    stageRef.current = el;
+    setStageEl(el);
+  }, []);
+  const useCard = !isWideLayout && compactStage && mode === "scene";
+
   const isRemote = hostId !== LOCAL_HOST_ID;
   const rigName = scope.kind !== "host" ? model?.rigs[0]?.rigName ?? null : null;
   const counts = model?.counts;
 
   return (
     <div
-      ref={rootRef}
+      ref={rootRefCallback}
       data-testid="spatial-topology-view"
       data-scope={data.scopeKey}
-      className="spatial-frame flex min-h-0 flex-1 flex-col px-4 pb-4 pt-3 lg:px-6"
+      className="spatial-frame spatial-atelier flex min-h-0 flex-1 flex-col px-4 pb-4 pt-3 lg:px-6"
     >
       {/* Instrument header */}
       <div className="flex flex-wrap items-end gap-x-6 gap-y-3 border-b border-on-surface pb-3">
@@ -670,40 +829,47 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
           No rigs on this host yet. Run <code className="text-on-surface">rig up</code> to start one.
         </div>
       ) : (
+        <SpatialActivityScope model={model} hostId={hostId} reducedMotion={reducedMotion}>
+        {(activity) => (
         <div
           data-testid="spatial-body"
           data-layout={isWideLayout ? "bounded" : "stacked"}
-          className={cn("mt-3", isWideLayout && "relative min-h-[20rem] min-w-0 flex-1")}
+          data-docked={selectedAgent ? "true" : "false"}
+          className={cn("mt-3", isWideLayout && "spatial-body--bounded relative min-w-0 flex-1")}
         >
-          {/* Wide: the body takes exactly the page height left under the
-              header (flex-1 of the frame) and the grid is positioned inside it
-              out of flow, so the seat index can never grow the page. The
-              AppShell route wrapper sizes to its content (it has no min-h-0),
-              so an in-flow grid's intrinsic height — the full index — would
-              otherwise stretch the stage far below the fold. The 20rem floor
-              only applies on very short windows; the page then scrolls.
-              Narrow: stage, inspector and index stack and the page scrolls. */}
+          {/* Wide: the body is sized from the viewport (spatial.css: the
+              window height less the shell/scope chrome, with a ~31rem floor),
+              not from whatever is left under the scope header, and the grid is
+              positioned inside it out of flow, so neither the index nor the
+              workspace can grow the page. Short windows keep the floor and
+              the page scrolls instead of nesting a tiny workspace.
+              Narrow: stage, workspace and index stack and the page scrolls. */}
           <div
             data-testid="spatial-grid"
             className={cn(
               "grid gap-0 border border-outline-variant",
               isWideLayout
-                ? "absolute inset-0 grid-cols-[minmax(0,1fr)_20rem] grid-rows-[minmax(0,1fr)] 2xl:grid-cols-[minmax(0,1fr)_22rem]"
+                ? selectedAgent
+                  // Selected: scene ≈60%, workspace ≈40% (never under 22rem).
+                  ? "absolute inset-0 grid-cols-[minmax(0,3fr)_minmax(22rem,2fr)] grid-rows-[minmax(0,1fr)]"
+                  : "absolute inset-0 grid-cols-[minmax(0,1fr)_20rem] grid-rows-[minmax(0,1fr)] 2xl:grid-cols-[minmax(0,1fr)_22rem]"
                 : "grid-cols-1",
             )}
           >
             {mode === "scene" ? (
               <div
-                ref={stageRef}
+                ref={stageRefCallback}
                 data-testid="spatial-stage"
+                data-density={compactStage ? "compact" : "full"}
                 tabIndex={0}
                 role="group"
                 aria-roledescription="3D topology scene"
-                aria-label={`3D topology: ${model.counts.rigs} rigs, ${model.counts.pods} pods, ${model.counts.agents} seats, ${model.counts.edges} links. Arrow keys orbit, plus and minus zoom, F fits, T top view, I isometric, R resets. Use the seat index to select seats.`}
+                aria-label={`3D topology: ${model.counts.rigs} rigs, ${model.counts.pods} pods, ${model.counts.agents} seats, ${model.counts.edges} links. Drag or arrow keys orbit, pinch or plus and minus zoom, F fits, T top view, I isometric, R resets. Use the seat index to select seats.`}
                 onKeyDown={onStageKeyDown}
                 className={cn(
                   "spatial-stage relative min-h-0 min-w-0 overflow-hidden",
-                  !isWideLayout && "h-[56vh] min-h-[18rem]",
+                  !isWideLayout && "spatial-stage--stacked",
+                  !isWideLayout && selectedAgent && "spatial-stage--docked",
                 )}
               >
                 {overBudget && budget ? (
@@ -723,7 +889,9 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
                         </div>
                       }
                     >
-                      {layout ? (
+                      {/* The palette is read from the mounted atelier root;
+                          never start the scene with document-root tokens. */}
+                      {layout && atelierRoot ? (
                         <SpatialRenderer
                           key={rendererEpoch}
                           model={model}
@@ -734,12 +902,14 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
                           matchKeys={matchKeys}
                           reducedMotion={reducedMotion}
                           controllerRef={controllerRef}
-                          onSelect={setSelectedKey}
+                          onSelect={selectFromScene}
                           onHover={setHoveredKey}
                           onFailure={onRendererFailure}
                           onReady={() => setRendererReady(true)}
                           initialCamera={cameraRef.current}
                           onCameraSettle={onCameraSettle}
+                          density={compactStage ? "compact" : "full"}
+                          traffic={activity.pulses}
                         />
                       ) : null}
                     </Suspense>
@@ -747,9 +917,9 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
                 )}
                 {!failure && !overBudget ? (
                   <>
-                    <CameraHud controllerRef={controllerRef} ready={rendererReady} />
-                    <Legend palette={palette} />
-                    {isWideLayout ? (
+                    <CameraHud controllerRef={controllerRef} ready={rendererReady} compact={compactStage} open={hudOpen} onOpenChange={setHudOpen} />
+                    <Legend palette={palette} compact={compactStage} open={keyOpen} onOpenChange={setKeyOpen} />
+                    {isWideLayout && !compactStage ? (
                       <div aria-hidden="true" className="pointer-events-none absolute bottom-3 right-3 z-10 font-mono text-[9px] text-on-surface-variant">
                         drag orbit · right-drag pan · scroll zoom · double-click focus
                       </div>
@@ -771,7 +941,7 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
                   selectedKey={selectedAgent?.key ?? null}
                   matchKeys={matchKeys}
                   variant="table"
-                  onSelect={setSelectedKey}
+                  onSelect={selectFromIndex}
                   onHover={setHoveredKey}
                   linkSource={linkSource}
                   from={fromScope}
@@ -799,9 +969,11 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
                 className={cn(
                   "border-b border-outline-variant",
                   isWideLayout
-                    ? mode === "scene"
-                      ? "max-h-[55%] shrink-0 overflow-auto"
-                      : "min-h-0 flex-1 overflow-auto"
+                    ? selectedAgent
+                      ? "min-h-0 flex-1 overflow-auto"
+                      : mode === "scene"
+                        ? "max-h-[55%] shrink-0 overflow-auto"
+                        : "min-h-0 flex-1 overflow-auto"
                     : "shrink-0",
                 )}
               >
@@ -815,11 +987,73 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
                     <button type="button" onClick={clearQuery} className="underline hover:text-on-surface">Clear search</button>
                   </div>
                 ) : null}
-                {selectionView.kind === "none" || selectionView.kind === "ok" ? (
+                {selectionView.kind === "ok" ? (
+                  <div ref={dockAnchorRef} data-testid="spatial-dock" className="scroll-mt-2">
+                    <div className={cn("border-b border-outline-variant bg-surface-lowest", isWideLayout && "sticky top-0 z-10")}>
+                      <SpatialSeatSwitcher
+                        model={model}
+                        selectedKey={selectionView.agent.key}
+                        matchKeys={matchKeys}
+                        statusByKey={statusByKey}
+                        palette={palette}
+                        onSelect={selectFromSwitcher}
+                      />
+                    </div>
+                    <SpatialAgentWorkspace
+                      agent={selectionView.agent}
+                      model={model}
+                      status={statusByKey.get(selectionView.agent.key) ?? deriveSeatStatus(selectionView.agent)}
+                      palette={palette}
+                      hostId={hostId}
+                      isRemote={isRemote}
+                      linkSource={linkSource}
+                      from={fromScope}
+                      canFocus={sceneActive && rendererReady}
+                      onFocus={(key) => controllerRef.current?.focus(key)}
+                      onSelect={selectFromIndex}
+                      onClose={() => setSelectedKey(null)}
+                      activity={activity}
+                      layout={isWideLayout ? "side" : "stacked"}
+                    />
+                    {mode === "scene" ? (
+                      // The full grouped index stays one tap away while a seat
+                      // is docked (rig/pod drills, every seat by exact key).
+                      <AllSeatsDisclosure count={matchKeys === null ? model.counts.agents : matchKeys.size}>
+                        <SpatialNodeList
+                          model={model}
+                          statusByKey={statusByKey}
+                          palette={palette}
+                          selectedKey={selectionView.agent.key}
+                          matchKeys={matchKeys}
+                          variant="compact"
+                          onSelect={selectFromIndex}
+                          onHover={setHoveredKey}
+                          linkSource={linkSource}
+                          from={fromScope}
+                          spatialMode={mode}
+                        />
+                      </AllSeatsDisclosure>
+                    ) : null}
+                  </div>
+                ) : useCard && selectionView.kind === "none" ? (
+                  <SpatialSelectionCard
+                    model={model}
+                    agent={null}
+                    status={null}
+                    palette={palette}
+                    canFocus={sceneActive && rendererReady}
+                    detailsOpen={detailsOpen}
+                    onDetailsOpenChange={setDetailsOpen}
+                    onSelect={selectFromIndex}
+                    onFocus={(key) => controllerRef.current?.focus(key)}
+                    linkSource={linkSource}
+                    from={fromScope}
+                  />
+                ) : selectionView.kind === "none" ? (
                   <SpatialInspector
                     model={model}
-                    agent={selectedAgent}
-                    status={selectedAgent ? statusByKey.get(selectedAgent.key) ?? null : null}
+                    agent={null}
+                    status={null}
                     palette={palette}
                     canFocus={sceneActive && rendererReady}
                     onSelect={selectFromIndex}
@@ -839,7 +1073,7 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
                   />
                 )}
               </div>
-              {mode === "scene" ? (
+              {mode === "scene" && !selectedAgent ? (
                 <div
                   ref={indexRegionRef}
                   onScroll={onRegionScroll("index")}
@@ -853,7 +1087,7 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
                     model={model}
                     statusByKey={statusByKey}
                     palette={palette}
-                    selectedKey={selectedAgent?.key ?? null}
+                    selectedKey={null}
                     matchKeys={matchKeys}
                     variant="compact"
                     onSelect={selectFromIndex}
@@ -867,9 +1101,56 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
             </aside>
           </div>
         </div>
+        )}
+        </SpatialActivityScope>
       )}
     </div>
   );
+}
+
+/** An operator's explicit selection asking for the docked workspace to be
+ *  brought into view (see requestReveal). */
+interface RevealRequest {
+  key: string;
+  mode: "always" | "mount";
+  nonce: number;
+  /** Selection when requested: while unchanged, the request is still pending. */
+  fromKey: string | null;
+}
+
+/** The full seat index behind one disclosure while a seat is docked. */
+function AllSeatsDisclosure({ count, children }: { count: number; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  return (
+    <div data-testid="spatial-all-seats" className="mx-4 mb-4 border border-outline-variant">
+      <button
+        type="button"
+        data-testid="spatial-all-seats-toggle"
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => setOpen((o) => !o)}
+        className="flex min-h-11 w-full items-center gap-2 px-3 text-left font-mono text-[11px] uppercase tracking-[0.12em] text-on-surface"
+      >
+        <ListIcon aria-hidden="true" className="h-3.5 w-3.5" /> All seats · {count}
+      </button>
+      <div id={id} hidden={!open} className="border-t border-outline-variant">
+        {open ? children : null}
+      </div>
+    </div>
+  );
+}
+
+/** Calls the activity hook only where a model exists (hook order stays
+ *  fixed: this component mounts with the model and unmounts without it). */
+function SpatialActivityScope({ model, hostId, reducedMotion, children }: {
+  model: SpatialModel;
+  hostId: string;
+  reducedMotion: boolean;
+  children: (activity: SpatialTrafficState) => React.ReactNode;
+}) {
+  const activity = useSpatialActivity(model, hostId, reducedMotion);
+  return <>{children(activity)}</>;
 }
 
 const SELECTION_COPY: Record<Exclude<SelectionView["kind"], "none" | "ok">, (rig: string, node: string) => string> = {
@@ -1024,7 +1305,14 @@ function SpatialFallback({ failure, onRetry, onList }: { failure: SpatialViewFai
   );
 }
 
-function CameraHud({ controllerRef, ready }: { controllerRef: React.MutableRefObject<SpatialCameraController | null>; ready: boolean }) {
+function CameraHud({ controllerRef, ready, compact, open, onOpenChange }: {
+  controllerRef: React.MutableRefObject<SpatialCameraController | null>;
+  ready: boolean;
+  /** Small stage: Fit + a More toggle; the rest is one tap away. */
+  compact: boolean;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   const run = (fn: (c: SpatialCameraController) => void) => () => {
     const c = controllerRef.current;
     if (c) fn(c);
@@ -1037,6 +1325,55 @@ function CameraHud({ controllerRef, ready }: { controllerRef: React.MutableRefOb
     { id: "zoom-out", label: "Zoom out", icon: <Minus aria-hidden="true" className="h-3.5 w-3.5" />, onClick: run((c) => c.zoom(1.25)) },
     { id: "reset", label: "Reset camera", icon: <Crosshair aria-hidden="true" className="h-3.5 w-3.5" />, onClick: run((c) => c.reset()) },
   ];
+  if (compact) {
+    const [fit, ...rest] = buttons;
+    const button = (b: typeof buttons[number], extra?: string) => (
+      <button
+        key={b.id}
+        type="button"
+        data-testid={`spatial-camera-${b.id}`}
+        aria-label={b.label}
+        title={b.label}
+        disabled={!ready}
+        onClick={b.onClick}
+        className={cn("spatial-hud-button touch-target !w-8 !px-0", extra)}
+      >
+        {b.icon}
+      </button>
+    );
+    return (
+      <div
+        role="toolbar"
+        aria-label="Camera"
+        data-testid="spatial-camera-hud"
+        data-spatial-occluder=""
+        data-compact=""
+        onKeyDown={(e) => {
+          if (e.key === "Escape" && open) {
+            e.stopPropagation();
+            onOpenChange(false);
+          }
+        }}
+        className="absolute right-2 top-2 z-10 flex flex-col items-end"
+      >
+        <div className="flex">
+          {button(fit!)}
+          <button
+            type="button"
+            data-testid="spatial-camera-more"
+            aria-label="More camera controls"
+            title="More camera controls"
+            aria-expanded={open}
+            onClick={() => onOpenChange(!open)}
+            className="spatial-hud-button touch-target -ml-px !w-8 !px-0"
+          >
+            <Ellipsis aria-hidden="true" className="h-3.5 w-3.5" />
+          </button>
+        </div>
+        {open ? <div className="mt-1 flex flex-col">{rest.map((b, i) => button(b, i > 0 ? "-mt-px" : undefined))}</div> : null}
+      </div>
+    );
+  }
   return (
     <div role="toolbar" aria-label="Camera" data-testid="spatial-camera-hud" data-spatial-occluder="" className="absolute right-3 top-3 z-10 flex flex-col">
       {buttons.map((b, i) => (
@@ -1057,7 +1394,60 @@ function CameraHud({ controllerRef, ready }: { controllerRef: React.MutableRefOb
   );
 }
 
-function Legend({ palette }: { palette: SpatialPalette }) {
+function Legend({ palette, compact, open, onOpenChange }: {
+  palette: SpatialPalette;
+  /** Small stage: collapsed behind a Key toggle; status as shape + text. */
+  compact: boolean;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const legendId = useId();
+  if (compact) {
+    return (
+      <div
+        data-spatial-occluder=""
+        onKeyDown={(e) => {
+          if (e.key === "Escape" && open) {
+            e.stopPropagation();
+            onOpenChange(false);
+          }
+        }}
+        className="absolute bottom-2 left-2 z-10 flex flex-col-reverse items-start gap-1"
+      >
+        <button
+          type="button"
+          data-testid="spatial-key-toggle"
+          aria-expanded={open}
+          aria-controls={legendId}
+          onClick={() => onOpenChange(!open)}
+          className="spatial-hud-button touch-target"
+        >
+          Key
+        </button>
+        {open ? (
+          <div
+            id={legendId}
+            data-testid="spatial-legend"
+            className="border border-outline-variant bg-background/90 px-2 py-1.5 font-mono text-[9px] text-on-surface-variant backdrop-blur-sm"
+          >
+            <ul className="grid grid-cols-2 gap-x-3 gap-y-0.5">
+              {LEGEND.map((item) => (
+                <li key={item.tone} className="flex items-center gap-1.5">
+                  <span aria-hidden="true" data-tone={item.tone} className="spatial-mark" style={{ "--spatial-tone": hslCss(palette.tones[item.tone]) } as React.CSSProperties} />
+                  {item.label}
+                </li>
+              ))}
+              <li className="flex items-center gap-1.5">
+                <span aria-hidden="true" data-tone="active" className="spatial-mark is-stale" style={{ "--spatial-tone": hslCss(palette.inkMuted) } as React.CSSProperties} />
+                stale sample
+              </li>
+            </ul>
+            <div className="mt-1 border-t border-outline-variant pt-1">platform = pod · dashed = cross-pod · spike = attention</div>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
   return (
     <div
       data-testid="spatial-legend"

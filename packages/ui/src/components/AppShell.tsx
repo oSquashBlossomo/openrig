@@ -25,6 +25,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useRef,
   useState,
   createContext,
   useContext,
@@ -56,6 +57,7 @@ import { useSettings } from "../hooks/useSettings.js";
 import { useActivityFeed } from "../hooks/useActivityFeed.js";
 import { useClearPlacementOnHostSwitch } from "../hooks/useHosts.js";
 import { useGlobalEvents } from "../hooks/useGlobalEvents.js";
+import { useWorkflowSse } from "../hooks/useWorkflowSse.js";
 import { cn } from "../lib/utils.js";
 import { parseSessionName } from "../lib/session-name.js";
 import { HostIndicator } from "./HostIndicator.js";
@@ -295,7 +297,7 @@ function HelpAffordance({ currentHref, pathname }: { currentHref: string; pathna
       data-testid="topbar-help"
       aria-label="Help and actions (?)"
       title="Help and actions (?)"
-      className="inline-flex h-9 min-w-9 items-center justify-center border border-outline-variant px-2 font-mono text-[11px] font-bold text-on-surface hover:bg-surface-low focus-visible:outline focus-visible:outline-2 focus-visible:outline-on-surface"
+      className="touch-target inline-flex h-9 min-w-9 items-center justify-center border border-outline-variant px-2 font-mono text-[11px] font-bold text-on-surface hover:bg-surface-low focus-visible:outline focus-visible:outline-2 focus-visible:outline-on-surface"
     >
       ?
     </Link>
@@ -354,7 +356,9 @@ function Rail({
           // on mobile (default `h-11 w-11`) and restores the original
           // 40px hitbox at `lg:` (desktop) where mouse precision is
           // the input model, not thumbs.
-          "relative flex h-11 w-11 items-center justify-center transition-colors lg:h-10 lg:w-10",
+          // touch-target keeps 44px for coarse pointers at lg too (iPad
+          // landscape uses the desktop rail).
+          "touch-target relative flex h-11 w-11 items-center justify-center transition-colors lg:h-10 lg:w-10",
           "focus-visible:outline focus-visible:outline-2 focus-visible:outline-on-surface focus-visible:outline-offset-2",
           active
             ? "bg-inverse-surface text-background"
@@ -494,7 +498,13 @@ function AppShellInner({ children }: AppShellProps) {
   // SC-3a — drawer content does NOT persist across reload (it's contextual).
   // Mobile-narrow viewports: close drawer + close explorer when route changes
   // unless the route specifically handles the drawer (none in Phase 2).
+  // Only a real pathname change counts: crossing the 1024px breakpoint on the
+  // same path (iPad rotation, split-view resize) keeps the open drawer and
+  // its context. The ref makes StrictMode's re-run of the effect a no-op.
+  const lastPathnameRef = useRef(pathname);
   useEffect(() => {
+    if (lastPathnameRef.current === pathname) return;
+    lastPathnameRef.current = pathname;
     if (!isWideLayout) {
       setSelectionState(null);
       setExplorerOpen(false);
@@ -503,6 +513,11 @@ function AppShellInner({ children }: AppShellProps) {
 
   // Mount global SSE event listener.
   const proofConnection = useGlobalEvents();
+  // The workflow liveness feed (/api/workflow/sse) lives for the app lifetime
+  // too: one shared stream whose events and opens/reconnects refresh the
+  // canonical ["workflow"] reads. Connected-instance scope, as every workflow
+  // read is (remote workflow scope is unsupported).
+  useWorkflowSse();
 
   const explorerVisible = surface !== "none";
   // Slice 26.D OPT-D3 Topology mobile mount-suppression: rule lives
@@ -566,7 +581,9 @@ function AppShellInner({ children }: AppShellProps) {
             clearPlacement,
           }}
         >
-          <div className="h-screen flex flex-col">
+          {/* Dynamic-viewport height (globals.css --shell-viewport-height):
+              Safari's expanded toolbar never hides the bottom of the shell. */}
+          <div className="h-[var(--shell-viewport-height)] flex flex-col">
             {/* Top bar — universal across viewports per universal-shell.md
                 L40–L53. Single source of truth: same element renders at
                 all sizes. Hamburger button keeps its own lg:hidden so it
@@ -574,7 +591,9 @@ function AppShellInner({ children }: AppShellProps) {
                 stay visible everywhere. */}
             <header
               data-testid="app-topbar"
-              className="h-14 flex items-center justify-between px-4 bg-background border-b border-outline-variant shrink-0 relative z-30"
+              // Height = --shell-top (3.5rem + top safe area), the same value
+              // every below-the-top-bar overlay starts from.
+              className="h-[var(--shell-top)] pt-[var(--safe-top)] pl-[max(1rem,var(--safe-left))] pr-[max(1rem,var(--safe-right))] flex items-center justify-between bg-background border-b border-outline-variant shrink-0 relative z-30"
             >
               <div className="flex items-center gap-3">
                 {/* Slice 26.E OPT-E Topology mobile toggle carve-out: at
@@ -599,7 +618,7 @@ function AppShellInner({ children }: AppShellProps) {
                     data-testid="mobile-menu-toggle"
                     onClick={() => setExplorerOpen((open) => !open)}
                     aria-label="Toggle navigation"
-                    className="flex flex-col gap-[3px] p-2 lg:hidden"
+                    className="touch-target flex flex-col items-center justify-center gap-[3px] p-2 lg:hidden"
                   >
                     <span className="block w-4 h-[1.5px] bg-inverse-surface" />
                     <span className="block w-4 h-[1.5px] bg-inverse-surface" />
@@ -637,7 +656,8 @@ function AppShellInner({ children }: AppShellProps) {
             <UiMaintenanceNotice />
 
             {/* Main: rail + explore + center + drawer */}
-            <div className="flex flex-1 min-h-0 relative">
+            {/* Side safe areas (iPhone landscape) inset the in-flow workspace. */}
+            <div className="flex flex-1 min-h-0 relative pl-[var(--safe-left)] pr-[var(--safe-right)]">
               {/* Rail — desktop only (lg:flex). Mobile rail surfaces inside the slide-over. */}
               <div className="hidden lg:flex">
                 <Rail pathname={pathname} vertical />
@@ -658,7 +678,7 @@ function AppShellInner({ children }: AppShellProps) {
                   <div
                     data-testid="mobile-rail-tray"
                     className={cn(
-                      "fixed top-14 left-0 bottom-0 z-30 bg-background border-r border-outline-variant transition-transform duration-200 ease-tactical lg:hidden",
+                      "fixed top-[var(--shell-top)] bottom-[var(--shell-bottom)] left-0 pl-[var(--safe-left)] z-30 bg-background border-r border-outline-variant transition-transform duration-200 ease-tactical lg:hidden",
                       "w-72 max-w-[85vw] flex flex-col",
                       explorerOpen ? "translate-x-0" : "-translate-x-full",
                     )}
@@ -709,7 +729,9 @@ function AppShellInner({ children }: AppShellProps) {
                     above; child surfaces should treat their own offset as 0. */}
                 <div
                   key={pathname}
-                  className="relative z-10 route-enter flex-1 flex flex-col pb-14 lg:pb-0"
+                  // Content scrolls clear of the fixed bottom nav (below lg)
+                  // and the home indicator: the same --shell-bottom overlays use.
+                  className="relative z-10 route-enter flex-1 flex flex-col pb-[var(--shell-bottom)]"
                   style={{
                     "--workspace-left-offset": "0px",
                     "--workspace-right-offset": "0px",
@@ -767,7 +789,8 @@ function MobileBottomNav({ pathname }: { pathname: string }) {
     <nav
       data-testid="mobile-bottom-nav"
       aria-label="Mobile bottom navigation"
-      className="fixed bottom-0 left-0 right-0 z-40 lg:hidden vellum border-t border-outline-variant flex"
+      // Total height = --shell-bottom-nav-height + bottom safe area = --shell-bottom.
+      className="fixed bottom-0 left-0 right-0 z-40 lg:hidden vellum border-t border-outline-variant flex pb-[var(--safe-bottom)] pl-[var(--safe-left)] pr-[var(--safe-right)]"
     >
       {slots.map((slot) => {
         const active = slot.activeWhen(pathname);
@@ -778,7 +801,7 @@ function MobileBottomNav({ pathname }: { pathname: string }) {
             data-testid={`mobile-nav-${slot.id}`}
             data-active={active}
             className={cn(
-              "flex-1 flex flex-col items-center justify-center gap-0.5 py-2 font-mono text-[9px] uppercase tracking-wide",
+              "flex-1 h-[var(--shell-bottom-nav-height)] flex flex-col items-center justify-center gap-0.5 font-mono text-[9px] uppercase tracking-wide",
               active
                 ? "text-on-surface"
                 : "text-on-surface-variant hover:text-on-surface",

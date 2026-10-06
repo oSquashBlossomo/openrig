@@ -82,7 +82,7 @@ export function Fact({ label, children, testId }: { label: string; children: Rea
 export function Evidence({ summary, children, testId }: { summary: ReactNode; children: ReactNode; testId?: string }) {
   return (
     <details data-testid={testId} className="border border-outline-variant bg-surface-lowest">
-      <summary className="cursor-pointer px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-on-surface-variant focus-visible:outline focus-visible:outline-2 focus-visible:outline-on-surface">
+      <summary className="touch-target cursor-pointer content-center px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-on-surface-variant focus-visible:outline focus-visible:outline-2 focus-visible:outline-on-surface">
         {summary}
       </summary>
       <div className="border-t border-outline-variant px-3 py-2">{children}</div>
@@ -102,8 +102,9 @@ export function ActionButton({ variant = "secondary", className, type = "button"
     <button
       type={type}
       className={cn(
-        // 44px touch target on phones, dense 32px from sm up.
-        "inline-flex min-h-[2.75rem] items-center justify-center gap-1.5 border px-3 py-1 font-mono text-[10px] uppercase tracking-[0.14em] sm:min-h-[2rem]",
+        // Dense 32px for fine pointers; touch-target lifts coarse pointers
+        // (phone AND tablet, at every width) to 44px.
+        "touch-target inline-flex min-h-[2rem] items-center justify-center gap-1.5 border px-3 py-1 font-mono text-[10px] uppercase tracking-[0.14em]",
         "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-on-surface",
         "disabled:cursor-not-allowed disabled:opacity-50",
         buttonVariant[variant],

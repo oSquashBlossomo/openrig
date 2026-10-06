@@ -32,11 +32,24 @@ let eventSource: EventSource | null = null;
 let refCount = 0;
 const listeners = new Set<(receipt: object) => void>();
 
+/** One fresh receipt per delivered stream occurrence, shared by every mounted
+ *  consumer so the refresh owner coalesces it into one read. */
+function deliver(): void {
+  const receipt = {};
+  for (const l of [...listeners]) l(receipt);
+}
+
 function ensureConnected(): void {
   if (eventSource || typeof EventSource === "undefined") return;
   // NO `?rigId=` — the Q5-P1 rig-unscoped contract (see file header).
   const es = new EventSource(WORKFLOW_SSE_URL);
   eventSource = es;
+  // Canonical readback on every open (first handshake AND browser reconnect):
+  // a workflow query may have settled before the stream attached, and a
+  // reconnect without a prior event id has no replay to resume from. This is
+  // the same debounced ["workflow"] GET refresh an event triggers — read-only,
+  // never a mutation.
+  es.addEventListener("open", deliver);
   es.addEventListener("message", (event) => {
     const data = (event as MessageEvent).data;
     if (typeof data !== "string") return;
@@ -47,8 +60,7 @@ function ensureConnected(): void {
     } catch {
       return;
     }
-    const receipt = {};
-    for (const l of [...listeners]) l(receipt);
+    deliver();
   });
 }
 
@@ -62,7 +74,7 @@ function releaseIfIdle(): void {
 
 /** Mount once (or a few times) at the workflow surfaces: subscribes to the
  *  primary workflow SSE feed and invalidates the ["workflow"] query family on
- *  every workflow.* event, debounced to the floor. */
+ *  every workflow.* event and every stream open/reopen, debounced to the floor. */
 export function useWorkflowSse(scope: OperatorInstanceScope = LOCAL_OPERATOR_INSTANCE) {
   const refresh = useSseQueryRefresh(scope.kind === "remote-instance" ? `remote-instance:${scope.hostId}` : "local-instance");
   const receiptsRef = useRef(new Set<object>());

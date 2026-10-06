@@ -57,13 +57,14 @@ export function VellumSheet({
           type="button"
           onClick={onClose}
           aria-label="Close sheet"
-          className="absolute top-2 right-2 z-10 px-2 py-0.5 border border-on-surface bg-surface-lowest font-mono text-[10px] hover:bg-surface-low"
+          // touch-target: 44px for coarse pointers at every width (globals.css).
+          className="touch-target absolute top-2 right-2 z-10 inline-flex items-center justify-center px-2 py-0.5 border border-on-surface bg-surface-lowest font-mono text-[10px] hover:bg-surface-low focus-visible:outline focus-visible:outline-2 focus-visible:outline-on-surface"
           data-testid={testId ? `${testId}-close` : undefined}
         >
           ×
         </button>
       ) : null}
-      <div className="flex-1 overflow-auto">{children}</div>
+      <div className="flex-1 min-h-0 overflow-auto overscroll-contain">{children}</div>
       <RegistrationMarks testIdPrefix={testId} />
     </div>
   );

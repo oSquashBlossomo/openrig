@@ -31,7 +31,103 @@ export interface SpatialPalette {
   linkActive: Hsl;
   selection: Hsl;
   tones: Record<SpatialTone, Hsl>;
+  /** Night Atelier scene materials and lights (renderer only). */
+  atelier: AtelierPalette;
 }
+
+/** Scene materials and lighting for the sculptural stage. Dark theme: warm
+ *  charcoal stone under a warm key and a cool rim. Light theme: the same
+ *  composition in pale limestone, so the DOM labels' theme ink stays legible
+ *  over the stage. Intensities are three.js units (decay-free lights). */
+export interface AtelierPalette {
+  stage: Hsl;
+  floor: Hsl;
+  floorLine: Hsl;
+  slab: Hsl;
+  slabEdge: Hsl;
+  dais: Hsl;
+  plinth: Hsl;
+  plinthEdge: Hsl;
+  hemiSky: Hsl;
+  hemiGround: Hsl;
+  hemiIntensity: number;
+  key: Hsl;
+  keyIntensity: number;
+  rim: Hsl;
+  rimIntensity: number;
+  /** Soft front fill so dark figures (Null) keep their form. */
+  fill: Hsl;
+  fillIntensity: number;
+  spot: Hsl;
+  spotIntensity: number;
+  link: Hsl;
+  linkActive: Hsl;
+  traffic: Hsl;
+  trafficCore: Hsl;
+  selection: Hsl;
+  shadowOpacity: number;
+  exposure: number;
+}
+
+// Stone is lit enough to read grain and edges (warm, never neon); the
+// selection spotlight is a gentle pool, so a selected coral Clawd stays coral.
+const ATELIER_DARK: AtelierPalette = {
+  stage: { h: 30, s: 8, l: 8 },
+  floor: { h: 30, s: 7, l: 10.5 },
+  floorLine: { h: 30, s: 8, l: 17 },
+  slab: { h: 28, s: 7, l: 17 },
+  slabEdge: { h: 32, s: 12, l: 32 },
+  dais: { h: 28, s: 7, l: 21 },
+  plinth: { h: 28, s: 8, l: 24 },
+  plinthEdge: { h: 32, s: 12, l: 38 },
+  hemiSky: { h: 35, s: 25, l: 70 },
+  hemiGround: { h: 28, s: 14, l: 8 },
+  hemiIntensity: 0.85,
+  key: { h: 34, s: 62, l: 84 },
+  keyIntensity: 2.0,
+  rim: { h: 212, s: 40, l: 74 },
+  rimIntensity: 1.4,
+  fill: { h: 30, s: 25, l: 80 },
+  fillIntensity: 0.65,
+  spot: { h: 36, s: 70, l: 80 },
+  spotIntensity: 1.0,
+  link: { h: 30, s: 10, l: 46 },
+  linkActive: { h: 38, s: 72, l: 62 },
+  traffic: { h: 38, s: 95, l: 62 },
+  trafficCore: { h: 44, s: 100, l: 86 },
+  selection: { h: 38, s: 90, l: 66 },
+  shadowOpacity: 0.6,
+  exposure: 1.0,
+};
+
+const ATELIER_LIGHT: AtelierPalette = {
+  stage: { h: 40, s: 14, l: 90 },
+  floor: { h: 40, s: 12, l: 86 },
+  floorLine: { h: 38, s: 10, l: 76 },
+  slab: { h: 38, s: 10, l: 82 },
+  slabEdge: { h: 34, s: 10, l: 62 },
+  dais: { h: 38, s: 9, l: 80 },
+  plinth: { h: 36, s: 9, l: 77 },
+  plinthEdge: { h: 34, s: 10, l: 60 },
+  hemiSky: { h: 40, s: 30, l: 96 },
+  hemiGround: { h: 30, s: 10, l: 52 },
+  hemiIntensity: 1.0,
+  key: { h: 36, s: 60, l: 92 },
+  keyIntensity: 1.9,
+  rim: { h: 212, s: 30, l: 80 },
+  rimIntensity: 0.8,
+  fill: { h: 38, s: 20, l: 92 },
+  fillIntensity: 0.5,
+  spot: { h: 38, s: 70, l: 78 },
+  spotIntensity: 0.8,
+  link: { h: 30, s: 8, l: 56 },
+  linkActive: { h: 28, s: 80, l: 42 },
+  traffic: { h: 28, s: 88, l: 46 },
+  trafficCore: { h: 34, s: 96, l: 58 },
+  selection: { h: 28, s: 85, l: 44 },
+  shadowOpacity: 0.32,
+  exposure: 1.0,
+};
 
 export function parseHslTriplet(raw: string | null | undefined): Hsl | null {
   if (!raw) return null;
@@ -120,6 +216,7 @@ export function readSpatialPalette(theme: "light" | "dark", root?: Element | nul
       unknown: dark ? { h: 30, s: 6, l: 46 } : { h: 24, s: 6, l: 78 },
       offline: dark ? { h: 30, s: 4, l: 32 } : { h: 24, s: 5, l: 86 },
     },
+    atelier: dark ? ATELIER_DARK : ATELIER_LIGHT,
   };
 }
 

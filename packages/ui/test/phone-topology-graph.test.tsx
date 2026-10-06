@@ -1,0 +1,409 @@
+// Narrow-layout (<1024px) topology Graph tab: an interactive phone graph,
+// not the old table fallback. Mounted through the production AppShell and
+// scope pages with a real router, so these assert URL identity, tab
+// behaviour, drill targets and rotation continuity end to end. Pixels,
+// gestures and hardware limits are verified in-browser by root.
+
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, cleanup, fireEvent, waitFor, act, within } from "@testing-library/react";
+import {
+  createMemoryHistory,
+  RouterProvider,
+  createRouter,
+  createRootRoute,
+  createRoute,
+  Outlet,
+  useParams,
+} from "@tanstack/react-router";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createMockEventSourceClass } from "./helpers/mock-event-source.js";
+import { AppShell } from "../src/components/AppShell.js";
+import { HostScopePage, PodScopePage, RigScopePage } from "../src/components/topology/ScopePages.js";
+import { parseSpatialRig } from "../src/lib/spatial-topology.js";
+import { layoutPhoneGraph, phoneGraphColumns, readablePhoneViewport } from "../src/lib/phone-graph-layout.js";
+
+const mockFetch = vi.fn();
+let OriginalEventSource: typeof EventSource | undefined;
+
+type Graph = { nodes: unknown[]; edges: unknown[] };
+let summary: Array<{ id: string; name: string; nodeCount: number }>;
+let graphs: Record<string, Graph | number>;
+
+const seat = (id: string, pod: string | null, extra: Record<string, unknown> = {}) => ({
+  id,
+  type: "rigNode",
+  ...(pod ? { parentId: pod } : {}),
+  data: { logicalId: id, status: "running", terminalActive: true, ...extra },
+});
+
+function defaultFleet() {
+  summary = [{ id: "abc-rig", name: "acme", nodeCount: 3 }];
+  graphs = {
+    "abc-rig": {
+      nodes: [
+        { id: "pod-core", type: "podGroup", data: { podNamespace: "core" } },
+        seat("core.lead", "pod-core"),
+        seat("core.worker", "pod-core", { terminalActive: false }),
+        { id: "pod-ops", type: "podGroup", data: { podNamespace: "ops" } },
+        seat("ops.watch", "pod-ops"),
+      ],
+      edges: [
+        { id: "e1", source: "core.lead", target: "core.worker", data: { kind: "delegates_to" } },
+        { id: "e2", source: "core.lead", target: "ops.watch", data: { kind: "can_observe" } },
+      ],
+    },
+  };
+}
+
+beforeEach(async () => {
+  defaultFleet();
+  globalThis.fetch = mockFetch;
+  mockFetch.mockReset();
+  mockFetch.mockImplementation(async (url: string) => {
+    if (url === "/api/hosts") return new Response(JSON.stringify({ ownName: "localhost", selected: "local", hosts: [] }));
+    if (url === "/api/rigs/summary") return new Response(JSON.stringify(summary));
+    const m = /^\/api\/rigs\/([^/]+)\/graph$/.exec(url);
+    if (m) {
+      const g = graphs[decodeURIComponent(m[1]!)];
+      if (typeof g === "number") return new Response("boom", { status: g });
+      if (g) return new Response(JSON.stringify(g));
+      return new Response("not found", { status: 404 });
+    }
+    if (url === "/api/ps") {
+      return new Response(JSON.stringify(summary.map((r) => ({
+        rigId: r.id, name: r.name, status: "running", nodeCount: r.nodeCount, runningCount: r.nodeCount, uptime: null, latestSnapshot: null,
+      }))));
+    }
+    return new Response("[]");
+  });
+  OriginalEventSource = globalThis.EventSource;
+  globalThis.EventSource = createMockEventSourceClass() as unknown as typeof EventSource;
+  const { queryClient } = await import("../src/lib/query-client.js");
+  queryClient.clear();
+});
+
+afterEach(() => {
+  if (OriginalEventSource) globalThis.EventSource = OriginalEventSource;
+  cleanup();
+  setWidth(1024);
+});
+
+function setWidth(width: number) {
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: width, writable: true });
+  window.dispatchEvent(new Event("resize"));
+}
+
+function SeatProbe() {
+  const params = useParams({ strict: false }) as Record<string, string>;
+  return <div data-testid="seat-probe">{JSON.stringify(params)}</div>;
+}
+
+function renderAt(initialPath: string, width: number) {
+  setWidth(width);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  const rootRoute = createRootRoute({
+    component: () => (
+      <QueryClientProvider client={queryClient}>
+        <AppShell>
+          <Outlet />
+        </AppShell>
+      </QueryClientProvider>
+    ),
+  });
+  const routes = [
+    createRoute({ getParentRoute: () => rootRoute, path: "/topology", component: HostScopePage }),
+    createRoute({ getParentRoute: () => rootRoute, path: "/topology/rig/$rigId", component: RigScopePage }),
+    createRoute({ getParentRoute: () => rootRoute, path: "/topology/pod/$rigId/$podName", component: PodScopePage }),
+    createRoute({ getParentRoute: () => rootRoute, path: "/topology/seat/$rigId/$logicalId", component: SeatProbe }),
+    createRoute({ getParentRoute: () => rootRoute, path: "$", component: () => null }),
+  ];
+  const router = createRouter({
+    routeTree: rootRoute.addChildren(routes),
+    history: createMemoryHistory({ initialEntries: [initialPath] }),
+  });
+  return { ...render(<RouterProvider router={router} />), router };
+}
+
+const q = (c: HTMLElement, sel: string) => c.querySelector(sel) as HTMLElement | null;
+const qa = (c: HTMLElement, sel: string) => Array.from(c.querySelectorAll(sel)) as HTMLElement[];
+
+async function seatChip(container: HTMLElement, logicalId: string) {
+  return waitFor(() => {
+    const el = qa(container, "[data-testid='phone-graph-seat']").find((n) => n.getAttribute("data-agent-key")?.endsWith(`/agent/${encodeURIComponent(logicalId)}`));
+    expect(el).toBeTruthy();
+    return el!;
+  }, { timeout: 5000 });
+}
+
+/** React Flow attaches onNodeClick to the node wrapper around our chip. */
+function tapNode(el: HTMLElement) {
+  fireEvent.click(el.closest(".react-flow__node") ?? el);
+}
+
+describe("narrow Graph tab mounts an interactive phone graph (not the table)", () => {
+  it.each([[430], [932], [834]])("at %ipx the host Graph tab is the phone graph; Table stays its own tab", async (width) => {
+    const { container, router } = renderAt("/topology", width);
+    await waitFor(() => expect(q(container, "[data-testid='phone-graph-canvas']")).toBeTruthy(), { timeout: 5000 });
+    expect(q(container, "[data-testid='topology-host-tab-graph']")?.getAttribute("data-active")).toBe("true");
+    // Neither the desktop canvas nor the retired fallback.
+    expect(q(container, "[data-testid='host-multi-rig-graph']")).toBeNull();
+    expect(q(container, "[data-testid='topology-mobile-graph-degraded']")).toBeNull();
+    expect(q(container, "[data-testid='topology-table-view']")).toBeNull();
+    // Real graph content: the rig frame, both pods and every seat chip.
+    await seatChip(container, "ops.watch");
+    expect(qa(container, "[data-testid='phone-graph-rig']").map((n) => n.getAttribute("data-rig-id"))).toEqual(["abc-rig"]);
+    expect(qa(container, "[data-testid='phone-graph-pod']")).toHaveLength(2);
+    expect(qa(container, "[data-testid='phone-graph-seat']")).toHaveLength(3);
+
+    fireEvent.click(q(container, "[data-testid='topology-host-tab-table']")!);
+    await waitFor(() => expect(router.state.location.search).toMatchObject({ view: "table" }));
+    await waitFor(() => expect(q(container, "[data-testid='phone-topology-graph']")).toBeNull());
+    fireEvent.click(q(container, "[data-testid='topology-host-tab-graph']")!);
+    await waitFor(() => expect(q(container, "[data-testid='phone-graph-canvas']")).toBeTruthy());
+  }, 20000);
+
+  it("at desktop width the same tab still mounts the desktop canvas", async () => {
+    const { container } = renderAt("/topology", 1440);
+    await waitFor(() => expect(q(container, "[data-testid='host-multi-rig-graph']")).toBeTruthy(), { timeout: 5000 });
+    expect(q(container, "[data-testid='phone-topology-graph']")).toBeNull();
+  }, 15000);
+});
+
+describe("tap selects, an explicit action drills (no navigation from a tap)", () => {
+  it("a seat tap writes the exact URL selection, shows details and relationships, and keeps the route", async () => {
+    const { container, router } = renderAt("/topology", 430);
+    const chip = await seatChip(container, "core.lead");
+    tapNode(chip);
+    await waitFor(() => expect(router.state.location.search).toMatchObject({ selectedRig: "abc-rig", selectedNode: "core.lead" }));
+    expect(router.state.location.pathname).toBe("/topology");
+    const details = await waitFor(() => {
+      const el = q(container, "[data-testid='phone-graph-seat-details']");
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    expect(within(details).getByTestId("phone-graph-details-name").textContent).toBe("lead");
+    expect(q(container, "[data-testid='phone-graph-peek']")?.textContent).toContain("lead");
+    const relations = qa(details, "[data-testid='phone-graph-relation']").map((r) => r.textContent ?? "");
+    expect(relations).toHaveLength(2);
+    expect(relations.some((t) => t.includes("worker") && t.includes("delegates to"))).toBe(true);
+    expect(relations.some((t) => t.includes("watch") && t.includes("can observe"))).toBe(true);
+    // The selected chip is marked in the canvas.
+    expect((await seatChip(container, "core.lead")).getAttribute("data-selected")).toBe("true");
+
+    // Relationship row moves the selection without leaving the page.
+    fireEvent.click(qa(details, "[data-testid='phone-graph-relation']").find((r) => r.textContent?.includes("watch"))!);
+    await waitFor(() => expect(router.state.location.search).toMatchObject({ selectedNode: "ops.watch" }));
+    expect(router.state.location.pathname).toBe("/topology");
+  }, 20000);
+
+  it("Open seat drills to the exact seat route with the source host", async () => {
+    const { container, router } = renderAt("/topology", 430);
+    tapNode(await seatChip(container, "core.worker"));
+    const open = await waitFor(() => {
+      const el = q(container, "[data-testid='phone-graph-open-seat']");
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    expect(open.getAttribute("href")).toBe("/topology/seat/abc-rig/core.worker?sourceHost=local");
+    fireEvent.click(open);
+    await waitFor(() => expect(router.state.location.pathname).toBe("/topology/seat/abc-rig/core.worker"));
+    expect(JSON.parse(q(container, "[data-testid='seat-probe']")!.textContent!)).toMatchObject({ rigId: "abc-rig", logicalId: "core.worker" });
+  }, 20000);
+
+  it("a rig tap selects the rig (Open rig is explicit); a pod tap offers the exact pod route", async () => {
+    const { container, router } = renderAt("/topology", 430);
+    await seatChip(container, "core.lead");
+    tapNode(q(container, "[data-testid='phone-graph-rig']")!);
+    const rigDetails = await waitFor(() => {
+      const el = q(container, "[data-testid='phone-graph-rig-details']");
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    expect(router.state.location.pathname).toBe("/topology");
+    expect(within(rigDetails).getByTestId("phone-graph-open-rig").getAttribute("href")).toBe("/topology/rig/abc-rig?sourceHost=local");
+
+    const opsPod = qa(container, "[data-testid='phone-graph-pod']").find((p) => p.textContent?.includes("ops"))!;
+    tapNode(opsPod);
+    const podDetails = await waitFor(() => {
+      const el = q(container, "[data-testid='phone-graph-pod-details']");
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    expect(within(podDetails).getByTestId("phone-graph-open-pod").getAttribute("href")).toBe("/topology/pod/abc-rig/ops?sourceHost=local");
+    expect(router.state.location.pathname).toBe("/topology");
+  }, 20000);
+});
+
+describe("progressive hierarchy keeps a dense fleet usable without hiding rigs", () => {
+  it("dense fleets open as tiles; unreadable rigs keep a tile; expand per rig and expand all", async () => {
+    const many = (prefix: string, n: number) => Array.from({ length: n }, (_, i) => seat(`${prefix}.s${i}`, `pod-${prefix}`));
+    summary = [
+      { id: "r-a", name: "fleet", nodeCount: 12 },
+      { id: "r-b", name: "fleet", nodeCount: 12 },
+      { id: "r-bad", name: "broken", nodeCount: 2 },
+    ];
+    graphs = {
+      "r-a": { nodes: [{ id: "pod-a", type: "podGroup", data: { podNamespace: "a" } }, ...many("a", 12)], edges: [] },
+      "r-b": { nodes: [{ id: "pod-b", type: "podGroup", data: { podNamespace: "b" } }, ...many("b", 12)], edges: [] },
+      "r-bad": 500,
+    };
+    const { container } = renderAt("/topology", 430);
+    await waitFor(() => expect(qa(container, "[data-testid='phone-graph-rig']")).toHaveLength(3), { timeout: 5000 });
+    await waitFor(() => expect(q(container, "[data-testid='phone-graph-rig'][data-rig-id='r-bad']")?.getAttribute("data-state")).toBe("error"));
+    const tiles = qa(container, "[data-testid='phone-graph-rig']");
+    expect(tiles.map((t) => t.getAttribute("data-expanded"))).toEqual(["false", "false", "false"]);
+    expect(qa(container, "[data-testid='phone-graph-seat']")).toHaveLength(0);
+    // Duplicate rig names stay distinct entities, qualified by exact id.
+    expect(tiles[0]!.textContent).toContain("r-a");
+    expect(tiles[1]!.textContent).toContain("r-b");
+    expect(q(container, "[data-testid='graph-partial-unavailable']")?.textContent).toContain("broken");
+
+    fireEvent.click(within(tiles[0]!).getByTestId("phone-graph-rig-toggle"));
+    await waitFor(() => expect(qa(container, "[data-testid='phone-graph-seat']")).toHaveLength(12));
+    expect(q(container, "[data-testid='phone-graph-rig'][data-rig-id='r-a']")?.getAttribute("data-expanded")).toBe("true");
+
+    fireEvent.click(q(container, "[data-testid='phone-graph-expand-all']")!);
+    await waitFor(() => expect(qa(container, "[data-testid='phone-graph-seat']")).toHaveLength(24));
+    fireEvent.click(q(container, "[data-testid='phone-graph-collapse-all']")!);
+    await waitFor(() => expect(qa(container, "[data-testid='phone-graph-seat']")).toHaveLength(0));
+  }, 20000);
+
+  it("pod collapse keeps relationships listed and re-expands to reveal a related seat", async () => {
+    const { container, router } = renderAt("/topology/rig/abc-rig", 430);
+    await seatChip(container, "ops.watch");
+    const ops = qa(container, "[data-testid='phone-graph-pod']").find((p) => p.textContent?.includes("ops"))!;
+    fireEvent.click(within(ops).getByTestId("phone-graph-pod-toggle"));
+    await waitFor(() => expect(qa(container, "[data-testid='phone-graph-seat']")).toHaveLength(2));
+    tapNode(await seatChip(container, "core.lead"));
+    const details = await waitFor(() => {
+      const el = q(container, "[data-testid='phone-graph-seat-details']");
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    fireEvent.click(qa(details, "[data-testid='phone-graph-relation']").find((r) => r.textContent?.includes("watch"))!);
+    await waitFor(() => expect(router.state.location.search).toMatchObject({ selectedRig: "abc-rig", selectedNode: "ops.watch" }));
+    // The collapsed pod opened so the newly selected seat is drawn.
+    await seatChip(container, "ops.watch");
+  }, 20000);
+
+  it("pod scope draws only that pod and reports a missing pod truthfully", async () => {
+    const first = renderAt("/topology/pod/abc-rig/ops", 430);
+    await seatChip(first.container, "ops.watch");
+    expect(qa(first.container, "[data-testid='phone-graph-seat']")).toHaveLength(1);
+    first.unmount();
+    const missing = renderAt("/topology/pod/abc-rig/nope", 430);
+    await waitFor(() => expect(q(missing.container, "[data-testid='phone-graph-pod-missing']")).toBeTruthy(), { timeout: 5000 });
+  }, 20000);
+});
+
+describe("selection and scope survive rotation and the 1024px crossing", () => {
+  it("portrait → landscape keeps the same mounted graph and selection; desktop and back keep the URL selection", async () => {
+    const { container, router } = renderAt("/topology/rig/abc-rig", 430);
+    tapNode(await seatChip(container, "core.worker"));
+    await waitFor(() => expect(q(container, "[data-testid='phone-graph-seat-details']")).toBeTruthy());
+    const canvas = q(container, "[data-testid='phone-graph-canvas']");
+
+    act(() => setWidth(932));
+    await waitFor(() => expect(q(container, "[data-testid='phone-graph-seat-details']")).toBeTruthy());
+    // Same element: rotation did not remount the graph (local state survives).
+    expect(q(container, "[data-testid='phone-graph-canvas']")).toBe(canvas);
+    expect(router.state.location.pathname).toBe("/topology/rig/abc-rig");
+
+    act(() => setWidth(1440));
+    await waitFor(() => expect(q(container, "[data-testid='graph-view']")).toBeTruthy(), { timeout: 5000 });
+    expect(router.state.location.search).toMatchObject({ selectedRig: "abc-rig", selectedNode: "core.worker" });
+
+    act(() => setWidth(834));
+    const details = await waitFor(() => {
+      const el = q(container, "[data-testid='phone-graph-seat-details']");
+      expect(el).toBeTruthy();
+      return el!;
+    }, { timeout: 5000 });
+    expect(details.getAttribute("data-agent-key")).toContain("/agent/core.worker");
+    expect(q(container, "[data-testid='phone-graph-canvas']")?.getAttribute("data-columns")).toBe("2");
+  }, 25000);
+
+  it("a URL selection that is not in the served graph is disclosed, never substituted", async () => {
+    const { container } = renderAt("/topology?sourceHost=local&selectedRig=abc-rig&selectedNode=gone.seat", 430);
+    const issue = await waitFor(() => {
+      const el = q(container, "[data-testid='phone-graph-selection-issue']");
+      expect(el).toBeTruthy();
+      return el!;
+    }, { timeout: 5000 });
+    expect(issue.textContent).toContain("not in rig acme's current graph");
+    expect(q(container, "[data-testid='phone-graph-seat'][data-selected='true']")).toBeNull();
+  }, 15000);
+});
+
+describe("camera controls never cover node controls (reserved space, measured surface)", () => {
+  it("controls and peek live outside the drawable surface; every node control is inside it", async () => {
+    const { container } = renderAt("/topology/rig/abc-rig", 430);
+    tapNode(await seatChip(container, "core.lead"));
+    await waitFor(() => expect(q(container, "[data-testid='phone-graph-peek']")).toBeTruthy());
+    const surface = q(container, "[data-testid='phone-graph-surface']")!;
+    const flowRoot = surface.querySelector(".react-flow") as HTMLElement;
+    expect(flowRoot).toBeTruthy();
+    const controls = q(container, "[data-testid='phone-graph-controls']")!;
+    const fit = q(container, "[data-testid='phone-graph-fit']")!;
+    const peek = q(container, "[data-testid='phone-graph-peek']")!;
+    // React Flow clips nodes to its root; the camera controls and peek are
+    // outside that root and outside the measured surface entirely.
+    for (const el of [controls, fit, q(container, "[data-testid='phone-graph-zoom-in']")!, q(container, "[data-testid='phone-graph-zoom-out']")!, peek]) {
+      expect(flowRoot.contains(el)).toBe(false);
+      expect(surface.contains(el)).toBe(false);
+    }
+    const toggles = qa(container, "[data-testid='phone-graph-pod-toggle']");
+    expect(toggles.length).toBe(2);
+    for (const t of toggles) expect(flowRoot.contains(t)).toBe(true);
+    // Header above the surface, footer below it, all in one canvas column.
+    const canvas = q(container, "[data-testid='phone-graph-canvas']")!;
+    const order = Array.from(canvas.children).map((c) => c.getAttribute("data-testid"));
+    expect(order).toEqual(["phone-graph-controls", "phone-graph-surface", "phone-graph-footer"]);
+  }, 15000);
+
+  it("the opening viewport is fitted to the measured surface, not the whole canvas", async () => {
+    // jsdom has no layout: give the canvas a box and its drawable surface
+    // that box minus the reserved 44px control header. The sizes are chosen
+    // so fitting the whole canvas and fitting the surface give different
+    // viewports (a canvas-sized fit would push nodes under the header).
+    const CANVAS = { width: 520, height: 400 };
+    const SURFACE = { width: 520, height: 400 - 44 };
+    const original = HTMLElement.prototype.getBoundingClientRect;
+    HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+      const id = this.getAttribute("data-testid");
+      const box = id === "phone-graph-surface" ? SURFACE : id === "phone-graph-canvas" ? CANVAS : null;
+      if (!box) return original.call(this);
+      return { x: 0, y: 0, top: 0, left: 0, right: box.width, bottom: box.height, ...box, toJSON: () => box } as DOMRect;
+    };
+    try {
+      const { container } = renderAt("/topology/rig/abc-rig", 932);
+      await seatChip(container, "ops.watch");
+      const g = graphs["abc-rig"] as Graph;
+      const rigModel = parseSpatialRig("local", { rigId: "abc-rig", rigName: "acme", graph: g });
+      const layout = layoutPhoneGraph({
+        entries: [{ kind: "ready", rig: rigModel }],
+        truncatedRigCount: 0,
+        statusByKey: new Map(),
+        expandedRigIds: new Set(),
+        collapsedPodKeys: new Set(),
+        columns: phoneGraphColumns(SURFACE.width),
+        scopeKind: "rig",
+      });
+      const onSurface = readablePhoneViewport(layout.bounds, SURFACE)!;
+      const onCanvas = readablePhoneViewport(layout.bounds, CANVAS)!;
+      expect(onSurface.y).not.toBeCloseTo(onCanvas.y, 1);
+      expect(onSurface.zoom).not.toBeCloseTo(onCanvas.zoom, 3);
+      const viewport = await waitFor(() => {
+        const el = container.querySelector(".react-flow__viewport") as HTMLElement | null;
+        const m = /translate\(([-\d.]+)px,\s*([-\d.]+)px\)\s*scale\(([-\d.]+)\)/.exec(el?.style.transform ?? "");
+        expect(m && Number(m[3]) !== 1 ? m : null).toBeTruthy();
+        return { x: Number(m![1]), y: Number(m![2]), zoom: Number(m![3]) };
+      });
+      expect(viewport.zoom).toBeCloseTo(onSurface.zoom, 3);
+      expect(viewport.x).toBeCloseTo(onSurface.x, 1);
+      expect(viewport.y).toBeCloseTo(onSurface.y, 1);
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = original;
+    }
+  }, 15000);
+});

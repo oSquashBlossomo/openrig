@@ -10,6 +10,13 @@ import {
   frameBox,
   layoutLabels,
   sceneBudgetVerdict,
+  nearestWithin,
+  trafficPhase,
+  trafficBeads,
+  TRAFFIC_BEADS,
+  TRAFFIC_TRAVEL_MS,
+  TRAFFIC_TOTAL_MS,
+  COMPACT_LABEL_MAX_WIDTH_PX,
   type LabelCandidate,
   type Rect,
 } from "../src/components/topology/spatial/spatial-view-math.js";
@@ -203,5 +210,141 @@ describe("sceneBudgetVerdict", () => {
     expect(sceneBudgetVerdict({ ...base, agents: SPATIAL_SCENE_BUDGET.seats }).withinBudget).toBe(true);
     expect(sceneBudgetVerdict({ ...base, agents: SPATIAL_SCENE_BUDGET.seats + 1 }).withinBudget).toBe(false);
     expect(sceneBudgetVerdict({ ...base, edges: SPATIAL_SCENE_BUDGET.links + 1 }).withinBudget).toBe(false);
+  });
+});
+
+// Phone/compact density: one-line seat names and quieter rig/pod names, so a
+// 430px stage keeps the actual scene visible. Sizes are estimates the
+// collision pass relies on; they must shrink for compact and stay positive.
+describe("compact label density", () => {
+  it("compact boxes are smaller than full ones for every kind, and a seat name drops its status line", () => {
+    for (const kind of ["rig", "pod", "agent"] as const) {
+      const full = estimateLabelSize(kind, "coordinator", "running · 2 pending");
+      const compact = estimateLabelSize(kind, "coordinator", null, "compact");
+      expect(compact.w).toBeGreaterThan(0);
+      expect(compact.h).toBeGreaterThan(0);
+      expect(compact.w * compact.h).toBeLessThan(full.w * full.h);
+    }
+    const nameOnly = estimateLabelSize("agent", "coordinator", null, "compact");
+    const withStatus = estimateLabelSize("agent", "coordinator", "needs input", "compact");
+    expect(nameOnly.h).toBeLessThan(withStatus.h);
+  });
+
+  it("caps a compact seat name's width (the full name stays in the card and index)", () => {
+    const long = estimateLabelSize("agent", "x".repeat(120), null, "compact");
+    expect(long.w).toBeLessThanOrEqual(COMPACT_LABEL_MAX_WIDTH_PX);
+  });
+});
+
+describe("nearestWithin (touch pick tolerance)", () => {
+  const points = [
+    { key: "a", x: 100, y: 100 },
+    { key: "b", x: 130, y: 100 },
+    { key: "c", x: 400, y: 300 },
+  ];
+  it("returns the closest point inside the radius", () => {
+    expect(nearestWithin(points, 112, 100, 24)).toBe("a");
+    expect(nearestWithin(points, 120, 101, 24)).toBe("b");
+  });
+  it("returns null when nothing is within the radius (an empty-space tap still clears)", () => {
+    expect(nearestWithin(points, 250, 200, 24)).toBeNull();
+  });
+  it("breaks an exact tie by key, deterministically", () => {
+    expect(nearestWithin([{ key: "z", x: 0, y: 0 }, { key: "m", x: 20, y: 0 }], 10, 0, 24)).toBe("m");
+  });
+  it("ignores non-finite projections", () => {
+    expect(nearestWithin([{ key: "a", x: Number.NaN, y: 0 }], 0, 0, 24)).toBeNull();
+  });
+});
+
+describe("trafficPhase (real activity arcs)", () => {
+  const T0 = 1_760_000_000_000;
+  it("travels from sender to receiver over the travel time, then fades, then is gone", () => {
+    const start = trafficPhase(T0, T0, false);
+    expect(start.visible && start.headVisible).toBe(true);
+    expect(start.head).toBe(0);
+    const mid = trafficPhase(T0 + TRAFFIC_TRAVEL_MS / 2, T0, false);
+    expect(mid.head).toBeCloseTo(0.5, 5);
+    expect(mid.trailTo).toBe(mid.head);
+    const arrived = trafficPhase(T0 + TRAFFIC_TRAVEL_MS + 1, T0, false);
+    expect(arrived.headVisible).toBe(false);
+    expect(arrived.arrival).toBeGreaterThan(0.9);
+    const late = trafficPhase(T0 + TRAFFIC_TOTAL_MS - 10, T0, false);
+    expect(late.alpha).toBeLessThan(0.05);
+    expect(trafficPhase(T0 + TRAFFIC_TOTAL_MS, T0, false).visible).toBe(false);
+  });
+  it("a record older than the window never animates (cached / replayed events)", () => {
+    expect(trafficPhase(T0 + 60_000, T0, false).visible).toBe(false);
+    expect(trafficPhase(T0 + 60_000, T0, true).visible).toBe(false);
+  });
+  it("a future timestamp (clock skew) starts now instead of waiting", () => {
+    const p = trafficPhase(T0, T0 + 5_000, false);
+    expect(p.visible).toBe(true);
+    expect(p.head).toBe(0);
+  });
+  it("reduced motion shows the whole arc and arrival statically, for the same window", () => {
+    const a = trafficPhase(T0 + 100, T0, true);
+    const b = trafficPhase(T0 + 3_000, T0, true);
+    expect(a).toEqual(b);
+    expect(a.headVisible).toBe(false);
+    expect([a.trailFrom, a.trailTo]).toEqual([0, 1]);
+  });
+  it("non-finite times are invisible", () => {
+    expect(trafficPhase(Number.NaN, T0, false).visible).toBe(false);
+  });
+});
+
+// Labels never cover a figure: projected silhouettes are hard space. A
+// selected (forced) label crowded by other labels still moves to an anchor
+// clear of figures rather than sitting on one.
+describe("layoutLabels silhouettes", () => {
+  const box = (id: string, x: number, y: number, tier: number, alternatives?: LabelCandidate["alternatives"]): LabelCandidate =>
+    ({ id, x, y, w: 80, h: 16, cx: 0.5, cy: 0.5, tier, depth: 0, ...(alternatives ? { alternatives } : {}) });
+  const figure: Rect = { left: 160, top: 100, right: 240, bottom: 200 };
+
+  it("an ambient label over a figure is suppressed or moved to a clear anchor", () => {
+    const over = layoutLabels([box("a", 200, 150, LABEL_TIER.agent)], { width: 800, height: 500, silhouettes: [figure] });
+    expect(over.visible.has("a")).toBe(false);
+    const moved = layoutLabels([box("a", 200, 150, LABEL_TIER.agent, [{ x: 200, y: 220, cx: 0.5, cy: 0.5 }])], { width: 800, height: 500, silhouettes: [figure] });
+    expect(moved.visible.has("a")).toBe(true);
+    expect(moved.choice.get("a")).toBe(1);
+  });
+
+  it("a forced label whose primary anchor covers a figure takes the clear alternative, even when a label crowds it", () => {
+    const crowd = box("crowd", 200, 60, LABEL_TIER.problem);
+    const selected = box("sel", 200, 150, LABEL_TIER.forced, [{ x: 200, y: 70, cx: 0.5, cy: 0.5 }]);
+    const r = layoutLabels([selected, crowd], { width: 800, height: 500, silhouettes: [figure] });
+    expect(r.visible.has("sel")).toBe(true);
+    expect(r.choice.get("sel")).toBe(1); // above the figure, beside a crowded label, never on the body
+  });
+
+  it("with no clear anchor at all, a forced label still shows (primary)", () => {
+    const r = layoutLabels([box("sel", 200, 150, LABEL_TIER.forced)], { width: 800, height: 500, silhouettes: [figure] });
+    expect(r.visible.has("sel")).toBe(true);
+    expect(r.choice.get("sel")).toBe(0);
+  });
+});
+
+describe("trafficBeads (travelling sparks)", () => {
+  const T0 = 1_760_000_000_000;
+  it("trail behind the head while travelling: ordered, spaced, shrinking and dimming, inside the visible trail", () => {
+    const phase = trafficPhase(T0 + TRAFFIC_TRAVEL_MS * 0.6, T0, false);
+    const beads = trafficBeads(phase);
+    expect(beads.length).toBeGreaterThan(0);
+    expect(beads.length).toBeLessThanOrEqual(TRAFFIC_BEADS);
+    let previous = { t: phase.head, size: 1.01, intensity: 1.01 };
+    for (const b of beads) {
+      expect(b.t).toBeLessThan(previous.t);
+      expect(b.t).toBeGreaterThanOrEqual(phase.trailFrom);
+      expect(b.size).toBeLessThan(previous.size);
+      expect(b.intensity).toBeLessThan(previous.intensity);
+      previous = b;
+    }
+  });
+  it("none at the very start (no trail yet), after arrival, under reduced motion, or when invisible", () => {
+    expect(trafficBeads(trafficPhase(T0, T0, false))).toEqual([]);
+    expect(trafficBeads(trafficPhase(T0 + TRAFFIC_TRAVEL_MS + 10, T0, false))).toEqual([]);
+    expect(trafficBeads(trafficPhase(T0 + 500, T0, true))).toEqual([]);
+    expect(trafficBeads(trafficPhase(T0 + TRAFFIC_TOTAL_MS, T0, false))).toEqual([]);
   });
 });

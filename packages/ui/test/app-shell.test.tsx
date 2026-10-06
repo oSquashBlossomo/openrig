@@ -18,12 +18,14 @@
 //   remains surface=none (no Explorer).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, cleanup, waitFor } from "@testing-library/react";
+import { render, cleanup, waitFor, act, fireEvent } from "@testing-library/react";
+import { StrictMode } from "react";
+import { Link } from "@tanstack/react-router";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { createMockEventSourceClass } from "./helpers/mock-event-source.js";
 import { createAppTestRouter } from "./helpers/test-router.js";
-import { AppShell } from "../src/components/AppShell.js";
+import { AppShell, useDrawerSelection } from "../src/components/AppShell.js";
 
 const mockFetch = vi.fn();
 globalThis.fetch = mockFetch;
@@ -233,7 +235,9 @@ describe("AppShell — Phase 2 chrome", () => {
       expect(topbar).toBeTruthy();
       // Single source of truth — top bar is universal, NOT lg:hidden.
       expect(topbar.className).not.toContain("lg:hidden");
-      expect(topbar.className).toContain("h-14");
+      // Height is the shared --shell-top offset (3.5rem + top safe area) that
+      // the below-the-top-bar overlays also start from (globals.css).
+      expect(topbar.className).toContain("h-[var(--shell-top)]");
     });
 
     it("brand link visible at desktop and links to / (Dashboard)", async () => {
@@ -445,5 +449,93 @@ describe("AppShell — Phase 2 chrome", () => {
       const { container } = await renderAt("/");
       expect(container.querySelector("[data-testid='progress-link']")).toBeNull();
     });
+  });
+});
+
+// iPad rotation / split-view resize must not erase contextual state. The
+// narrow-layout "close drawer + explorer on route change" policy fires on a
+// real pathname change only; crossing the 1024px breakpoint with the same
+// path keeps the open drawer (portrait 834 → landscape 1194 → portrait 820,
+// the sequence observed on the Library spec page).
+describe("AppShell — viewport change keeps contextual drawer selection", () => {
+  const SPEC_PATH = "/specs/library/specfile%3Av2%3A0002";
+
+  function OpenFileDrawer() {
+    const { setSelection } = useDrawerSelection();
+    return (
+      <>
+        <button
+          type="button"
+          data-testid="open-guide"
+          onClick={() => setSelection({ type: "file", data: { path: "guide.md", kind: "markdown", content: "# guide" } })}
+        >
+          guide.md
+        </button>
+        <Link to="/specs/other" data-testid="go-other">other</Link>
+      </>
+    );
+  }
+
+  function resizeTo(width: number) {
+    act(() => {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: width, writable: true });
+      window.dispatchEvent(new Event("resize"));
+    });
+  }
+
+  async function mountAt(width: number, strict = false) {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: width, writable: true });
+    const tree = createAppTestRouter({
+      routes: [{ path: "$", component: () => <OpenFileDrawer /> }],
+      rootComponent: ({ children }) => <AppShell>{children}</AppShell>,
+      initialPath: SPEC_PATH,
+    });
+    const result = render(strict ? <StrictMode>{tree}</StrictMode> : tree);
+    await waitFor(() => expect(result.getByTestId("open-guide")).toBeTruthy(), { timeout: 5000 });
+    return result;
+  }
+
+  const drawer = (container: HTMLElement) => container.querySelector("[data-testid='shared-detail-drawer']");
+
+  for (const strict of [false, true]) {
+    it(`keeps the open drawer through portrait → landscape → portrait on the same path${strict ? " (StrictMode)" : ""}`, async () => {
+      const { container, getByTestId } = await mountAt(834, strict);
+      fireEvent.click(getByTestId("open-guide"));
+      expect(drawer(container)).toBeTruthy();
+
+      resizeTo(1194);
+      expect(drawer(container)).toBeTruthy();
+      resizeTo(820);
+      expect(drawer(container), "returning to a narrow width alone must not close the drawer").toBeTruthy();
+      expect(container.querySelector("[data-testid='shared-detail-drawer-layer']")?.textContent).toContain("guide");
+    });
+  }
+
+  it("a genuine narrow-layout route change still closes the contextual drawer", async () => {
+    const { container, getByTestId } = await mountAt(820);
+    fireEvent.click(getByTestId("open-guide"));
+    expect(drawer(container)).toBeTruthy();
+    fireEvent.click(getByTestId("go-other"));
+    await waitFor(() => expect(drawer(container)).toBeNull());
+  });
+
+  it("a genuine narrow-layout route change still closes the phone explorer slide-over", async () => {
+    const { container, getByTestId } = await mountAt(820);
+    fireEvent.click(getByTestId("mobile-menu-toggle"));
+    const tray = () => container.querySelector("[data-testid='mobile-rail-tray']") as HTMLElement;
+    expect(tray().className).toContain("translate-x-0");
+    resizeTo(1194);
+    resizeTo(834);
+    expect(tray().className, "a same-path rotation keeps the slide-over open").toContain("translate-x-0");
+    fireEvent.click(getByTestId("go-other"));
+    await waitFor(() => expect(tray().className).toContain("-translate-x-full"));
+  });
+
+  it("a wide-layout route change keeps the drawer (desktop policy unchanged)", async () => {
+    const { container, getByTestId } = await mountAt(1440);
+    fireEvent.click(getByTestId("open-guide"));
+    fireEvent.click(getByTestId("go-other"));
+    await waitFor(() => expect(container.querySelector("[data-testid='go-other']")).toBeTruthy());
+    expect(drawer(container)).toBeTruthy();
   });
 });

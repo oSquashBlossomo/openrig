@@ -191,9 +191,24 @@ interface FocusedTerminalProps {
    * chat panel, thread, bubble, or compose box anywhere in this family.
    */
   initialText?: string;
+  /**
+   * Optional admission check run before EVERY socket open — the first connect
+   * and each automatic reconnect. Resolve `true` to connect, or
+   * `{ refuse: reason }` to stay disconnected and show the reason (no further
+   * reconnects). A rejection is treated as a refusal with its message. A
+   * resolution that arrives after the mount/session generation moved on is
+   * ignored: nothing connects for a stale check. Omitted = connect directly,
+   * exactly as before (all existing callers).
+   */
+  beforeConnect?: (attempt: { reconnect: boolean }) => Promise<true | { refuse: string }>;
+  /** Focus the xterm when it mounts (default true, the existing behaviour).
+   *  Pass false where mounting follows a selection made elsewhere (e.g. a
+   *  keyboard index or a phone tap) so focus and the software keyboard stay
+   *  where the operator is. */
+  autoFocus?: boolean;
 }
 
-export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", initialText }: FocusedTerminalProps) {
+export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", initialText, beforeConnect, autoFocus = true }: FocusedTerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   // OPR.0.4.0.39: the fit wrapper fills the available container; the inner
   // containerRef holds the natural-sized xterm. We measure the wrapper (available)
@@ -230,6 +245,14 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
   const userScrollEpochRef = useRef(0);
   const fontMetricSyncRef = useRef<(() => void) | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Read through refs: a new callback identity must not remount the viewer.
+  const beforeConnectRef = useRef(beforeConnect);
+  beforeConnectRef.current = beforeConnect;
+  const autoFocusRef = useRef(autoFocus);
+  autoFocusRef.current = autoFocus;
+  // Reconnect entry point (set below); the socket's close handler uses it so a
+  // reconnect passes through admission too.
+  const reconnectRef = useRef<(gen: number) => void>(() => {});
 
   // OPR.0.4.3.21 — shared daemon-health signal (context; healthy default when
   // no provider, so standalone terminal tests are unaffected). Held in a ref so
@@ -407,7 +430,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
       }
       if (mountedRef.current && generationRef.current === gen) {
         reconnectTimerRef.current = setTimeout(() => {
-          if (mountedRef.current && generationRef.current === gen) connectForGeneration(gen);
+          if (mountedRef.current && generationRef.current === gen) reconnectRef.current(gen);
         }, 3000);
       }
     };
@@ -415,6 +438,28 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
     wsRef.current = ws;
     return ws;
   }, [sessionName, daemonBaseUrl, disposeTerminal, scrollLiveTerminalToPrompt, applyFontSizeFit, scrollOwner, cancelPromptScrolls]);
+
+  // Admission, then connect — only if this generation is still current when
+  // the check resolves. Without a check this connects synchronously, as before.
+  const admitAndConnect = useCallback(async (gen: number, reconnect: boolean) => {
+    const admit = beforeConnectRef.current;
+    if (admit) {
+      let verdict: true | { refuse: string };
+      try {
+        verdict = await admit({ reconnect });
+      } catch (err) {
+        verdict = { refuse: err instanceof Error ? err.message : "terminal admission check failed" };
+      }
+      if (!mountedRef.current || generationRef.current !== gen) return;
+      if (verdict !== true) {
+        disposeTerminal();
+        setError(verdict.refuse);
+        return;
+      }
+    }
+    connectForGeneration(gen);
+  }, [connectForGeneration, disposeTerminal]);
+  reconnectRef.current = (gen: number) => { void admitAndConnect(gen, true); };
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -450,7 +495,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
         // Some xterm DOM layers do not inherit the theme background. Pin every
         // render layer opaque so clear/erase operations actually erase.
         applyOpaqueTerminalBackground(containerRef.current!);
-        term.focus();
+        if (autoFocusRef.current) term.focus();
         promptScrollUntilRef.current = Date.now() + 2500;
         trackPromptScroll(scrollTerminalViewportToPrompt(containerRef.current!));
         termRef.current = term;
@@ -494,7 +539,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
 
         // Browser layout/renderer resize never asks the shared pane to resize.
 
-        connectForGeneration(currentGen);
+        void admitAndConnect(currentGen, false);
 
         // OPR.0.4.0.39 (selection fix): capture the xterm's initial pixel size
         // at the base font; protocol geometry replaces this placeholder reference, then
@@ -523,7 +568,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
       if (activeWs) { activeWs.close(); wsRef.current = null; }
       disposeTerminal();
     };
-  }, [connectForGeneration, disposeTerminal, trackPromptScroll, cancelPromptScrolls]);
+  }, [admitAndConnect, disposeTerminal, trackPromptScroll, cancelPromptScrolls]);
 
   // OPR.0.4.0.39 (selection fix): refit the xterm fontSize when its container resizes
   // (responsive grid columns, window resize, node-detail panel). Observes the fit

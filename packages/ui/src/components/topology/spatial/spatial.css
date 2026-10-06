@@ -162,14 +162,27 @@
   border-color: hsl(var(--on-surface) / 0.6);
 }
 
+/* Selected seat: a slim plate in the scene's own ink, not an inverted
+   plaque. Theme tokens only — inside .spatial-atelier this is a dark plate
+   with a restrained warm outline and light ink; under light tokens the same
+   rule reads as a pale plate with dark ink. Hover keeps the warm outline. */
 .spatial-label--agent.is-selected {
-  background: hsl(var(--inverse-surface));
-  border-color: hsl(var(--inverse-surface));
-  color: hsl(var(--background));
+  background: hsl(var(--surface-container-high) / 0.94);
+  border-color: hsl(var(--primary) / 0.7);
+  color: hsl(var(--on-surface));
+  box-shadow: 0 1px 6px hsl(0 0% 0% / 0.28);
+}
+
+.spatial-label--agent.is-selected .spatial-label__text {
+  font-weight: 600;
 }
 
 .spatial-label--agent.is-selected .spatial-label__meta {
-  color: hsl(var(--background) / 0.75);
+  color: hsl(var(--on-surface-variant));
+}
+
+.spatial-label--agent.is-selected.is-hovered {
+  border-color: hsl(var(--primary) / 0.95);
 }
 
 .spatial-label--agent.is-dimmed {
@@ -180,6 +193,99 @@
   .spatial-label--agent {
     transition: none;
   }
+}
+
+/* Compact density (small stage: phone portrait/landscape, a squeezed tablet
+   stage). One-line names in smaller type so the scene itself stays visible;
+   the status line is shown (via the `hidden` attribute) only on the selected
+   or hovered seat, and status is carried by a SHAPE as well as colour. */
+.spatial-label__meta[hidden] {
+  display: none;
+}
+
+.spatial-label--rig.is-compact {
+  padding: 2px 6px;
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+}
+
+.spatial-label--pod.is-compact {
+  padding: 0 4px;
+  font-size: 9px;
+}
+
+.spatial-label--agent.is-compact {
+  max-width: 11rem;
+  padding: 1px 5px 1px 12px;
+  font-size: 10px;
+}
+
+.spatial-label--agent.is-compact .spatial-label__text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.spatial-label--agent.is-compact::before {
+  left: 3.5px;
+  top: 5px;
+}
+
+/* Compact keeps the state's shape for a stale sample (faded below) instead
+   of the full-density hollow dot; must precede the hollow-shape rules. */
+.spatial-label--agent.is-compact.is-stale::before {
+  background: var(--spatial-tone, hsl(var(--outline)));
+  box-shadow: none;
+}
+
+/* Status shapes (labels, key, selection card). data-tone names the state:
+   running = filled circle, needs input = diamond, blocked = square,
+   idle = open circle, no signal = open square; stale = faded. */
+.spatial-mark {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: var(--spatial-tone);
+}
+
+.spatial-mark[data-tone="needs_input"],
+.spatial-label--agent.is-compact[data-tone="needs_input"]::before {
+  border-radius: 0;
+  transform: rotate(45deg) scale(0.85);
+}
+
+.spatial-mark[data-tone="blocked"],
+.spatial-label--agent.is-compact[data-tone="blocked"]::before {
+  border-radius: 0;
+}
+
+.spatial-mark[data-tone="idle"],
+.spatial-label--agent.is-compact[data-tone="idle"]::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--spatial-tone);
+}
+
+.spatial-mark[data-tone="unknown"],
+.spatial-label--agent.is-compact[data-tone="unknown"]::before {
+  border-radius: 0;
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--spatial-tone);
+}
+
+.spatial-mark.is-stale,
+.spatial-label--agent.is-compact.is-stale::before {
+  opacity: 0.55;
+}
+
+/* Stacked stage height (phones, tablet portrait): a share of the SMALL
+   viewport (browser bars expanded), so part of the page always remains
+   outside the stage to scroll by — the canvas itself captures touch for
+   orbit/pinch. 56vh is the pre-svh fallback. */
+.spatial-stage--stacked {
+  height: 56vh;
+  height: 56svh;
+  min-height: 16rem;
 }
 
 /* HUD controls over the stage. */
@@ -267,4 +373,137 @@
   border: 1px solid hsl(var(--tertiary) / 0.45);
   background: hsl(var(--tertiary) / 0.06);
   color: hsl(var(--tertiary));
+}
+
+/* ---------------------------------------------------------------------------
+   Night Atelier (selected redesign, option 1).
+   Scoped token override: inside the 3D view only, the theme tokens resolve to
+   a warm-charcoal studio with amber accents, so every Tailwind token class in
+   this subtree follows without touching the outer shell or other pages.
+   Derived tokens (--foreground, --card, …) are re-declared because :root
+   resolved them against its own values.
+   ------------------------------------------------------------------------- */
+.spatial-atelier {
+  color-scheme: dark;
+  --background: 30 9% 7.5%;
+  --surface-container-lowest: 30 8% 9.5%;
+  --surface-container-low: 30 7% 11%;
+  --surface-container: 30 7% 12.5%;
+  --surface-container-high: 30 7% 14.5%;
+  --surface-container-highest: 30 6% 16.5%;
+  --on-surface: 36 22% 90%;
+  --on-surface-variant: 32 9% 63%;
+  --outline: 30 6% 40%;
+  --outline-variant: 30 7% 22%;
+  --inverse-surface: 34 30% 90%;
+  --primary: 28 86% 62%;
+  --tertiary: 8 76% 66%;
+  --error: 4 70% 64%;
+  --warning: 38 92% 60%;
+  --foreground: var(--on-surface);
+  --card: var(--surface-container-lowest);
+  --popover: var(--surface-container-lowest);
+  --muted: var(--surface-container-low);
+  --spatial-terminal-ground: 24 10% 4.5%;
+  background: hsl(var(--background));
+  color: hsl(var(--on-surface));
+}
+
+/* The stage reads as a dim studio floor rather than paper. */
+.spatial-atelier .spatial-stage {
+  background:
+    radial-gradient(ellipse at 42% 30%, hsl(30 30% 16% / 0.55), transparent 60%),
+    radial-gradient(ellipse at 50% 120%, hsl(210 20% 12% / 0.5), transparent 55%),
+    hsl(var(--background));
+}
+
+.spatial-atelier .spatial-stage::before,
+.spatial-atelier .spatial-stage::after {
+  border-color: hsl(var(--on-surface) / 0.18);
+}
+
+.spatial-atelier .spatial-hud-button {
+  background: hsl(var(--surface-container-low) / 0.82);
+}
+
+.spatial-atelier .spatial-hud-button[aria-pressed="true"] {
+  background: hsl(var(--primary) / 0.16);
+  border-color: hsl(var(--primary) / 0.7);
+  color: hsl(var(--on-surface));
+}
+
+.spatial-atelier .spatial-row[aria-pressed="true"] {
+  border-left-color: hsl(var(--primary));
+}
+
+/* Stage height when a seat is docked under it on stacked layouts: the scene
+   stays substantial and the live terminal starts within reach. */
+.spatial-stage--stacked.spatial-stage--docked {
+  height: 42vh;
+  height: 42svh;
+  min-height: 14rem;
+}
+
+.spatial-workspace {
+  background: hsl(var(--surface-container-lowest));
+}
+
+.spatial-portrait {
+  border: 1px solid hsl(var(--outline-variant));
+  background:
+    radial-gradient(circle at 35% 30%, hsl(var(--primary) / 0.18), transparent 65%),
+    hsl(var(--surface-container));
+}
+
+/* Live terminal box: fixed height; FocusedTerminal "contain" fits the native
+   pane by font size down to its readable floor, then pans (no native resize). */
+.spatial-terminal-frame {
+  background: hsl(var(--spatial-terminal-ground));
+}
+
+/* Desktop: ~220–300px so identity + terminal fit the bounded body (≈540px
+   at 1440×900) above the fold; details follow in the same scroll. */
+.spatial-terminal-frame--side {
+  height: clamp(13.75rem, 32vh, 18.75rem);
+}
+
+.spatial-terminal-frame--stacked {
+  height: 44vh;
+  height: 44svh;
+  min-height: 13rem;
+}
+
+.spatial-switcher {
+  scrollbar-width: thin;
+  overscroll-behavior-x: contain;
+}
+
+/* Observed-traffic caption drawn by the renderer at an arc's apex: one short
+   line, never a text box over the figures. The full meaning (endpoints, type,
+   qitem, served time) is in the selected seat's Evidence tab. */
+.spatial-label--traffic {
+  max-width: 13rem;
+  padding: 1px 6px 1px 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-left: 2px solid hsl(var(--primary));
+  background: hsl(var(--background) / 0.78);
+  color: hsl(var(--on-surface));
+  font-size: 9.5px;
+  letter-spacing: 0.02em;
+  line-height: 1.35;
+}
+
+.spatial-label--traffic.is-compact {
+  max-width: 9rem;
+  font-size: 9px;
+}
+
+/* Wide body height: the window less the shell and scope chrome above the
+   3D body (≈22.5rem), floored at ~31rem so short windows scroll the page
+   rather than nesting a tiny workspace; capped so huge screens stay composed.
+   ≈540px at 1440×900; the 31rem floor (496px) at 1280×720. */
+.spatial-body--bounded {
+  min-height: clamp(31rem, calc(100vh - 22.5rem), 56rem);
+  min-height: clamp(31rem, calc(100svh - 22.5rem), 56rem);
 }

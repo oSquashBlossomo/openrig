@@ -91,7 +91,16 @@ export function SharedDetailDrawer({
       // CORRECTIVE §7.2 — the LEFT reinvention is REVERTED (founder 2026-07-05):
       // back to the app-wide RIGHT edge, and the FR-11.1 z-bump comes out with
       // it (the right edge never contended with the sidebar's opaque z-40).
-      className="fixed top-14 right-0 bottom-0 left-0 z-30 pointer-events-none"
+      //
+      // Mobile reachability: the layer spans the shell's top/bottom offsets
+      // (globals.css), so the sheet ends ABOVE the fixed bottom nav and the
+      // home indicator instead of running underneath them. The sheet is
+      // always an overlay (it never reflows the workspace): full width below
+      // lg, 38rem capped at 80vw from lg, so a tablet-landscape rail +
+      // explorer stay visible beside it. Side safe areas (iPhone landscape)
+      // inset the layer, so the sheet and its close control stay tappable;
+      // the strips beside it are only the shell row's empty safe padding.
+      className="fixed top-[var(--shell-top)] right-[var(--safe-right)] bottom-[var(--shell-bottom)] left-[var(--safe-left)] z-30 pointer-events-none"
     >
       <button
         type="button"
@@ -107,9 +116,8 @@ export function SharedDetailDrawer({
         width="wide"
         onClose={onClose}
         testId="shared-detail-drawer"
-        // top-14 starts below the universal top bar (h-14, fixed at top); bottom-0
-        // anchors to viewport bottom so the drawer fills the remaining height.
-        // Bounce-fix #3 width-coupling: 38rem (lg:w-[38rem]) per VellumSheet wide preset.
+        // Fills the layer (top bar → bottom nav). Bounce-fix #3 width-coupling:
+        // 38rem (lg:w-[38rem]) per VellumSheet wide preset.
         className="absolute top-0 right-0 bottom-0 z-10 pointer-events-auto"
       >
         {inner}

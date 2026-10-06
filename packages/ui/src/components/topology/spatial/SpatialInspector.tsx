@@ -24,6 +24,9 @@ export interface SpatialInspectorProps {
   linkSource?: string | null;
   /** The scope being left by Open seat (its drafts commit first). */
   from?: TopologyScope | null;
+  /** Body only: the selection card (compact stage) already shows the seat's
+   *  identity and its Open/Focus actions, so they are not repeated here. */
+  hideSummary?: boolean;
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -35,7 +38,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-export function SpatialInspector({ model, agent, status, palette, canFocus, onSelect, onFocus, linkSource = null, from = null }: SpatialInspectorProps) {
+export function SpatialInspector({ model, agent, status, palette, canFocus, onSelect, onFocus, linkSource = null, from = null, hideSummary = false }: SpatialInspectorProps) {
   if (!agent || !status) {
     return (
       <div data-testid="spatial-inspector-empty" className="px-4 py-4">
@@ -53,18 +56,22 @@ export function SpatialInspector({ model, agent, status, palette, canFocus, onSe
   const contextKnown = typeof agent.contextUsedPercentage === "number";
 
   return (
-    <section data-testid="spatial-inspector" aria-label={`Seat ${agent.displayName}`} className="px-4 py-4">
-      <div className="font-mono text-[9px] uppercase tracking-[0.16em] text-on-surface-variant">
-        {agent.rigName}
-        {agent.podNamespace ? ` / ${agent.podNamespace}` : " / no pod"}
-      </div>
-      <h3
-        data-testid="spatial-inspector-name"
-        className="mt-1 break-words font-headline text-xl font-bold leading-tight text-on-surface"
-      >
-        {agent.displayName}
-      </h3>
-      <div className="mt-0.5 break-all font-mono text-[10px] text-on-surface-variant">
+    <section data-testid="spatial-inspector" aria-label={`Seat ${agent.displayName}`} className={hideSummary ? "px-3 pb-3 pt-1" : "px-4 py-4"}>
+      {hideSummary ? null : (
+        <>
+          <div className="font-mono text-[9px] uppercase tracking-[0.16em] text-on-surface-variant">
+            {agent.rigName}
+            {agent.podNamespace ? ` / ${agent.podNamespace}` : " / no pod"}
+          </div>
+          <h3
+            data-testid="spatial-inspector-name"
+            className="mt-1 break-words font-headline text-xl font-bold leading-tight text-on-surface"
+          >
+            {agent.displayName}
+          </h3>
+        </>
+      )}
+      <div className={cn("break-all font-mono text-[10px] text-on-surface-variant", !hideSummary && "mt-0.5")}>
         {agent.logicalId ?? `node ${agent.nodeId} (no logical id)`}
       </div>
 
@@ -162,7 +169,7 @@ export function SpatialInspector({ model, agent, status, palette, canFocus, onSe
         )}
       </div>
 
-      <div className="mt-4 flex flex-wrap gap-2">
+      {hideSummary ? null : <div className="mt-4 flex flex-wrap gap-2">
         {agent.logicalId ? (
           // Exact logical id from the selected graph entry (never the graph
           // node id or a label); raw params, encoded once by the router.
@@ -189,7 +196,7 @@ export function SpatialInspector({ model, agent, status, palette, canFocus, onSe
         >
           <Crosshair aria-hidden="true" className="h-3.5 w-3.5" /> Focus
         </button>
-      </div>
+      </div>}
     </section>
   );
 }

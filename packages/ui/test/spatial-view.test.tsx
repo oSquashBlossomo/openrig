@@ -19,6 +19,7 @@ const controller = vi.hoisted(() => ({
   zoom: vi.fn(),
   orbit: vi.fn(),
   focus: vi.fn(),
+  refreshOverlays: vi.fn(),
 }));
 
 vi.mock("../src/components/topology/spatial/SpatialRenderer.js", async () => {
@@ -27,9 +28,12 @@ vi.mock("../src/components/topology/spatial/SpatialRenderer.js", async () => {
     model: { agentsByKey: Map<string, unknown> };
     selectedKey: string | null;
     matchKeys: ReadonlySet<string> | null;
+    density?: string;
     controllerRef: { current: unknown };
     onSelect: (key: string | null) => void;
     onReady?: () => void;
+    traffic?: readonly unknown[];
+    palette: { theme: string; atelier: { stage: { l: number } } };
   };
   function StubRenderer(props: StubProps) {
     React.useEffect(() => {
@@ -46,6 +50,10 @@ vi.mock("../src/components/topology/spatial/SpatialRenderer.js", async () => {
         "data-testid": "stub-renderer",
         "data-selected": props.selectedKey ?? "",
         "data-matches": props.matchKeys ? String(props.matchKeys.size) : "none",
+        "data-density": props.density ?? "full",
+        "data-traffic": props.traffic ? String(props.traffic.length) : "none",
+        "data-palette-theme": props.palette.theme,
+        "data-stage-lightness": String(props.palette.atelier.stage.l),
       },
       [...props.model.agentsByKey.keys()].map((key) =>
         React.createElement("button", { key, type: "button", "data-testid": "stub-pick", "data-key": key, onClick: () => props.onSelect(key) }),
@@ -77,7 +85,7 @@ function json(body: unknown, status = 200) {
 let fetchMock: ReturnType<typeof vi.fn>;
 let qc: QueryClient;
 
-function renderView(scope: SpatialScope = { kind: "host" }, opts: { selected?: string } = {}) {
+function renderView(scope: SpatialScope = { kind: "host" }, opts: { selected?: string; initialPath?: string } = {}) {
   qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
   qc.setQueryData(["hosts"], { ownName: "me", selected: opts.selected ?? "local", hosts: [] });
   const rootRoute = createRootRoute({
@@ -96,7 +104,7 @@ function renderView(scope: SpatialScope = { kind: "host" }, opts: { selected?: s
   const catchAll = createRoute({ getParentRoute: () => rootRoute, path: "$", component: () => <div data-testid="other-page" /> });
   const router = createRouter({
     routeTree: rootRoute.addChildren([viewRoute, seatRoute, catchAll]),
-    history: createMemoryHistory({ initialEntries: ["/topology"] }),
+    history: createMemoryHistory({ initialEntries: [opts.initialPath ?? "/topology"] }),
     // Production search contract: raw topology identities, never coerced.
     parseSearch: parseTopologySearch,
     stringifySearch: stringifyTopologySearch,
@@ -121,6 +129,10 @@ async function ready() {
   await waitFor(() => expect((screen.getByTestId("spatial-camera-fit") as HTMLButtonElement).disabled).toBe(false));
 }
 
+function chipFor(name: string) {
+  return screen.getAllByTestId("spatial-seat-chip").find((c) => c.textContent?.includes(name))!;
+}
+
 function rowFor(name: string) {
   return screen.getAllByTestId("spatial-agent-row").find((r) => r.textContent?.includes(name))!;
 }
@@ -138,20 +150,39 @@ describe("SpatialTopologyView", () => {
     const index = screen.getByTestId("spatial-seat-index-compact");
     expect(within(index).getAllByTestId("spatial-index-pod")).toHaveLength(2);
     expect(within(index).getAllByTestId("spatial-agent-row")).toHaveLength(3);
+    // Observed-traffic pulses are composed into the renderer (none here: no feed events).
+    expect(screen.getByTestId("stub-renderer").getAttribute("data-traffic")).toBe("0");
+    // Night Atelier styling is local to this view, and the scene palette is the
+    // dark atelier even though no app theme provider resolves dark here (the
+    // default app theme is light): labels and renderer agree on one subtree.
+    expect(screen.getByTestId("spatial-topology-view").classList.contains("spatial-atelier")).toBe(true);
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+    expect(screen.getByTestId("stub-renderer").getAttribute("data-palette-theme")).toBe("dark");
+    expect(Number(screen.getByTestId("stub-renderer").getAttribute("data-stage-lightness"))).toBeLessThan(20);
   });
 
-  it("selecting from the index opens the inspector and focuses the camera; no terminal is mounted", async () => {
+  it("selecting from the index docks the seat workspace and focuses the camera; a seat with no session explains why no terminal opens", async () => {
     renderView();
     await ready();
     fireEvent.click(rowFor("reviewer"));
-    const inspector = await screen.findByTestId("spatial-inspector");
-    expect(within(inspector).getByTestId("spatial-inspector-name").textContent).toBe("reviewer");
-    expect(within(inspector).getByTestId("spatial-inspector-status").textContent).toContain("identity mismatch");
-    expect(within(inspector).getByTestId("spatial-inspector-status").textContent).toContain("not live");
-    expect(within(inspector).getByTestId("spatial-inspector-problems").textContent).toContain("pane runs zsh");
+    const workspace = await screen.findByTestId("spatial-workspace");
+    expect(workspace.getAttribute("data-layout")).toBe("side");
+    expect(screen.getByTestId("spatial-body").getAttribute("data-docked")).toBe("true");
+    expect(within(workspace).getByTestId("spatial-inspector-name").textContent).toBe("reviewer");
+    expect(within(workspace).getByTestId("spatial-inspector-status").textContent).toContain("identity mismatch");
+    expect(within(workspace).getByTestId("spatial-inspector-status").textContent).toContain("not live");
+    // The mismatch stays visible above the terminal, not behind a tab.
+    expect(within(workspace).getByTestId("spatial-inspector-problems").textContent).toContain("pane runs zsh");
+    // Docked: the persistent index gives way to the compact switcher, with the
+    // full index one tap away; the selected seat is pressed in the switcher.
+    expect(screen.queryByTestId("spatial-index-region")).toBeNull();
+    expect(chipFor("reviewer").getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByTestId("spatial-all-seats-toggle"));
     expect(rowFor("reviewer").getAttribute("aria-pressed")).toBe("true");
     expect(controller.focus).toHaveBeenCalledWith(expect.stringContaining("/agent/n3"));
-    expect(document.querySelector(".xterm, [data-testid*='terminal']")).toBeNull();
+    // graphA serves no canonical session for this seat: honest refusal, no viewer.
+    expect(within(workspace).getByTestId("spatial-terminal-state").getAttribute("data-state")).toBe("no-session");
+    expect(document.querySelector(".xterm, [data-testid='spatial-terminal-live']")).toBeNull();
   });
 
   it.each(["index click", "search Enter"] as const)("%s selects a seat from a rig whose graph arrived after the scene became active", async (action) => {
@@ -176,15 +207,18 @@ describe("SpatialTopologyView", () => {
         { id: "editor-node", type: "rigNode", data: { logicalId: "desk.editor", canonicalSessionName: "editor@acme-comms", status: "running", startupStatus: "ready" } },
       ], edges: [] }));
     });
-    await waitFor(() => expect(rowFor("editor")).toBeTruthy());
-    if (action === "index click") fireEvent.click(rowFor("editor"));
+    await waitFor(() => expect(chipFor("editor")).toBeTruthy());
+    if (action === "index click") {
+      fireEvent.click(screen.getByTestId("spatial-all-seats-toggle"));
+      fireEvent.click(rowFor("editor"));
+    }
     else {
       const input = screen.getByTestId("spatial-search");
       fireEvent.change(input, { target: { value: "editor" } });
       fireEvent.keyDown(input, { key: "Enter" });
     }
     await waitFor(() => expect(screen.getByTestId("spatial-inspector-name").textContent).toBe("editor"));
-    expect(rowFor("editor").getAttribute("aria-pressed")).toBe("true");
+    expect(chipFor("editor").getAttribute("aria-pressed")).toBe("true");
     expect(router.history.location.href).not.toBe(earlierLocation);
     expect(router.history.location.href).toContain("editor-node");
     expect(controller.focus).toHaveBeenLastCalledWith(expect.stringContaining("/agent/editor-node"));
@@ -198,15 +232,18 @@ describe("SpatialTopologyView", () => {
     expect((await screen.findByTestId("spatial-inspector-name")).textContent).toBe("coordinator");
     expect(screen.getByTestId("stub-renderer").getAttribute("data-selected")).toMatch(/\/agent\/n1$/);
     expect(controller.focus).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("spatial-workspace-tab-relationships"));
     expect(screen.getByTestId("spatial-inspector-relationships").textContent).toContain("delegates_to");
     fireEvent.click(screen.getByTestId("stub-pick-empty"));
     expect(await screen.findByTestId("spatial-inspector-empty")).toBeTruthy();
+    expect(screen.queryByTestId("spatial-workspace")).toBeNull();
   });
 
   it("relationship peers are selectable from the inspector", async () => {
     renderView();
     await ready();
     fireEvent.click(rowFor("coordinator"));
+    fireEvent.click(await screen.findByTestId("spatial-workspace-tab-relationships"));
     const rel = await screen.findByTestId("spatial-inspector-relationships");
     fireEvent.click(within(rel).getByRole("button"));
     await waitFor(() => expect(screen.getByTestId("spatial-inspector-name").textContent).toBe("builder1"));
@@ -224,6 +261,21 @@ describe("SpatialTopologyView", () => {
     expect(document.activeElement).toBe(rows[2]);
     fireEvent.keyDown(rows[2]!, { key: "Home" });
     expect(document.activeElement).toBe(rows[0]);
+  });
+
+  it("wide: selecting from a focused index row hands keyboard focus to the same seat in the switcher, which roves with arrows", async () => {
+    renderView();
+    await ready();
+    const row = rowFor("builder1");
+    row.focus();
+    fireEvent.click(row);
+    await waitFor(() => expect(screen.getByTestId("spatial-inspector-name").textContent).toBe("builder1"));
+    await waitFor(() => expect(document.activeElement).toBe(chipFor("builder1")));
+    expect(chipFor("builder1").getAttribute("data-spatial-key")).toMatch(/\/agent\/n2$/);
+    fireEvent.keyDown(chipFor("builder1"), { key: "ArrowRight" });
+    expect(document.activeElement).toBe(chipFor("reviewer"));
+    fireEvent.keyDown(chipFor("reviewer"), { key: "Home" });
+    expect(document.activeElement).toBe(chipFor("coordinator"));
   });
 
   it("camera HUD and stage keyboard shortcuts drive the controller", async () => {
@@ -267,14 +319,14 @@ describe("SpatialTopologyView", () => {
     const { router } = renderView();
     await ready();
     fireEvent.click(rowFor("reviewer"));
-    await screen.findByTestId("spatial-inspector");
+    await screen.findByTestId("spatial-workspace");
     act(() => {
       qc.setQueryData(["rig", "ra", "graph", "local"], { ...graphA, nodes: graphA.nodes.filter((n) => n.id !== "n3") });
     });
     const notice = await screen.findByTestId("spatial-selection-notice");
     expect(notice.getAttribute("data-state")).toBe("absent");
     expect(notice.textContent).toContain("Graph node n3 is not in rig ra's current graph");
-    expect(screen.queryByTestId("spatial-inspector")).toBeNull();
+    expect(screen.queryByTestId("spatial-workspace")).toBeNull();
     expect(screen.getByTestId("spatial-counts").textContent).toContain("2 seats");
     expect(router.state.location.search).toMatchObject({ selectedRig: "ra", selectedNode: "n3" });
     fireEvent.click(screen.getByTestId("spatial-selection-clear"));
@@ -292,13 +344,13 @@ describe("SpatialTopologyView", () => {
     renderView();
     await ready();
     fireEvent.click(rowFor("coordinator"));
-    await screen.findByTestId("spatial-inspector");
+    await screen.findByTestId("spatial-workspace");
     act(() => {
       qc.setQueryData(["hosts"], { ownName: "me", selected: "other", hosts: [] });
     });
     expect(await screen.findByTestId("spatial-loading")).toBeTruthy();
     expect(screen.queryByTestId("spatial-agent-row")).toBeNull();
-    expect(screen.queryByTestId("spatial-inspector")).toBeNull();
+    expect(screen.queryByTestId("spatial-workspace")).toBeNull();
     expect(screen.getByTestId("spatial-remote-host").textContent).toContain("other");
   });
 
@@ -466,8 +518,237 @@ describe("SpatialTopologyView layout", () => {
     const grid = screen.getByTestId("spatial-grid");
     expect(classesOf(grid)).not.toContain("absolute");
     expect(classesOf(grid)).toContain("grid-cols-1");
-    expect(classesOf(screen.getByTestId("spatial-stage"))).toEqual(expect.arrayContaining(["h-[56vh]", "min-h-[18rem]"]));
+    // Bounded by a share of the small viewport (spatial.css), so the page
+    // always keeps area outside the touch-capturing canvas to scroll by.
+    expect(classesOf(screen.getByTestId("spatial-stage"))).toContain("spatial-stage--stacked");
     expect(classesOf(screen.getByTestId("spatial-inspector-region"))).not.toContain("overflow-auto");
     expect(classesOf(screen.getByTestId("spatial-index-region"))).toEqual(expect.arrayContaining(["max-h-[70vh]", "overflow-auto"]));
+  });
+});
+
+// Phone stage: the view measures its own stage (no device detection) and a
+// small stage (phone portrait, short landscape) gets the compact scene —
+// collapsed camera controls and key, one-line labels — with the selected
+// seat in a compact card OUTSIDE the scene whose Details disclose the full
+// inspector. Every seat stays reachable through search and the index.
+describe("SpatialTopologyView phone stage", () => {
+  type Observed = { el: Element; cb: ResizeObserverCallback };
+  let observed: Observed[] = [];
+  const originalWidth = window.innerWidth;
+
+  beforeEach(() => {
+    observed = [];
+    vi.stubGlobal("ResizeObserver", class {
+      private cb: ResizeObserverCallback;
+      constructor(cb: ResizeObserverCallback) { this.cb = cb; }
+      observe(el: Element) { observed.push({ el, cb: this.cb }); }
+      unobserve() {}
+      disconnect() { observed = observed.filter((o) => o.cb !== this.cb); }
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: originalWidth });
+    window.dispatchEvent(new Event("resize"));
+  });
+
+  function viewport(width: number) {
+    Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: width });
+    window.dispatchEvent(new Event("resize"));
+  }
+  function stageIs(width: number, height: number) {
+    const stage = screen.getByTestId("spatial-stage");
+    const entry = { target: stage, contentRect: { width, height } } as unknown as ResizeObserverEntry;
+    act(() => { for (const o of observed.filter((o) => o.el === stage)) o.cb([entry], {} as ResizeObserver); });
+  }
+
+  it("a phone-sized stage gets compact labels, collapsed controls and key, and an empty-state hint outside the scene", async () => {
+    viewport(430);
+    renderView();
+    await screen.findByTestId("stub-renderer", {}, { timeout: 5000 });
+    stageIs(398, 480);
+    expect(screen.getByTestId("stub-renderer").getAttribute("data-density")).toBe("compact");
+    // Camera: Fit + More only; the rest is one tap away and refreshes label occluders.
+    expect(screen.getByTestId("spatial-camera-fit")).toBeTruthy();
+    expect(screen.queryByTestId("spatial-camera-zoom-in")).toBeNull();
+    const more = screen.getByTestId("spatial-camera-more");
+    expect(more.getAttribute("aria-expanded")).toBe("false");
+    controller.refreshOverlays.mockClear();
+    fireEvent.click(more);
+    expect(more.getAttribute("aria-expanded")).toBe("true");
+    for (const id of ["iso", "top", "zoom-in", "zoom-out", "reset"]) expect(screen.getByTestId(`spatial-camera-${id}`)).toBeTruthy();
+    expect(controller.refreshOverlays).toHaveBeenCalled();
+    // Key collapsed; opening it shows shape markers with text, not colour alone.
+    expect(screen.queryByTestId("spatial-legend")).toBeNull();
+    fireEvent.click(screen.getByTestId("spatial-key-toggle"));
+    const legend = screen.getByTestId("spatial-legend");
+    expect(legend.textContent).toContain("needs input");
+    expect(legend.querySelectorAll(".spatial-mark[data-tone]").length).toBeGreaterThanOrEqual(5);
+    // No inspector wall under the stage: a one-line hint instead.
+    expect(screen.getByTestId("spatial-selection-card-empty").textContent).toMatch(/tap a seat/i);
+    expect(screen.queryByTestId("spatial-inspector-empty")).toBeNull();
+  });
+
+  it("a tapped seat docks the workspace under a smaller stage with a seat switcher; Details disclose the tabs; the URL keeps the exact node", async () => {
+    viewport(430);
+    const { router } = renderView();
+    await screen.findByTestId("stub-renderer", {}, { timeout: 5000 });
+    stageIs(398, 480);
+    fireEvent.click(screen.getAllByTestId("stub-pick").find((b) => b.getAttribute("data-key")?.endsWith("/n3"))!);
+    const workspace = await screen.findByTestId("spatial-workspace");
+    expect(workspace.getAttribute("data-layout")).toBe("stacked");
+    expect(screen.getByTestId("spatial-stage").className).toContain("spatial-stage--docked");
+    expect(within(workspace).getByTestId("spatial-inspector-name").textContent).toBe("reviewer");
+    expect(within(workspace).getByTestId("spatial-workspace-context").textContent).toContain("acme-build / builders");
+    expect(within(workspace).getByTestId("spatial-inspector-status").textContent).toContain("identity mismatch");
+    expect(within(workspace).getByTestId("spatial-open-seat").getAttribute("href")).toContain("/topology/seat/ra/builders.reviewer");
+    expect(within(workspace).getByTestId("spatial-inspector-problems").textContent).toContain("pane runs zsh");
+    // Progressive disclosure on a phone: the tabs are behind Details.
+    const details = within(workspace).getByTestId("spatial-workspace-details-toggle");
+    expect(details.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("spatial-workspace-tab-work")).toBeNull();
+    fireEvent.click(details);
+    expect(details.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("spatial-workspace-tab-work").getAttribute("aria-selected")).toBe("true");
+    expect(router.state.location.search).toMatchObject({ selectedRig: "ra", selectedNode: "n3" });
+    // Tap-to-switch: the strip lists every seat by exact key; switching keeps Details open.
+    const chips = within(screen.getByTestId("spatial-seat-switcher")).getAllByTestId("spatial-seat-chip");
+    expect(chips).toHaveLength(3);
+    expect(chips.find((c) => c.getAttribute("aria-pressed") === "true")?.getAttribute("data-spatial-key")).toMatch(/\/agent\/n3$/);
+    fireEvent.click(chips.find((c) => c.getAttribute("data-spatial-key")?.endsWith("/agent/n1"))!);
+    await waitFor(() => expect(screen.getByTestId("spatial-inspector-name").textContent).toBe("coordinator"));
+    expect(router.state.location.search).toMatchObject({ selectedRig: "ra", selectedNode: "n1" });
+    expect(screen.getByTestId("spatial-workspace-tab-work")).toBeTruthy();
+    // Close returns the room to the scene.
+    fireEvent.click(screen.getByTestId("spatial-workspace-close"));
+    await waitFor(() => expect(screen.queryByTestId("spatial-workspace")).toBeNull());
+    expect(screen.getByTestId("spatial-stage").className).not.toContain("spatial-stage--docked");
+    expect(router.state.location.search).not.toHaveProperty("selectedNode");
+  });
+
+  it("explicit phone selection reveals the docked workspace once; restore, refresh, switcher and docked scene taps never scroll", async () => {
+    const scrolled: Element[] = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element) { scrolled.push(this); };
+    try {
+      // Initial URL restore of a selection: docks without moving the page.
+      viewport(430);
+      const restored = renderView({ kind: "host" }, { initialPath: "/topology?selectedRig=ra&selectedNode=n1" });
+      await screen.findByTestId("stub-renderer", {}, { timeout: 5000 });
+      stageIs(398, 480);
+      await screen.findByTestId("spatial-workspace");
+      act(() => { qc.setQueryData(["rig", "ra", "graph", "local"], { ...graphA }); });
+      await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+      expect(scrolled).toEqual([]);
+      restored.unmount();
+
+      viewport(430);
+      renderView();
+      await screen.findByTestId("stub-renderer", {}, { timeout: 5000 });
+      stageIs(398, 480);
+      // Index row (below the workspace slot): reveal the dock and focus its heading.
+      fireEvent.click(rowFor("reviewer"));
+      await waitFor(() => expect(scrolled).toHaveLength(1));
+      expect(scrolled[0]).toBe(screen.getByTestId("spatial-dock"));
+      expect(document.activeElement).toBe(screen.getByTestId("spatial-inspector-name"));
+      // Switcher changes keep the anchor; a scene tap while docked keeps the scene.
+      fireEvent.click(chipFor("coordinator"));
+      await waitFor(() => expect(screen.getByTestId("spatial-inspector-name").textContent).toBe("coordinator"));
+      fireEvent.click(screen.getAllByTestId("stub-pick").find((b) => b.getAttribute("data-key")?.endsWith("/agent/n2"))!);
+      await waitFor(() => expect(screen.getByTestId("spatial-inspector-name").textContent).toBe("builder1"));
+      // Typing and Enter in search never scroll.
+      const input = screen.getByTestId("spatial-search");
+      fireEvent.change(input, { target: { value: "reviewer" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+      await waitFor(() => expect(screen.getByTestId("spatial-inspector-name").textContent).toBe("reviewer"));
+      expect(scrolled).toHaveLength(1);
+      // Close, then a scene tap docks again: that first dock is revealed.
+      fireEvent.keyDown(input, { key: "Escape" });
+      fireEvent.click(screen.getByTestId("spatial-workspace-close"));
+      await waitFor(() => expect(screen.queryByTestId("spatial-workspace")).toBeNull());
+      fireEvent.click(screen.getAllByTestId("stub-pick").find((b) => b.getAttribute("data-key")?.endsWith("/agent/n1"))!);
+      await waitFor(() => expect(scrolled).toHaveLength(2));
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  it("re-picking the selected seat in the lower index reveals at once; a request consumed on wide never replays on rotation", async () => {
+    const scrolled: Element[] = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element) { scrolled.push(this); };
+    try {
+      // Phone: the seat is already docked (restored from the URL). Picking
+      // that same seat again from the All seats index is explicit intent.
+      viewport(430);
+      const phone = renderView({ kind: "host" }, { initialPath: "/topology?selectedRig=ra&selectedNode=n1" });
+      await screen.findByTestId("stub-renderer", {}, { timeout: 5000 });
+      stageIs(398, 480);
+      await screen.findByTestId("spatial-workspace");
+      expect(scrolled).toHaveLength(0);
+      fireEvent.click(screen.getByTestId("spatial-all-seats-toggle"));
+      fireEvent.click(rowFor("coordinator"));
+      await waitFor(() => expect(scrolled).toHaveLength(1));
+      expect(scrolled[0]).toBe(screen.getByTestId("spatial-dock"));
+      expect(document.activeElement).toBe(screen.getByTestId("spatial-inspector-name"));
+      phone.unmount();
+      scrolled.length = 0;
+
+      // Wide: the same explicit pick is consumed without scrolling; a later
+      // rotation to the phone layout must not deliver it.
+      viewport(1194);
+      renderView({ kind: "host" }, { initialPath: "/topology?selectedRig=ra&selectedNode=n1" });
+      await screen.findByTestId("stub-renderer", {}, { timeout: 5000 });
+      stageIs(700, 500);
+      await screen.findByTestId("spatial-workspace");
+      fireEvent.click(screen.getByTestId("spatial-all-seats-toggle"));
+      fireEvent.click(rowFor("coordinator"));
+      await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+      act(() => viewport(430));
+      stageIs(398, 480);
+      await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+      // …nor does a later unrelated selection change reuse it.
+      fireEvent.click(chipFor("builder1"));
+      await waitFor(() => expect(screen.getByTestId("spatial-inspector-name").textContent).toBe("builder1"));
+      expect(scrolled).toHaveLength(0);
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  it("rotation keeps the docked workspace and the exact selection across phone, landscape and tablet", async () => {
+    viewport(430);
+    renderView();
+    await screen.findByTestId("stub-renderer", {}, { timeout: 5000 });
+    stageIs(398, 480);
+    fireEvent.click(screen.getAllByTestId("stub-pick").find((b) => b.getAttribute("data-key")?.endsWith("/n1"))!);
+    const workspace = await screen.findByTestId("spatial-workspace");
+    // Short landscape phone stage is still compact; same workspace element.
+    viewport(932);
+    stageIs(900, 300);
+    expect(screen.getByTestId("stub-renderer").getAttribute("data-density")).toBe("compact");
+    expect(screen.getByTestId("spatial-workspace")).toBe(workspace);
+    // Tablet portrait: roomy stage and full camera column; still docked.
+    viewport(834);
+    stageIs(802, 660);
+    expect(screen.getByTestId("stub-renderer").getAttribute("data-density")).toBe("full");
+    expect(screen.getByTestId("spatial-inspector-name").textContent).toBe("coordinator");
+    expect(screen.getByTestId("spatial-camera-zoom-in")).toBeTruthy();
+    expect(screen.getByTestId("spatial-legend")).toBeTruthy();
+    viewport(430);
+    stageIs(398, 480);
+    expect(screen.getByTestId("spatial-inspector-name").textContent).toBe("coordinator");
+    expect(screen.getByTestId("stub-renderer").getAttribute("data-selected")).toMatch(/\/n1$/);
+  });
+
+  it("a squeezed stage in the wide layout uses compact labels but keeps the side inspector", async () => {
+    viewport(1194);
+    renderView();
+    await screen.findByTestId("stub-renderer", {}, { timeout: 5000 });
+    stageIs(520, 700);
+    expect(screen.getByTestId("stub-renderer").getAttribute("data-density")).toBe("compact");
+    fireEvent.click(screen.getAllByTestId("stub-pick").find((b) => b.getAttribute("data-key")?.endsWith("/n1"))!);
+    await waitFor(() => expect(screen.getByTestId("spatial-inspector-name").textContent).toBe("coordinator"));
+    expect(screen.queryByTestId("spatial-selection-card")).toBeNull();
   });
 });

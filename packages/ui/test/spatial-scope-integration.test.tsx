@@ -139,9 +139,9 @@ describe("Graph Explorer inset (fit/draw bounds exclude the Explorer)", () => {
     15000,
   );
 
-  it("narrow viewports carry no Explorer inset (graph degrades to table; offset 0)", async () => {
+  it("narrow viewports carry no Explorer inset (phone graph frame, offset 0)", async () => {
     const { container } = renderAt("/topology/rig/abc-rig", 800);
-    await waitFor(() => expect(container.querySelector("[data-testid='topology-rig-tabs']")).toBeTruthy(), { timeout: 5000 });
+    await waitFor(() => expect(container.querySelector("[data-testid='topology-phone-graph-frame']")).toBeTruthy(), { timeout: 5000 });
     expect(container.querySelector("[data-testid='topology-graph-frame']")).toBeNull();
     expect(mainEl(container).style.getPropertyValue("--header-anchor-offset")).toBe("0rem");
   }, 15000);

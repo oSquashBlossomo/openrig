@@ -36,14 +36,17 @@ const DialogContent = React.forwardRef<
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
-        "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 vellum-heavy p-6 shadow-[0_20px_40px_rgba(46,52,46,0.06)] border border-outline-variant",
+        // Bounded to the dynamic viewport inside the safe areas with a 1rem
+        // gutter (globals.css); a tall body scrolls inside the dialog so its
+        // close and confirmation actions stay reachable on a phone.
+        "fixed left-[50%] top-[50%] z-50 grid w-[var(--shell-dialog-max-width)] max-w-lg max-h-[var(--shell-dialog-max-height)] overflow-y-auto overscroll-contain translate-x-[-50%] translate-y-[-50%] gap-4 vellum-heavy p-6 shadow-[0_20px_40px_rgba(46,52,46,0.06)] border border-outline-variant",
         className
       )}
       {...props}
     >
       {children}
       {!hideCloseButton && (
-        <DialogPrimitive.Close className="absolute right-4 top-4 opacity-70 transition-opacity duration-150 hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background disabled:pointer-events-none">
+        <DialogPrimitive.Close className="touch-target absolute right-4 top-4 [@media(pointer:coarse)]:right-1 [@media(pointer:coarse)]:top-1 inline-flex items-center justify-center opacity-70 transition-opacity duration-150 hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background disabled:pointer-events-none">
           <X className="h-4 w-4" />
           <span className="sr-only">Close</span>
         </DialogPrimitive.Close>

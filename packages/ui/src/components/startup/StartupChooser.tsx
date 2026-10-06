@@ -183,7 +183,7 @@ function RigList({ rigs }: { rigs: ReturnType<typeof useRigSummary> }) {
           data-testid="startup-rig-filter"
           value={chooser.rigFilter}
           onChange={event => updateChooser({ rigFilter: event.target.value })}
-          className="border border-outline-variant bg-surface-lowest px-2 py-1 font-mono text-[11px] text-on-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-on-surface"
+          className="touch-target touch-text border border-outline-variant bg-surface-lowest px-2 py-1 font-mono text-[11px] text-on-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-on-surface"
         />
       </label>
       {!trusted ? (
@@ -202,7 +202,7 @@ function RigList({ rigs }: { rigs: ReturnType<typeof useRigSummary> }) {
                   data-testid={`startup-rig-${rig.id}`}
                   aria-pressed={selected}
                   onClick={() => updateChooser({ rigId: rig.id, nodeId: selected ? chooser.nodeId : null, seatScroll: selected ? chooser.seatScroll : 0 })}
-                  className={cn("w-full px-3 py-2 text-left focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-on-surface",
+                  className={cn("touch-target w-full px-3 py-2 text-left focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-on-surface",
                     selected ? "border-l-2 border-l-on-surface bg-inverse-surface/[0.06]" : "border-l-2 border-l-transparent hover:bg-surface-low")}
                 >
                   <span className="block break-words font-mono text-[11px] text-on-surface">{rig.name || <span className="text-on-surface-variant">name not served</span>}</span>
@@ -258,7 +258,7 @@ function RigDetail({ rigQuery, onInspectSeat, onOpenRig }: { rigQuery: ReturnTyp
               data-testid="startup-seat-filter"
               value={chooser.seatFilter}
               onChange={event => updateChooser({ seatFilter: event.target.value })}
-              className="border border-outline-variant bg-surface-lowest px-2 py-1 font-mono text-[11px] text-on-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-on-surface"
+              className="touch-target touch-text border border-outline-variant bg-surface-lowest px-2 py-1 font-mono text-[11px] text-on-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-on-surface"
             />
           </label>
           {rig.seats.length === 0 ? <Notice title="This rig serves no seats" testId="startup-no-seats">The startup projection lists no seats for this rig.</Notice> : (
@@ -288,7 +288,7 @@ function SeatRow({ seat, selected, onSelect }: { seat: StartupSeat; selected: bo
         data-testid={`startup-seat-${seat.nodeId}`}
         aria-pressed={selected}
         onClick={onSelect}
-        className={cn("grid w-full gap-1 px-3 py-2 text-left sm:grid-cols-[minmax(0,1fr)_auto] focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-on-surface",
+        className={cn("touch-target grid w-full gap-1 px-3 py-2 text-left sm:grid-cols-[minmax(0,1fr)_auto] focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-on-surface",
           selected ? "border-l-2 border-l-on-surface bg-inverse-surface/[0.06]" : "border-l-2 border-l-transparent hover:bg-surface-low")}
       >
         <span className="min-w-0">

@@ -8,6 +8,10 @@ declare const notifyTokenBrand: unique symbol;
 export type NotifyToken = PersistedEvent & { readonly [notifyTokenBrand]: true };
 export type NotifyRegister = (token: PersistedEvent) => void;
 
+export type EventReplayResult =
+  | { seq: number; event: PersistedEvent; error?: never }
+  | { seq: number; event?: never; error: "invalid event payload JSON" | "invalid event payload shape" };
+
 export interface NotifyDrainStatus {
   state: "healthy" | "unparseable";
   watermark: number;
@@ -203,10 +207,33 @@ export class EventBus {
     return rows.map((row) => this.rowToPersistedEvent(row));
   }
 
-  replayAll(seq: number): PersistedEvent[] {
-    const rows = this.rowsAfter(seq);
+  replayAll(seq: number, limit?: number): PersistedEvent[] {
+    const rows = this.rowsAfter(seq, limit);
 
     return rows.map((row) => this.rowToPersistedEvent(row));
+  }
+
+  /**
+   * Opt-in replay for readers that can skip malformed rows. The limit counts
+   * raw rows, and each result retains its sequence so even an invalid-only
+   * page can advance. Strict replay callers and notify-drain state are unchanged.
+   */
+  replayAllSettled(seq: number, limit: number): EventReplayResult[] {
+    if (!Number.isSafeInteger(limit) || limit <= 0) throw new RangeError("replay limit must be a positive safe integer");
+    return this.rowsAfter(seq, limit).map((row) => {
+      try {
+        return { seq: row.seq, event: this.rowToPersistedEvent(row) };
+      } catch (caught) {
+        return {
+          seq: row.seq,
+          error: caught instanceof SyntaxError ? "invalid event payload JSON" : "invalid event payload shape",
+        };
+      }
+    });
+  }
+
+  currentSequence(): number {
+    return this.maxSeq();
   }
 
   private drainNotifyRowsToQuiescence(startAfter: number): void {
@@ -256,12 +283,12 @@ export class EventBus {
     return row.seq ?? 0;
   }
 
-  private rowsAfter(seq: number): EventRow[] {
+  private rowsAfter(seq: number, limit = -1): EventRow[] {
     return this.db
       .prepare(
-        "SELECT seq, rig_id, node_id, type, payload, created_at FROM events WHERE seq > ? ORDER BY seq",
+        "SELECT seq, rig_id, node_id, type, payload, created_at FROM events WHERE seq > ? ORDER BY seq LIMIT ?",
       )
-      .all(seq) as EventRow[];
+      .all(seq, limit) as EventRow[];
   }
 
   private rowToPersistedEvent(row: EventRow): PersistedEvent {

@@ -44,22 +44,25 @@ function TrailRow({
         type="button"
         data-testid={`workflow-trail-row-${entry.trailId}`}
         onClick={onToggle}
-        className="flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-surface-variant/50"
+        // Narrow: a stacked grid (index · step · time / role · exit / note)
+        // instead of squeezing fixed columns; from sm the single dense row.
+        // Ids wrap anywhere rather than overflow; their text is unchanged.
+        className="touch-target grid w-full grid-cols-[1.5rem_minmax(0,1fr)_auto] items-baseline gap-x-2 gap-y-0.5 px-2 py-1.5 text-left hover:bg-surface-variant/50 sm:flex sm:items-center"
       >
-        <span className="font-mono text-[10px] text-on-surface-variant w-6 shrink-0">{index + 1}.</span>
-        <span className="font-mono text-[11px] font-bold text-on-surface w-28 shrink-0">{entry.stepId}</span>
-        <span className="font-mono text-[10px] text-on-surface-variant w-20 shrink-0">{entry.stepRole}</span>
-        <span className={cn("font-mono text-[11px] w-20 shrink-0", exit.cls)}>
+        <span className="font-mono text-[10px] text-on-surface-variant sm:w-6 sm:shrink-0">{index + 1}.</span>
+        <span className="min-w-0 font-mono text-[11px] font-bold text-on-surface [overflow-wrap:anywhere] sm:w-28 sm:shrink-0">{entry.stepId}</span>
+        <span className="col-start-2 row-start-2 min-w-0 font-mono text-[10px] text-on-surface-variant [overflow-wrap:anywhere] sm:w-20 sm:shrink-0">{entry.stepRole}</span>
+        <span className={cn("col-start-3 row-start-2 font-mono text-[11px] sm:w-20 sm:shrink-0", exit.cls)}>
           {exit.glyph} {entry.closureReason}
         </span>
-        <span className="min-w-0 flex-1 truncate text-[11px] text-on-surface-variant">{note ?? "—"}</span>
+        <span className="col-span-2 col-start-2 min-w-0 truncate text-[11px] text-on-surface-variant sm:flex-1">{note ?? "—"}</span>
         <span className="hidden font-mono text-[10px] text-on-surface-variant lg:inline">{entry.actorSession}</span>
-        <span className="font-mono text-[10px] text-on-surface-variant"><DisplayTime iso={entry.closedAt} className="" /></span>
+        <span className="col-start-3 row-start-1 font-mono text-[10px] text-on-surface-variant"><DisplayTime iso={entry.closedAt} className="" /></span>
       </button>
       {expanded ? (
         <div
           data-testid={`workflow-trail-expanded-${entry.trailId}`}
-          className="space-y-1 border-t border-outline-variant/50 bg-surface-lowest/10 px-8 py-2 font-mono text-[10px]"
+          className="space-y-1 border-t border-outline-variant/50 bg-surface-lowest/10 px-3 py-2 font-mono text-[10px] [overflow-wrap:anywhere] sm:px-8"
         >
           <p>
             <span className="uppercase text-on-surface-variant">actor: </span>
@@ -135,16 +138,17 @@ export function InstanceTrailTimeline({
           id={`step-${instance.currentStepId}`}
           data-testid="workflow-frontier-row"
           className={cn(
-            "flex items-center gap-2 border border-dashed px-2 py-1.5",
+            "grid grid-cols-[1.5rem_minmax(0,1fr)_auto] items-baseline gap-x-2 gap-y-0.5 border border-dashed px-2 py-1.5 sm:flex sm:items-center",
             frontierAnchored ? "border-amber-700 bg-amber-700/5" : "border-outline-variant",
           )}
         >
-          <span className="font-mono text-[10px] text-on-surface-variant w-6 shrink-0">{trail.length + 1}.</span>
-          <span className="font-mono text-[11px] font-bold text-on-surface w-28 shrink-0">
+          <span className="font-mono text-[10px] text-on-surface-variant sm:w-6 sm:shrink-0">{trail.length + 1}.</span>
+          <span className="min-w-0 font-mono text-[11px] font-bold text-on-surface [overflow-wrap:anywhere] sm:w-28 sm:shrink-0">
             {instance.currentStepId}
           </span>
-          <span className="font-mono text-[11px] text-emerald-800 w-20 shrink-0">● open</span>
-          <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-on-surface-variant">
+          <span className="font-mono text-[11px] text-emerald-800 sm:w-20 sm:shrink-0">● open</span>
+          {/* Narrow: the frontier packet id wraps whole on its own line; sm+ truncates in the row. */}
+          <span className="col-span-2 col-start-2 min-w-0 font-mono text-[10px] text-on-surface-variant [overflow-wrap:anywhere] sm:flex-1 sm:truncate">
             frontier packet {instance.currentFrontier[0] ?? "(none)"}
             {instance.deadline.evidence ? ` · held by ${instance.deadline.evidence.ownerSession}` : ""}
           </span>
