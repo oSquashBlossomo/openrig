@@ -870,3 +870,501 @@ describe("SpatialRenderer compact (phone) density", () => {
     expect(rafQueue.size).toBe(0);
   });
 });
+
+// Night Atelier scene: real figures by configured runtime on instanced stone
+// plinths, one selection spotlight, no shadow maps, and traffic arcs that
+// come ONLY from real records, driven by their own timestamps.
+type SceneLike = { traverse(fn: (o: unknown) => void): void };
+function lastScene(): SceneLike {
+  return gl.instances.at(-1)!.render.mock.calls.at(-1)![0] as SceneLike;
+}
+function sceneObjects<T>(predicate: (o: unknown) => o is T): T[] {
+  const out: T[] = [];
+  lastScene().traverse((o) => { if (predicate(o)) out.push(o); });
+  return out;
+}
+
+function runtimeSetup() {
+  const nodes = [
+    { id: "pod-p", type: "podGroup", data: { podNamespace: "lead" } },
+    { id: "c1", type: "rigNode", parentId: "pod-p", data: { logicalId: "lead.coordinator", runtime: "claude-code", status: "running" } },
+    { id: "c2", type: "rigNode", parentId: "pod-p", data: { logicalId: "lead.builder", runtime: "claude-code", status: "running" } },
+    { id: "x1", type: "rigNode", parentId: "pod-p", data: { logicalId: "lead.reviewer", runtime: "codex", status: "running" } },
+    { id: "u1", type: "rigNode", data: { logicalId: "loose.helper", runtime: "pi", status: "running" } },
+  ];
+  const model = buildSpatialModel("local", [parseSpatialRig("local", { rigId: "r", rigName: "rig", graph: { nodes, edges: [{ id: "e", source: "c1", target: "x1", label: "delegates_to" }] } })]);
+  const base = setup();
+  const keyOf = (node: string) => [...model.agentsByKey.values()].find((a) => a.nodeId === node)!.key;
+  return { ...base, props: { ...base.props, model, layout: layoutSpatialModel(model) }, keyOf };
+}
+
+describe("SpatialRenderer Night Atelier scene", () => {
+  it("draws Clawd for Claude seats, Null for Codex and a neutral stele otherwise, sharing geometry by kind; no pucks", async () => {
+    const { Mesh, InstancedMesh } = await import("three");
+    const { props, keyOf } = runtimeSetup();
+    render(<SpatialRenderer {...props} />);
+    flushFrames();
+    const figures = sceneObjects((o): o is InstanceType<typeof Mesh> => o instanceof Mesh && !(o instanceof InstancedMesh) && typeof (o as InstanceType<typeof Mesh>).userData.spatialKey === "string");
+    const geometryOf = (key: string) => figures.filter((f) => f.userData.spatialKey === key).map((f) => f.geometry);
+    // Two Claude seats share one Clawd geometry; Codex differs; the Pi seat is neutral.
+    expect(geometryOf(keyOf("c1"))[0]).toBe(geometryOf(keyOf("c2"))[0]);
+    expect(geometryOf(keyOf("x1"))[0]).not.toBe(geometryOf(keyOf("c1"))[0]);
+    expect(geometryOf(keyOf("u1"))[0]).not.toBe(geometryOf(keyOf("c1"))[0]);
+    expect(geometryOf(keyOf("u1"))[0]).not.toBe(geometryOf(keyOf("x1"))[0]);
+    // Codex seats carry the glowing NULL face as a second, shared mesh.
+    expect(geometryOf(keyOf("x1"))).toHaveLength(2);
+    expect(geometryOf(keyOf("c1"))).toHaveLength(1);
+    // No legacy puck cylinders anywhere in the scene (cones subclass cylinders; check the type).
+    expect(sceneObjects((o): o is InstanceType<typeof Mesh> => o instanceof Mesh && o.geometry.type === "CylinderGeometry")).toHaveLength(0);
+    // Every seat label names its figure kind for styling (from runtime only).
+    // (Read from the scene: CSS2D attaches an element only once it has shown.)
+    const figuresByLabel = sceneObjects((o): o is { element: HTMLElement } => (o as { element?: HTMLElement }).element?.dataset.spatialLabel === "agent")
+      .map((o) => o.element.dataset.figure).sort();
+    expect(figuresByLabel).toEqual(["clawd", "clawd", "neutral", "null"]);
+  });
+
+  it("stands every seat on one instanced plinth draw with instanced contact shadows, one spotlight and no shadow maps", async () => {
+    const { InstancedMesh, SpotLight } = await import("three");
+    const { props } = runtimeSetup();
+    render(<SpatialRenderer {...props} />);
+    flushFrames();
+    // Scene stone only (the traffic pool's bead strings are separate, idle instances).
+    const instanced = sceneObjects((o): o is InstanceType<typeof InstancedMesh> => o instanceof InstancedMesh && (o as InstanceType<typeof InstancedMesh>).name !== "traffic-beads");
+    expect(instanced).toHaveLength(2);
+    const plinths = instanced.find((m) => Array.isArray(m.userData.instanceKeys))!;
+    expect(plinths.count).toBe(4);
+    expect(new Set(plinths.userData.instanceKeys)).toEqual(new Set(props.model.agentsByKey.keys()));
+    expect(instanced.find((m) => m !== plinths)!.count).toBe(8); // plinth + figure shadow per seat
+    expect(sceneObjects((o): o is InstanceType<typeof SpotLight> => o instanceof SpotLight)).toHaveLength(1);
+    expect((gl.instances[0] as unknown as { shadowMap: { enabled: boolean } }).shadowMap.enabled).toBe(false);
+  });
+
+  it("a tap on a seat's plinth selects that exact seat (instance index → key)", async () => {
+    const { Raycaster } = await import("three");
+    const { props, onSelect, keyOf } = runtimeSetup();
+    render(<SpatialRenderer {...props} />);
+    flushFrames();
+    const { InstancedMesh } = await import("three");
+    const plinths = sceneObjects((o): o is InstanceType<typeof InstancedMesh> => o instanceof InstancedMesh && Array.isArray((o as InstanceType<typeof InstancedMesh>).userData.instanceKeys))[0]!;
+    const index = (plinths.userData.instanceKeys as string[]).indexOf(keyOf("x1"));
+    vi.spyOn(Raycaster.prototype, "intersectObjects").mockImplementation(() => [{ object: plinths, instanceId: index }] as unknown as ReturnType<InstanceType<typeof Raycaster>["intersectObjects"]>);
+    const canvas = gl.instances[0]!.domElement;
+    vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue({ x: 0, y: 0, left: 0, top: 0, width: 800, height: 500, right: 800, bottom: 500, toJSON: () => ({}) });
+    Object.assign(canvas, { setPointerCapture: vi.fn(), releasePointerCapture: vi.fn(), hasPointerCapture: () => false });
+    act(() => {
+      canvas.dispatchEvent(pointerEvent("pointerdown", { id: 1, x: 300, y: 300, pointerType: "mouse" }));
+      canvas.dispatchEvent(pointerEvent("pointerup", { id: 1, x: 300, y: 300, pointerType: "mouse" }));
+    });
+    expect(onSelect).toHaveBeenCalledWith(keyOf("x1"));
+  });
+
+  it("the one spotlight lights the selected seat and goes dark with no selection, in a single frame", async () => {
+    const { SpotLight } = await import("three");
+    const { props, keyOf } = runtimeSetup();
+    const { rerender } = render(<SpatialRenderer {...props} />);
+    flushFrames();
+    const spot = () => sceneObjects((o): o is InstanceType<typeof SpotLight> => o instanceof SpotLight)[0]!;
+    expect(spot().intensity).toBe(0);
+    rerender(<SpatialRenderer {...props} selectedKey={keyOf("x1")} />);
+    expect(flushFrames()).toBe(1);
+    expect(spot().intensity).toBeGreaterThan(0);
+    const seat = props.layout.agents.find((a) => a.key === keyOf("x1"))!;
+    expect(spot().target.position.x).toBeCloseTo(seat.position[0], 5);
+    expect(spot().target.position.z).toBeCloseTo(seat.position[2], 5);
+    rerender(<SpatialRenderer {...props} selectedKey={null} />);
+    flushFrames();
+    expect(spot().intensity).toBe(0);
+  });
+
+  describe("traffic arcs (real records only)", () => {
+    const T0 = 1_760_000_000_000;
+    beforeEach(() => { vi.spyOn(Date, "now").mockImplementation(() => T0 + now); });
+    const caption = () => document.querySelector<HTMLElement>("[data-spatial-label='traffic']:not([style*='display: none'])");
+    // Traffic lines live in the traffic layer: the group holding the traffic captions.
+    async function arcLines() {
+      const { Line } = await import("three");
+      type Node = { children: Array<{ element?: HTMLElement }> };
+      return sceneObjects((o): o is InstanceType<typeof Line> => o instanceof Line
+        && ((o as unknown as { parent: Node | null }).parent?.children.some((c) => c.element?.dataset.spatialLabel === "traffic") ?? false));
+    }
+    const record = (keyOf: (n: string) => string, over: Partial<{ id: string; occurredAt: number }> = {}) => ({
+      id: over.id ?? "q-1", sourceKey: keyOf("c2"), targetKey: keyOf("c1"), type: "queue.handed_off",
+      label: "handoff · builder → coordinator", occurredAt: over.occurredAt ?? T0 + now,
+    });
+
+    it("no traffic: nothing drawn and no frames requested", async () => {
+      const { props } = runtimeSetup();
+      const { rerender } = render(<SpatialRenderer {...props} />);
+      flushFrames();
+      rerender(<SpatialRenderer {...props} traffic={[]} />);
+      expect(rafQueue.size).toBe(0);
+      expect((await arcLines()).some((l) => l.visible)).toBe(false);
+    });
+
+    it("a fresh record travels sender → receiver for a bounded number of frames, then the scene is quiet", async () => {
+      const { props, keyOf } = runtimeSetup();
+      const { rerender } = render(<SpatialRenderer {...props} />);
+      flushFrames();
+      rerender(<SpatialRenderer {...props} traffic={[record(keyOf)]} />);
+      expect(rafQueue.size).toBe(1);
+      flushFrames(4);
+      const live = (await arcLines()).filter((l) => l.visible);
+      expect(live).toHaveLength(1);
+      expect(caption()?.textContent).toBe("handoff · builder → coordinator");
+      const frames = flushFrames(2000);
+      // ~4.2s at 16ms per frame, then it stops by itself.
+      expect(frames).toBeGreaterThan(200);
+      expect(frames).toBeLessThan(300);
+      expect(rafQueue.size).toBe(0);
+      expect((await arcLines()).some((l) => l.visible)).toBe(false);
+    });
+
+    it("never replays: an id already seen, or a record older than the window, schedules nothing", async () => {
+      const { props, keyOf } = runtimeSetup();
+      const { rerender } = render(<SpatialRenderer {...props} traffic={[record(keyOf)]} />);
+      flushFrames(2000);
+      expect(rafQueue.size).toBe(0);
+      // Same record re-delivered in a fresh array (cache refresh).
+      rerender(<SpatialRenderer {...props} traffic={[{ ...record(keyOf, { id: "q-1", occurredAt: T0 }) }]} />);
+      expect(rafQueue.size).toBe(0);
+      // A different, but old, record (replayed history).
+      rerender(<SpatialRenderer {...props} traffic={[record(keyOf, { id: "q-old", occurredAt: T0 + now - 60_000 })]} />);
+      expect(rafQueue.size).toBe(0);
+      expect((await arcLines()).some((l) => l.visible)).toBe(false);
+    });
+
+    it("a record re-delivered while still in flight keeps one arc (no duplicate, no restart)", async () => {
+      const { props, keyOf } = runtimeSetup();
+      const first = record(keyOf);
+      const { rerender } = render(<SpatialRenderer {...props} traffic={[first]} />);
+      flushFrames(20);
+      const before = (await arcLines()).find((l) => l.visible)!;
+      const headBefore = before.geometry.drawRange.start + before.geometry.drawRange.count;
+      rerender(<SpatialRenderer {...props} traffic={[{ ...first }, { ...first }]} />);
+      flushFrames(1);
+      const visible = (await arcLines()).filter((l) => l.visible);
+      expect(visible).toHaveLength(1);
+      expect(visible[0]!.geometry.drawRange.start + visible[0]!.geometry.drawRange.count).toBeGreaterThanOrEqual(headBefore);
+    });
+
+    it("a record that leaves traffic (disconnect, hidden or reduced suppression) stops at once and never replays", async () => {
+      const { props, keyOf } = runtimeSetup();
+      const live = record(keyOf);
+      const { rerender } = render(<SpatialRenderer {...props} traffic={[live]} />);
+      flushFrames(4);
+      expect((await arcLines()).some((l) => l.visible)).toBe(true);
+      // The activity hook drops its pulses: the arc ends in one paint, idle after.
+      rerender(<SpatialRenderer {...props} traffic={[]} />);
+      expect(flushFrames(1)).toBe(1);
+      expect((await arcLines()).some((l) => l.visible)).toBe(false);
+      expect(caption()).toBeNull();
+      expect(rafQueue.size).toBe(0);
+      // Pulses come back (reconnect) with the same, still-recent record: it was
+      // already seen, so it is not admitted again; only a new id animates.
+      rerender(<SpatialRenderer {...props} traffic={[{ ...live }]} />);
+      expect(rafQueue.size).toBe(0);
+      rerender(<SpatialRenderer {...props} traffic={[{ ...live }, record(keyOf, { id: "q-2" })]} />);
+      flushFrames(2);
+      expect((await arcLines()).filter((l) => l.visible)).toHaveLength(1);
+    });
+
+    it("a record whose seats are not in this scene draws nothing", async () => {
+      const { props, keyOf } = runtimeSetup();
+      const { rerender } = render(<SpatialRenderer {...props} />);
+      flushFrames();
+      rerender(<SpatialRenderer {...props} traffic={[{ ...record(keyOf), targetKey: "local/r/agent/ghost" }]} />);
+      expect(rafQueue.size).toBe(0);
+    });
+
+    it("reduced motion: one static paint for the window, cleared by a single timer, no frame loop", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const { props, keyOf } = runtimeSetup();
+        const { rerender } = render(<SpatialRenderer {...props} reducedMotion />);
+        flushFrames();
+        rerender(<SpatialRenderer {...props} reducedMotion traffic={[record(keyOf)]} />);
+        expect(flushFrames()).toBe(1);
+        expect(rafQueue.size).toBe(0);
+        const line = (await arcLines()).find((l) => l.visible)!;
+        expect(line.geometry.drawRange.start).toBe(0); // whole arc, no travel
+        act(() => { now += 5000; vi.advanceTimersByTime(5000); });
+        expect(flushFrames()).toBe(1);
+        expect((await arcLines()).some((l) => l.visible)).toBe(false);
+        expect(rafQueue.size).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("a hidden tab does not keep painting an arc", async () => {
+      const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+      const { props, keyOf } = runtimeSetup();
+      const { rerender } = render(<SpatialRenderer {...props} />);
+      flushFrames();
+      rerender(<SpatialRenderer {...props} traffic={[record(keyOf)]} />);
+      expect(flushFrames()).toBe(1);
+      expect(rafQueue.size).toBe(0);
+      visibility.mockRestore();
+    });
+
+    it("unmount releases figure geometry, the shadow texture and the traffic pool", async () => {
+      const { BufferGeometry, Texture, Material } = await import("three");
+      const geometryDispose = vi.spyOn(BufferGeometry.prototype, "dispose");
+      const textureDispose = vi.spyOn(Texture.prototype, "dispose");
+      const materialDispose = vi.spyOn(Material.prototype, "dispose");
+      const { props, keyOf } = runtimeSetup();
+      const { unmount } = render(<SpatialRenderer {...props} traffic={[record(keyOf)]} />);
+      flushFrames(3);
+      geometryDispose.mockClear();
+      materialDispose.mockClear();
+      unmount();
+      // 13 shared + 6 figure geometries (4 bodies, 2 glows) + 6 traffic lines, at least.
+      expect(geometryDispose.mock.calls.length).toBeGreaterThanOrEqual(25);
+      expect(textureDispose).toHaveBeenCalled();
+      expect(materialDispose.mock.calls.length).toBeGreaterThanOrEqual(24);
+      expect(rafQueue.size).toBe(0);
+      expect(document.querySelector("[data-spatial-label='traffic']")).toBeNull();
+    });
+  });
+});
+
+// Painted-QA composition fixes, measured against the real scene and camera:
+// figures are a usable size at a ~500px stage, stone hugs the seats, Fit never
+// lands on figure backs, and no label plate covers any figure.
+describe("SpatialRenderer atelier composition", () => {
+  type Cam = InstanceType<typeof import("three").PerspectiveCamera>;
+  const lastCamera = () => gl.instances.at(-1)!.render.mock.calls.at(-1)![1] as Cam;
+
+  function threeSeatRig() {
+    const nodes = [
+      { id: "pod-lead", type: "podGroup", data: { podNamespace: "lead" } },
+      { id: "pod-b", type: "podGroup", data: { podNamespace: "builders" } },
+      { id: "c1", type: "rigNode", parentId: "pod-lead", data: { logicalId: "lead.coordinator", runtime: "claude-code", status: "running" } },
+      { id: "b2", type: "rigNode", parentId: "pod-b", data: { logicalId: "builders.builder2", runtime: "claude-code", status: "running" } },
+      { id: "r1", type: "rigNode", parentId: "pod-b", data: { logicalId: "builders.reviewer1", runtime: "codex", status: "idle" } },
+    ];
+    const graph = { nodes, edges: [{ id: "e1", source: "c1", target: "b2", label: "delegates_to" }, { id: "e2", source: "c1", target: "r1", label: "delegates_to" }] };
+    const model = buildSpatialModel("local", [parseSpatialRig("local", { rigId: "r", rigName: "acme-build", graph })]);
+    const base = setup();
+    const keyOf = (node: string) => [...model.agentsByKey.values()].find((a) => a.nodeId === node)!.key;
+    return { ...base, props: { ...base.props, model, layout: layoutSpatialModel(model) }, keyOf };
+  }
+
+  async function figureRects() {
+    const { Mesh, InstancedMesh, Vector3 } = await import("three");
+    const cam = lastCamera();
+    cam.updateMatrixWorld();
+    const out = new Map<string, { left: number; top: number; right: number; bottom: number }>();
+    lastScene().traverse((o) => {
+      if (!(o instanceof Mesh) || o instanceof InstancedMesh || typeof o.userData.spatialKey !== "string") return;
+      if (!(o.material as { vertexColors?: boolean }).vertexColors || (o.material as { toneMapped?: boolean }).toneMapped === false) return;
+      // The figure's own bounding-box corners through its world matrix: the
+      // true hull of the rotated figure (a world-axis box would overstate it).
+      o.updateWorldMatrix(true, false);
+      const box = o.geometry.boundingBox!;
+      let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+      for (const x of [box.min.x, box.max.x]) for (const y of [box.min.y, box.max.y]) for (const z of [box.min.z, box.max.z]) {
+        const p = new Vector3(x, y, z).applyMatrix4(o.matrixWorld).project(cam);
+        const sx = (p.x + 1) * 400, sy = (1 - p.y) * 250;
+        left = Math.min(left, sx); right = Math.max(right, sx); top = Math.min(top, sy); bottom = Math.max(bottom, sy);
+      }
+      out.set(o.userData.spatialKey, { left, top, right, bottom });
+    });
+    return out;
+  }
+
+  it("at an 800×500 stage the default fit shows figures large enough to recognise; the selected one is portrait-sized", async () => {
+    const { props, keyOf } = threeSeatRig();
+    render(<SpatialRenderer {...props} selectedKey={keyOf("c1")} />);
+    flushFrames();
+    const rects = await figureRects();
+    expect(rects.size).toBe(3);
+    for (const [key, r] of rects) {
+      expect(r.bottom - r.top, key).toBeGreaterThan(60);
+      expect(r.left, key).toBeGreaterThanOrEqual(0);
+      expect(r.right, key).toBeLessThanOrEqual(800);
+    }
+    const selected = rects.get(keyOf("c1"))!;
+    expect(selected.bottom - selected.top).toBeGreaterThanOrEqual(90);
+    expect(selected.bottom - selected.top).toBeLessThanOrEqual(160);
+  });
+
+  it("each dais hugs its seats' plinths and the slab hugs the daises: tighter than the layout rectangles, containing every plinth", async () => {
+    const { Mesh, BoxGeometry } = await import("three");
+    const { props } = threeSeatRig();
+    render(<SpatialRenderer {...props} />);
+    flushFrames();
+    const { InstancedMesh } = await import("three");
+    const boxes = sceneObjects((o): o is InstanceType<typeof Mesh> => o instanceof Mesh && !(o instanceof InstancedMesh) && o.geometry instanceof BoxGeometry && (o.geometry as InstanceType<typeof BoxGeometry>).parameters.height >= 0.6)
+      .map((m) => { const p = (m.geometry as InstanceType<typeof BoxGeometry>).parameters; return { x0: m.position.x - p.width / 2, x1: m.position.x + p.width / 2, z0: m.position.z - p.depth / 2, z1: m.position.z + p.depth / 2, w: p.width, d: p.depth }; });
+    const layoutArea = [...props.layout.pods, ...props.layout.rigs].reduce((n, r) => n + r.w * r.d, 0);
+    const drawnArea = boxes.reduce((n, b) => n + b.w * b.d, 0);
+    expect(boxes).toHaveLength(3); // two daises + one slab
+    expect(drawnArea).toBeLessThan(layoutArea * 0.85);
+    for (const seat of props.layout.agents) {
+      const inside = boxes.filter((b) => seat.position[0] - 1.85 >= b.x0 - 1e-6 && seat.position[0] + 1.85 <= b.x1 + 1e-6 && seat.position[2] - 1.85 >= b.z0 - 1e-6 && seat.position[2] + 1.85 <= b.z1 + 1e-6);
+      expect(inside.length, seat.key).toBe(2); // its dais and its slab
+    }
+  });
+
+  it("Fit from behind the figures returns to their fronts; Fit from a front angle keeps that angle", async () => {
+    const { props, controllerRef } = threeSeatRig();
+    render(<SpatialRenderer {...props} />);
+    flushFrames();
+    const facing = { x: Math.sin(0.4), z: Math.cos(0.4) };
+    const viewDir = () => {
+      const cam = lastCamera();
+      const t = cam.position.clone().sub(controllerRef.current!.snapshot()!.target.length ? new (cam.position.constructor as typeof import("three").Vector3)(...controllerRef.current!.snapshot()!.target) : cam.position);
+      return t.normalize();
+    };
+    act(() => controllerRef.current!.orbit(Math.PI, 0));
+    flushFrames();
+    const behind = viewDir();
+    expect(behind.x * facing.x + behind.z * facing.z).toBeLessThan(0);
+    act(() => controllerRef.current!.fit());
+    flushFrames();
+    const front = viewDir();
+    expect(front.x * facing.x + front.z * facing.z).toBeGreaterThan(0.5);
+    act(() => controllerRef.current!.orbit(0.3, 0));
+    flushFrames();
+    const angled = viewDir();
+    act(() => controllerRef.current!.fit());
+    flushFrames();
+    const kept = viewDir();
+    expect(kept.x).toBeCloseTo(angled.x, 2);
+    expect(kept.z).toBeCloseTo(angled.z, 2);
+  });
+
+  it("no visible seat label plate overlaps any figure, including the selected seat's own", async () => {
+    const { estimateLabelSize } = await import("../src/components/topology/spatial/spatial-view-math.js");
+    const { props, keyOf } = threeSeatRig();
+    render(<SpatialRenderer {...props} selectedKey={keyOf("c1")} />);
+    flushFrames();
+    const figures = [...(await figureRects()).values()];
+    const labels = sceneObjects((o): o is { element: HTMLElement; center: { x: number; y: number } } => (o as { element?: HTMLElement }).element?.dataset.spatialLabel === "agent")
+      .filter((o) => o.element.style.display !== "none" && o.element.style.transform);
+    expect(labels.length).toBeGreaterThanOrEqual(1);
+    for (const label of labels) {
+      const m = label.element.style.transform.match(/translate\((-?[\d.]+)px,\s*(-?[\d.]+)px\)/)!;
+      const [x, y] = [Number(m[1]), Number(m[2])];
+      const meta = label.element.querySelector<HTMLElement>(".spatial-label__meta");
+      const size = estimateLabelSize("agent", label.element.querySelector(".spatial-label__text")!.textContent ?? "", meta && !meta.hidden ? meta.textContent : null);
+      const rect = { left: x - label.center.x * size.w, top: y - label.center.y * size.h, right: x - label.center.x * size.w + size.w, bottom: y - label.center.y * size.h + size.h };
+      for (const f of figures) {
+        const overlap = rect.left < f.right && f.left < rect.right && rect.top < f.bottom && f.top < rect.bottom;
+        expect(overlap, `${label.element.textContent} over a figure`).toBe(false);
+      }
+    }
+    const selected = labels.find((l) => l.element.classList.contains("is-selected"));
+    expect(selected).toBeTruthy();
+    expect(["plinth", "above", "below"]).toContain(selected!.element.dataset.anchor);
+  });
+});
+
+// Handoff effect geometry: a luminous trail (core + additive glow tubes over
+// the hairline), travelling sparks behind the head, ends just outside the
+// figures, and a grounded arrival accent on the receiver's plinth top.
+describe("SpatialRenderer traffic effect geometry", () => {
+  const T0 = 1_760_000_000_000;
+  beforeEach(() => { vi.spyOn(Date, "now").mockImplementation(() => T0 + now); });
+  type Obj = { name: string; visible: boolean; position: { x: number; y: number; z: number }; parent: { children: Obj[] } | null };
+  function trafficSlot() {
+    // The slot whose hairline is visible (the active arc's siblings share its index).
+    const lines = sceneObjects((o): o is Obj => (o as Obj).name === "traffic-line" && (o as Obj).visible);
+    expect(lines).toHaveLength(1);
+    const layer = lines[0]!.parent!.children;
+    const index = layer.filter((c) => c.name === "traffic-line").indexOf(lines[0]!);
+    const pick = (name: string) => layer.filter((c) => c.name === name)[index] as unknown as Record<string, any>;
+    return { line: lines[0] as unknown as Record<string, any>, core: pick("traffic-core"), glow: pick("traffic-glow"), beads: pick("traffic-beads"), head: pick("traffic-head"), arrival: pick("traffic-arrival") };
+  }
+  function seatBase(key: string) {
+    const body = sceneObjects((o): o is { userData: { spatialKey?: string }; parent: { position: { x: number; y: number; z: number } } } => (o as { userData?: { spatialKey?: string } }).userData?.spatialKey === key && !!(o as { parent?: unknown }).parent)[0]!;
+    return body.parent.position;
+  }
+  const pulse = (keyOf: (n: string) => string) => ({ id: "q-fx", sourceKey: keyOf("c2"), targetKey: keyOf("x1"), type: "queue.handed_off", label: "handoff", occurredAt: T0 + now });
+
+  it("while travelling: glow and core tubes trace the visible trail; sparks sit on the arc behind the head", async () => {
+    const { AdditiveBlending, Vector3 } = await import("three");
+    const { props, keyOf } = runtimeSetup();
+    const { rerender } = render(<SpatialRenderer {...props} />);
+    flushFrames();
+    rerender(<SpatialRenderer {...props} traffic={[pulse(keyOf)]} />);
+    flushFrames(52); // ~0.6 of travel
+    const slot = trafficSlot();
+    for (const tube of [slot.core, slot.glow]) {
+      expect(tube.visible).toBe(true);
+      expect(tube.material.blending).toBe(AdditiveBlending);
+      const range = tube.geometry.drawRange;
+      expect(range.count).toBeGreaterThan(0);
+      expect(range.start + range.count).toBeLessThanOrEqual(tube.geometry.index.count);
+      expect(range.count).toBeLessThan(tube.geometry.index.count); // only the trail, not the whole arc
+    }
+    expect(slot.glow.geometry.boundingSphere.radius).toBeGreaterThan(slot.core.geometry.boundingSphere.radius - 1e-6);
+    expect(slot.beads.visible).toBe(true);
+    expect(slot.beads.count).toBeGreaterThan(1);
+    // Each spark is on the arc (a hairline vertex) and earlier along it than the head.
+    const pts = slot.line.geometry.getAttribute("position");
+    const nearestIndex = (p: { x: number; y: number; z: number }) => {
+      let best = 0, bestD = Infinity;
+      for (let i = 0; i < pts.count; i++) { const d = Math.hypot(pts.getX(i) - p.x, pts.getY(i) - p.y, pts.getZ(i) - p.z); if (d < bestD) { bestD = d; best = i; } }
+      return { best, bestD };
+    };
+    const head = nearestIndex(slot.head.position);
+    expect(head.bestD).toBeLessThan(1e-4);
+    const m = new (await import("three")).Matrix4();
+    for (let i = 0; i < slot.beads.count; i++) {
+      slot.beads.getMatrixAt(i, m);
+      const spark = nearestIndex(new Vector3().setFromMatrixPosition(m));
+      expect(spark.bestD).toBeLessThan(1e-4);
+      expect(spark.best).toBeLessThan(head.best);
+    }
+  });
+
+  it("arc ends sit outside the sender and receiver figures, and the arrival accent is grounded on the receiver's plinth top", async () => {
+    const { props, keyOf } = runtimeSetup();
+    const { rerender } = render(<SpatialRenderer {...props} />);
+    flushFrames();
+    rerender(<SpatialRenderer {...props} traffic={[pulse(keyOf)]} />);
+    flushFrames(2);
+    const slot = trafficSlot();
+    const pts = slot.line.geometry.getAttribute("position");
+    const start = { x: pts.getX(0), z: pts.getZ(0) };
+    const end = { x: pts.getX(pts.count - 1), z: pts.getZ(pts.count - 1) };
+    const src = seatBase(keyOf("c2"));
+    const dst = seatBase(keyOf("x1"));
+    expect(Math.hypot(start.x - src.x, start.z - src.z)).toBeGreaterThan(0.9);
+    expect(Math.hypot(end.x - dst.x, end.z - dst.z)).toBeGreaterThan(0.9);
+    // The ends lean toward each other (the light leaves on the facing side).
+    expect(Math.hypot(start.x - dst.x, start.z - dst.z)).toBeLessThan(Math.hypot(src.x - dst.x, src.z - dst.z));
+    // After travel, the arrival accent glows flat at the receiver's plinth top, not through its body.
+    now += 1500;
+    flushFrames(1);
+    expect(slot.arrival.visible).toBe(true);
+    expect(slot.arrival.position.y).toBeCloseTo(dst.y + 0.03, 5);
+    expect(slot.arrival.position.x).toBeCloseTo(dst.x, 5);
+    expect(slot.arrival.position.z).toBeCloseTo(dst.z, 5);
+    expect(slot.head.visible).toBe(false);
+    expect(slot.beads.visible).toBe(false);
+    // Expiry: every part of the effect is hidden and no frame remains.
+    flushFrames(2000);
+    for (const part of [slot.line, slot.core, slot.glow, slot.beads, slot.head, slot.arrival]) expect(part.visible).toBe(false);
+    expect(rafQueue.size).toBe(0);
+  });
+
+  it("reduced motion: a static luminous arc (full tubes), no head and no sparks, painted once", async () => {
+    const { props, keyOf } = runtimeSetup();
+    const { rerender } = render(<SpatialRenderer {...props} reducedMotion />);
+    flushFrames();
+    rerender(<SpatialRenderer {...props} reducedMotion traffic={[pulse(keyOf)]} />);
+    expect(flushFrames()).toBe(1);
+    const slot = trafficSlot();
+    for (const tube of [slot.core, slot.glow]) {
+      expect(tube.visible).toBe(true);
+      expect(tube.geometry.drawRange.start).toBe(0);
+      expect(tube.geometry.drawRange.count).toBe(tube.geometry.index.count);
+    }
+    expect(slot.head.visible).toBe(false);
+    expect(slot.beads.visible).toBe(false);
+    expect(rafQueue.size).toBe(0);
+  });
+});

@@ -22,6 +22,7 @@ import { HostIndicator } from "../src/components/HostIndicator.js";
 import { TOPOLOGY_VISIT_STATE_KEY, navigateTopology, topologyTarget } from "../src/components/topology/topology-navigation.js";
 import { spatialVisitStore } from "../src/components/topology/spatial/spatial-visit-store.js";
 import { SPATIAL_SEARCH_WRITE_MS } from "../src/components/topology/spatial/SpatialTopologyView.js";
+import { spatialKey } from "../src/lib/spatial-topology.js";
 import { createMockEventSourceClass } from "./helpers/mock-event-source.js";
 
 // --- Renderer stub with the real controller contract ------------------------
@@ -214,6 +215,16 @@ const search = (router: ReturnType<typeof renderApp>["router"]) => router.state.
 const tab = (prefix: string, id: string) => screen.getByTestId(`${prefix}-tab-${id}`);
 const indexRows = () => within(screen.getByTestId("spatial-seat-index-compact")).getAllByTestId("spatial-agent-row");
 const rowNamed = (name: string) => indexRows().find((r) => r.textContent?.includes(name))!;
+// While a seat is selected the full index sits behind the explicit "All
+// seats" disclosure and the compact switcher marks the selection. The pressed
+// chip carries the exact spatial key (host/rig/kind/node), so identity is
+// asserted on the full key, never a label.
+const pressedChipKey = () =>
+  screen.getAllByTestId("spatial-seat-chip").filter((c) => c.getAttribute("aria-pressed") === "true").map((c) => c.getAttribute("data-spatial-key"));
+const openAllSeats = () => {
+  const toggle = screen.getByTestId("spatial-all-seats-toggle");
+  if (toggle.getAttribute("aria-expanded") !== "true") fireEvent.click(toggle);
+};
 
 async function spatialReady() {
   // The first mount transforms the lazy spatial chunk; allow for a loaded host.
@@ -222,7 +233,7 @@ async function spatialReady() {
 }
 
 describe("reported journey: 3D → search → select → Open seat → Back", () => {
-  it("returns to the same source, 3D view, query, exact selection, camera pose and index scroll; Forward revisits the seat", async () => {
+  it("returns to the same source, 3D view, query, exact selection, camera pose and selected-workspace scroll; Forward revisits the seat", async () => {
     const { router } = renderApp("/topology");
     // Legacy entry binds once to the successfully read selected host.
     await waitFor(() => expect(search(router).sourceHost).toBe("local"));
@@ -240,9 +251,12 @@ describe("reported journey: 3D → search → select → Open seat → Back", ()
     expect(rendererLog.focus).toEqual([expect.stringMatching(/\/agent\/node_editor$/)]);
 
     fireEvent.click(screen.getByTestId("stub-move-camera"));
-    const indexRegion = screen.getByTestId("spatial-index-region");
-    indexRegion.scrollTop = 320;
-    fireEvent.scroll(indexRegion);
+    // Selected: the docked workspace (switcher → workspace → All seats) is the
+    // one scrolling region of the side column; the persistent index is gone.
+    expect(screen.queryByTestId("spatial-index-region")).toBeNull();
+    const inspectorRegion = screen.getByTestId("spatial-inspector-region");
+    inspectorRegion.scrollTop = 320;
+    fireEvent.scroll(inspectorRegion);
     const visit = (router.state.location.state as Record<string, unknown>)[TOPOLOGY_VISIT_STATE_KEY];
     expect(typeof visit).toBe("string");
     const indexBefore = router.history.location.state.__TSR_index;
@@ -265,13 +279,16 @@ describe("reported journey: 3D → search → select → Open seat → Back", ()
     expect(tab("topology-host", "spatial").getAttribute("aria-selected")).toBe("true");
     expect((screen.getByTestId("spatial-search") as HTMLInputElement).value).toBe("editor");
     expect(screen.getByTestId("spatial-inspector-name").textContent).toBe("editor");
-    expect(rowNamed("editor").getAttribute("aria-pressed")).toBe("true");
+    expect(pressedChipKey()).toEqual([spatialKey("local", "rig_bravo", "agent", "node_editor")]);
     expect((router.state.location.state as Record<string, unknown>)[TOPOLOGY_VISIT_STATE_KEY]).toBe(visit);
     // Useful pose and offset return (restored once, from this visit only).
     expect(rendererLog.mounts).toEqual([MOVED]);
-    await waitFor(() => expect(screen.getByTestId("spatial-index-region").scrollTop).toBe(320));
+    await waitFor(() => expect(screen.getByTestId("spatial-inspector-region").scrollTop).toBe(320));
     // Focus returns to the control that drilled, without stealing it later.
     expect(document.activeElement).toBe(screen.getByTestId("spatial-open-seat"));
+    // The full index (behind All seats) marks the same exact seat.
+    openAllSeats();
+    expect(rowNamed("editor").getAttribute("aria-pressed")).toBe("true");
 
     act(() => router.history.forward());
     await waitFor(() => expect(screen.getByText("desk.editor@rig_bravo")).toBeTruthy());
@@ -560,6 +577,9 @@ describe("exact opaque identities through drill and Back", () => {
       act(() => router.history.back());
       await spatialReady();
       expect(search(router)).toMatchObject({ selectedRig: value, selectedNode: value });
+      // Exact key in the switcher: rig `value`, never the same-named seat in rig "1".
+      expect(pressedChipKey()).toEqual([spatialKey("local", value, "agent", value)]);
+      openAllSeats();
       const selectedRow = screen.getAllByTestId("spatial-agent-row").find((r) => r.getAttribute("aria-pressed") === "true")!;
       expect(screen.getAllByTestId("spatial-index-rig").find((s) => s.contains(selectedRow))!.getAttribute("aria-label")).toBe("Rig odd");
     },
@@ -604,6 +624,8 @@ describe("selection intent survives partial, failed and filtered data", () => {
     expect(screen.getByTestId("spatial-inspector-name").textContent).toBe("editor");
     fireEvent.click(within(screen.getByTestId("spatial-selection-outside-filter")).getByRole("button"));
     await waitFor(() => expect(search(router).spatialQuery).toBeUndefined());
+    expect(pressedChipKey()).toEqual([spatialKey("local", "rig_bravo", "agent", "node_editor")]);
+    openAllSeats();
     expect(rowNamed("editor").getAttribute("aria-pressed")).toBe("true");
     cleanup();
 
@@ -678,6 +700,8 @@ describe("per-visit camera and scroll isolation", () => {
     fireEvent.click(screen.getByTestId("stub-move-camera"));
     const parentVisit = (router.state.location.state as Record<string, unknown>)[TOPOLOGY_VISIT_STATE_KEY];
     rendererLog.mounts.length = 0;
+    // A seat is selected, so the index's rig drill is reached through All seats.
+    openAllSeats();
     fireEvent.click(within(screen.getByTestId("spatial-seat-index-compact")).getByTitle("Open rig bravo"));
     await waitFor(() => expect(router.state.location.pathname).toBe("/topology/rig/rig_bravo"));
     expect(search(router)).toEqual({ sourceHost: "local", view: "spatial" });

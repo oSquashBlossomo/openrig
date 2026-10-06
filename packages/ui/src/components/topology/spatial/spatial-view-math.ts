@@ -206,6 +206,10 @@ export interface LabelLayoutOptions {
   height: number;
   /** Viewport regions already occupied (camera HUD, legend). */
   occluders?: readonly Rect[];
+  /** Projected figure silhouettes. Like occluders, no label may cover one,
+   *  and even a forced (selected) label prefers any anchor clear of them over
+   *  its primary anchor. */
+  silhouettes?: readonly Rect[];
   /** Kept clear between labels, px. */
   gap?: number;
   /** Margin from the viewport edge a non-forced label must respect, px. */
@@ -252,6 +256,9 @@ export function layoutLabels(candidates: readonly LabelCandidate[], options: Lab
     (a, b) => a.tier - b.tier || a.depth - b.depth || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
   );
   const grid = new Map<string, Rect[]>();
+  // Hard space (HUD/legend occluders + figure silhouettes) is also kept on its
+  // own, so a forced label can ignore other LABELS but never a figure.
+  const hard = new Map<string, Rect[]>();
   const cellsOf = (r: Rect): string[] => {
     const keys: string[] = [];
     const x0 = Math.floor(r.left / CELL), x1 = Math.floor(r.right / CELL);
@@ -259,16 +266,21 @@ export function layoutLabels(candidates: readonly LabelCandidate[], options: Lab
     for (let gx = x0; gx <= x1; gx++) for (let gy = y0; gy <= y1; gy++) keys.push(`${gx}:${gy}`);
     return keys;
   };
-  const occupy = (r: Rect) => {
+  const occupyIn = (target: Map<string, Rect[]>, r: Rect) => {
     for (const k of cellsOf(r)) {
-      const bucket = grid.get(k);
+      const bucket = target.get(k);
       if (bucket) bucket.push(r);
-      else grid.set(k, [r]);
+      else target.set(k, [r]);
     }
   };
-  const collides = (r: Rect) => cellsOf(r).some((k) => grid.get(k)?.some((o) => overlaps(o, r)) ?? false);
+  const occupy = (r: Rect) => occupyIn(grid, r);
+  const collidesIn = (target: Map<string, Rect[]>, r: Rect) => cellsOf(r).some((k) => target.get(k)?.some((o) => overlaps(o, r)) ?? false);
+  const collides = (r: Rect) => collidesIn(grid, r);
 
-  for (const occluder of options.occluders ?? []) occupy(occluder);
+  for (const occluder of [...(options.occluders ?? []), ...(options.silhouettes ?? [])]) {
+    occupy(occluder);
+    occupyIn(hard, occluder);
+  }
 
   const visible = new Set<string>();
   const offsets = new Map<string, number>();
@@ -305,9 +317,17 @@ export function layoutLabels(candidates: readonly LabelCandidate[], options: Lab
       if (inside(r) && !collides(r)) placed = { index: i, rect: r, dx };
     }
     if (!placed && forced) {
-      // Selected/hovered always show: primary anchor even if crowded.
-      const r = rectOf(c, anchors[0]!, gap);
-      placed = { index: 0, rect: r, dx: clamp(c, anchors[0]!, r) };
+      // Selected/hovered always show: first an anchor clear of figures and
+      // the HUD (other labels may be crowded), else the primary anchor.
+      for (let i = 0; i < anchors.length && !placed; i++) {
+        const r = rectOf(c, anchors[i]!, gap);
+        const dx = clamp(c, anchors[i]!, r);
+        if (!collidesIn(hard, r)) placed = { index: i, rect: r, dx };
+      }
+      if (!placed) {
+        const r = rectOf(c, anchors[0]!, gap);
+        placed = { index: 0, rect: r, dx: clamp(c, anchors[0]!, r) };
+      }
     }
     if (!placed) {
       suppressed++;
@@ -386,4 +406,85 @@ export function nearestWithin(points: Iterable<{ key: string; x: number; y: numb
     }
   }
   return bestDistance <= radius ? best : null;
+}
+
+// ---------------------------------------------------------------------------
+// Inter-seat traffic arcs (real activity records only)
+// ---------------------------------------------------------------------------
+
+/** Travel time of the light from sender to receiver, ms. */
+export const TRAFFIC_TRAVEL_MS = 1400;
+/** Whole visible life of one record from its own timestamp, ms: travel, then
+ *  the arrival glow and trail fade. Older records never animate. */
+export const TRAFFIC_TOTAL_MS = 4200;
+
+export interface TrafficPhase {
+  visible: boolean;
+  /** Head position along the arc, 0..1 (eased). */
+  head: number;
+  /** Visible trail span along the arc. */
+  trailFrom: number;
+  trailTo: number;
+  /** Whether the travelling light is drawn. */
+  headVisible: boolean;
+  /** Overall opacity, 0..1 (fades after arrival). */
+  alpha: number;
+  /** Arrival glow at the receiver, 0..1. */
+  arrival: number;
+}
+
+const HIDDEN_PHASE: TrafficPhase = { visible: false, head: 0, trailFrom: 0, trailTo: 0, headVisible: false, alpha: 0, arrival: 0 };
+
+/**
+ * Where a traffic arc is at `nowMs`, from the record's own `occurredAt` (epoch
+ * ms). Timestamp-driven, so a cached or replayed record older than
+ * TRAFFIC_TOTAL_MS never animates, and a remount shows only the remainder of
+ * a genuinely recent one. A timestamp in the future (clock skew) starts now.
+ * Reduced motion: no travel; the full arc and arrival mark show statically
+ * for the same window.
+ */
+export function trafficPhase(nowMs: number, occurredAt: number, reducedMotion: boolean): TrafficPhase {
+  if (!Number.isFinite(nowMs) || !Number.isFinite(occurredAt)) return HIDDEN_PHASE;
+  const elapsed = Math.max(0, nowMs - occurredAt);
+  if (elapsed >= TRAFFIC_TOTAL_MS) return HIDDEN_PHASE;
+  if (reducedMotion) {
+    return { visible: true, head: 1, trailFrom: 0, trailTo: 1, headVisible: false, alpha: 0.7, arrival: 0.8 };
+  }
+  if (elapsed < TRAFFIC_TRAVEL_MS) {
+    const t = elapsed / TRAFFIC_TRAVEL_MS;
+    const head = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; // ease in-out
+    return { visible: true, head, trailFrom: Math.max(0, head - 0.42), trailTo: head, headVisible: true, alpha: 1, arrival: 0 };
+  }
+  const fade = 1 - (elapsed - TRAFFIC_TRAVEL_MS) / (TRAFFIC_TOTAL_MS - TRAFFIC_TRAVEL_MS);
+  return { visible: true, head: 1, trailFrom: 1 - fade * 0.42, trailTo: 1, headVisible: false, alpha: fade, arrival: fade };
+}
+
+/** Travelling sparks behind the head of an arc. */
+export const TRAFFIC_BEADS = 6;
+const BEAD_SPACING = 0.045;
+
+export interface TrafficBead {
+  /** Position along the arc, 0..1. */
+  t: number;
+  /** Relative size, 1 at the head end. */
+  size: number;
+  /** Relative brightness, 0..1 (additive: 0 = invisible). */
+  intensity: number;
+}
+
+/**
+ * A short string of sparks trailing the head while it travels, evenly spaced
+ * behind it, shrinking and dimming with distance, and never placed before
+ * the visible trail starts. Empty when the head is not travelling.
+ */
+export function trafficBeads(phase: TrafficPhase): TrafficBead[] {
+  if (!phase.visible || !phase.headVisible) return [];
+  const beads: TrafficBead[] = [];
+  for (let k = 1; k <= TRAFFIC_BEADS; k++) {
+    const t = phase.head - k * BEAD_SPACING;
+    if (t < phase.trailFrom || t < 0) break;
+    const fall = 1 - k / (TRAFFIC_BEADS + 1);
+    beads.push({ t, size: 0.45 + 0.55 * fall, intensity: phase.alpha * fall });
+  }
+  return beads;
 }

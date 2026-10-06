@@ -26,8 +26,20 @@
 //     the selected/hovered seat, name-only rig/pod labels and a small ambient
 //     cap. A density change restyles the existing labels in place and paints
 //     once; it never rebuilds the scene.
-//   - Touch taps that just miss a puck snap to the nearest seat within a few
+//   - Touch taps that just miss a figure snap to the nearest seat within a few
 //     px (mouse picking stays exact); a tap in clear space still clears.
+//   - Night Atelier scene: warm-charcoal (or limestone, light theme) stone
+//     floor, rig slabs and pod daises; every seat stands on its own plinth as
+//     a real figure (Clawd for Claude, a reconstructed Null for Codex, an
+//     honest neutral stele otherwise; see spatial-mascots.ts). One warm key,
+//     one cool rim, a hemisphere fill and ONE selection spotlight; no shadow
+//     maps — contact shadows are a single instanced draw. Plinths and shadows
+//     are instanced; figure geometry and materials are shared by kind.
+//   - Traffic arcs come only from props.traffic (real activity records): each
+//     animates from its own timestamp for a bounded window, never restarts
+//     for an id already seen, never plays for an old (cached) record, and
+//     stops requesting frames as soon as no arc is in flight. Reduced motion
+//     shows a static arc for the same window; a hidden tab requests nothing.
 //   - Auto-framing follows streaming data until the operator commands the
 //     camera (drag, orbit, zoom, preset, fit, focus); Reset hands it back.
 //   - Camera continuity is a value, not GPU state: the controller can
@@ -37,12 +49,13 @@
 
 import { useEffect, useRef, type MutableRefObject } from "react";
 import {
-  AmbientLight,
+  ACESFilmicToneMapping,
+  AdditiveBlending,
   BoxGeometry,
   BufferGeometry,
   Color,
   ConeGeometry,
-  CylinderGeometry,
+  DataTexture,
   DirectionalLight,
   EdgesGeometry,
   Float32BufferAttribute,
@@ -50,30 +63,41 @@ import {
   GridHelper,
   Group,
   HemisphereLight,
+  InstancedMesh,
   Line,
+  LinearFilter,
   LineBasicMaterial,
   LineDashedMaterial,
   LineSegments,
   Material,
+  Matrix4,
   Mesh,
   MeshBasicMaterial,
   MeshStandardMaterial,
   OctahedronGeometry,
   PerspectiveCamera,
+  PlaneGeometry,
   QuadraticBezierCurve3,
+  Quaternion,
   Raycaster,
+  RepeatWrapping,
   Scene,
+  SphereGeometry,
+  SpotLight,
   SRGBColorSpace,
   TorusGeometry,
+  TubeGeometry,
   Vector2,
   Vector3,
   WebGLRenderer,
 } from "three";
+import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { CSS2DObject, CSS2DRenderer } from "three/examples/jsm/renderers/CSS2DRenderer.js";
 import {
   SPATIAL_CAMERA_DIRECTIONS,
   SPATIAL_LAYOUT,
+  normalize,
   deriveSeatStatus,
   fitDistance,
   type SpatialCameraPreset,
@@ -90,12 +114,17 @@ import {
   frameBox,
   layoutLabels,
   nearestWithin,
+  trafficBeads,
+  trafficPhase,
+  TRAFFIC_BEADS,
+  TRAFFIC_TOTAL_MS,
   type LabelAnchor,
   type LabelCandidate,
   type LabelDensity,
   type LabelKind,
   type Rect,
 } from "./spatial-view-math.js";
+import { buildMascotGeometries, mascotKindFor, type MascotGeometry, type MascotKind } from "./spatial-mascots.js";
 
 export type SpatialRendererFailure = "unsupported" | "context-lost" | "init-error";
 
@@ -136,9 +165,25 @@ export interface SpatialRendererProps {
   onCameraSettle?: (snapshot: SpatialCameraSnapshot) => void;
   /** Label density for the stage size; "compact" on small stages. */
   density?: LabelDensity;
+  /** Real inter-seat activity to draw as arcs (the activity hook's pulses).
+   *  Optional: absent or empty draws nothing and requests no frames. */
+  traffic?: readonly SpatialTrafficPulse[];
 }
 
-const FOV = 38;
+/** One real activity record, as produced by the spatial activity hook
+ *  (structurally the contract's SpatialTrafficRecord). `occurredAt` is the
+ *  record's canonical time, epoch ms; keys are exact spatial agent keys. */
+export interface SpatialTrafficPulse {
+  id: string;
+  sourceKey: string;
+  targetKey: string;
+  type: string;
+  label: string;
+  occurredAt: number;
+  qitemId?: string;
+}
+
+const FOV = 32;
 const MAX_DPR = 2;
 const DAMPING_FRAME_BUDGET = 72;
 const TWEEN_MS = 460;
@@ -152,19 +197,74 @@ const COMPACT_ALWAYS_LABEL_SEATS = 6;
 const MAX_COMPACT_LABELS = 16;
 /** A finger tap within this many px of a seat's centre selects it. */
 const TOUCH_PICK_RADIUS_PX = 24;
+/** Scene staging (world units; layout spacing is 4.4). */
+const PLINTH = { width: 3.7, height: 1.0, radius: 0.12 } as const;
+const DAIS_HEIGHT = 0.9;
+/** Stone margins around the OCCUPIED seats (the shared layout's padding and
+ *  header bands are not drawn as empty stone): dais beyond its plinths, slab
+ *  beyond its daises and loose plinths. Hierarchy stays: seat ⊂ dais ⊂ slab. */
+const DAIS_MARGIN = 0.55;
+const SLAB_MARGIN = 0.85;
+/** Figures turn a little toward the default camera. */
+const FIGURE_YAW = 0.4;
+/** Horizontal facing of every figure (its front, +z rotated by FIGURE_YAW). */
+const FIGURE_FACING = { x: Math.sin(FIGURE_YAW), z: Math.cos(FIGURE_YAW) } as const;
+/** The atelier's default three-quarter view: lower than the old iso, so the
+ *  figures read as figures; Top stays the shared plan view. */
+const ATELIER_ISO: Vec3 = normalize([0.62, 0.58, 1]);
+const MAX_TRAFFIC_ARCS = 6;
+const TRAFFIC_SEGMENTS = 48;
+/** Arc tubes: a bright core inside a soft additive glow (no post-processing). */
+const TRAFFIC_RADIAL = 6;
+const TRAFFIC_CORE_RADIUS = 0.055;
+const TRAFFIC_GLOW_RADIUS = 0.22;
+
+function presetDirection(preset: SpatialCameraPreset): Vec3 {
+  return preset === "iso" ? ATELIER_ISO : SPATIAL_CAMERA_DIRECTIONS[preset];
+}
 
 interface AgentVisual {
   key: string;
   group: Group;
   body: Mesh;
-  bodyMaterial: MeshStandardMaterial;
-  ring: Mesh;
-  ringMaterial: MeshBasicMaterial;
-  beacon: Group | null;
-  beaconMaterials: Material[];
+  glow: Mesh | null;
+  mats: { normal: Material; dim: Material; glow: Material | null; glowDim: Material | null };
+  status: Mesh;
+  statusMats: { normal: Material; stale: Material; dim: Material };
+  beacon: Mesh | null;
   label: CSS2DObject;
   tone: SpatialTone;
   stale: boolean;
+  /** Plinth top centre (figure base), world. */
+  base: Vector3;
+  height: number;
+  width: number;
+  /** Figure bounding-box corners relative to `base` (yaw applied), for the
+   *  projected silhouette the label layout keeps clear. */
+  corners: Vector3[];
+}
+
+interface TrafficVisual {
+  record: SpatialTrafficPulse | null;
+  line: Line;
+  lineMaterial: LineBasicMaterial;
+  /** Pooled tubes along the arc (vertex buffers refilled per real event). */
+  core: Mesh;
+  coreMaterial: MeshBasicMaterial;
+  glow: Mesh;
+  glowMaterial: MeshBasicMaterial;
+  /** Travelling sparks trailing the head: one instanced draw. */
+  beads: InstancedMesh;
+  beadMaterial: MeshBasicMaterial;
+  head: Mesh;
+  headMaterial: MeshBasicMaterial;
+  halo: Mesh;
+  haloMaterial: MeshBasicMaterial;
+  arrival: Mesh;
+  arrivalMaterial: MeshBasicMaterial;
+  label: CSS2DObject;
+  points: Vector3[];
+  apex: Vector3;
 }
 
 interface LabelEntry {
@@ -185,6 +285,8 @@ interface LabelEntry {
   text: string;
   meta: string | null;
   metaElement: HTMLElement | null;
+  /** Optional names per anchor, exposed as data-anchor for styling. */
+  anchorNames: Array<string | null>;
 }
 
 interface EdgeVisual {
@@ -204,13 +306,25 @@ interface Engine {
   camera: PerspectiveCamera;
   controls: OrbitControls;
   shared: {
-    puck: CylinderGeometry;
-    infra: BoxGeometry;
-    ring: TorusGeometry;
-    selection: TorusGeometry;
-    arrow: ConeGeometry;
-    beaconHead: OctahedronGeometry;
+    plinth: BufferGeometry;
+    shadow: BufferGeometry;
+    selection: BufferGeometry;
+    arrow: BufferGeometry;
+    beacon: BufferGeometry;
+    statusActive: BufferGeometry;
+    statusNeedsInput: BufferGeometry;
+    statusBlocked: BufferGeometry;
+    statusIdle: BufferGeometry;
+    statusUnknown: BufferGeometry;
+    trafficHead: BufferGeometry;
+    trafficHalo: BufferGeometry;
+    trafficArrival: BufferGeometry;
   };
+  mascots: Record<MascotKind, MascotGeometry>;
+  shadowTexture: DataTexture;
+  lights: { hemi: HemisphereLight; key: DirectionalLight; rim: DirectionalLight; fill: DirectionalLight; spot: SpotLight };
+  stoneTexture: DataTexture;
+  traffic: { pool: TrafficVisual[]; seen: Map<string, number> };
   content: Group;
   contentDisposables: Array<{ dispose(): void }>;
   grid: GridHelper | null;
@@ -222,7 +336,7 @@ interface Engine {
   labelEntries: LabelEntry[];
   occluders: Rect[];
   viewport: { w: number; h: number };
-  pickables: Mesh[];
+  pickables: Array<Mesh | InstancedMesh>;
   boundsCenter: Vector3;
   boundsRadius: number;
   boundsMin: Vec3;
@@ -247,7 +361,69 @@ interface Engine {
     matchKeys: ReadonlySet<string> | null;
     palette: SpatialPalette;
     density: LabelDensity;
+    reducedMotion: boolean;
   };
+}
+
+/** Low-contrast stone grain (deterministic value noise), shared by slabs,
+ *  daises and plinths so the warm key reveals surface and depth. */
+function makeStoneTexture(): DataTexture {
+  const size = 128;
+  const data = new Uint8Array(size * size * 4);
+  let seed = 0x2f6b9d;
+  const rand = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+  const lattice = 16;
+  const grid: number[] = [];
+  for (let i = 0; i < lattice * lattice; i++) grid.push(rand());
+  const at = (x: number, y: number) => grid[((y % lattice) + lattice) % lattice * lattice + (((x % lattice) + lattice) % lattice)]!;
+  const smooth = (t: number) => t * t * (3 - 2 * t);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      let v = 0;
+      let amp = 0.5;
+      for (let octave = 0, f = lattice / size; octave < 3; octave++, f *= 2, amp *= 0.5) {
+        const fx = x * f, fy = y * f;
+        const x0 = Math.floor(fx), y0 = Math.floor(fy);
+        const tx = smooth(fx - x0), ty = smooth(fy - y0);
+        const top = at(x0, y0) * (1 - tx) + at(x0 + 1, y0) * tx;
+        const bottom = at(x0, y0 + 1) * (1 - tx) + at(x0 + 1, y0 + 1) * tx;
+        v += amp * (top * (1 - ty) + bottom * ty);
+      }
+      const shade = Math.round(255 * (0.86 + 0.14 * v));
+      const i = (y * size + x) * 4;
+      data[i] = data[i + 1] = data[i + 2] = shade;
+      data[i + 3] = 255;
+    }
+  }
+  const texture = new DataTexture(data, size, size);
+  texture.wrapS = texture.wrapT = RepeatWrapping;
+  texture.colorSpace = SRGBColorSpace;
+  texture.magFilter = LinearFilter;
+  texture.minFilter = LinearFilter;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+/** Soft radial falloff for contact shadows (no canvas needed). */
+function makeShadowTexture(): DataTexture {
+  const size = 64;
+  const data = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const dx = (x + 0.5) / size * 2 - 1;
+      const dy = (y + 0.5) / size * 2 - 1;
+      const r = Math.min(1, Math.hypot(dx, dy));
+      const a = Math.pow(1 - r, 1.8);
+      const i = (y * size + x) * 4;
+      data[i] = data[i + 1] = data[i + 2] = 0;
+      data[i + 3] = Math.round(a * 255);
+    }
+  }
+  const texture = new DataTexture(data, size, size);
+  texture.magFilter = LinearFilter;
+  texture.minFilter = LinearFilter;
+  texture.needsUpdate = true;
+  return texture;
 }
 
 /** Theme tokens are CSS sRGB HSL; convert into three's linear working space. */
@@ -268,6 +444,10 @@ export function cameraBoundsCompatible(saved: SpatialCameraSnapshot["bounds"], c
   if (ratio < 0.8 || ratio > 1.25) return false;
   const [x, y, z] = saved.center;
   return Math.hypot(x - center.x, y - center.y, z - center.z) <= radius * 0.25;
+}
+
+function documentHidden(): boolean {
+  return typeof document !== "undefined" && document.visibilityState === "hidden";
 }
 
 function easeInOutCubic(t: number): number {
@@ -291,6 +471,11 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
     let controls: OrbitControls | null = null;
     let resizeObserver: ResizeObserver | null = null;
     let shared: Engine["shared"] | null = null;
+    let mascots: Engine["mascots"] | null = null;
+    let shadowTexture: DataTexture | null = null;
+    let stoneTexture: DataTexture | null = null;
+    let trafficPool: TrafficVisual[] = [];
+    let trafficTimer: ReturnType<typeof setTimeout> | null = null;
     let selectionMaterial: MeshBasicMaterial | null = null;
     let frame = 0;
     let disposed = false;
@@ -317,8 +502,25 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
         clearContent(engine);
         disposeGrid(engine);
       }
+      if (trafficTimer) clearTimeout(trafficTimer);
+      trafficTimer = null;
+      for (const visual of trafficPool) {
+        visual.line.geometry.dispose();
+        visual.core.geometry.dispose();
+        visual.glow.geometry.dispose();
+        visual.beads.dispose();
+        for (const mat of [visual.lineMaterial, visual.coreMaterial, visual.glowMaterial, visual.beadMaterial, visual.headMaterial, visual.haloMaterial, visual.arrivalMaterial]) mat.dispose();
+        visual.label.element.remove();
+      }
+      trafficPool = [];
       if (shared) for (const g of Object.values(shared)) g.dispose();
       shared = null;
+      if (mascots) for (const f of Object.values(mascots)) { f.body.dispose(); f.glow?.dispose(); }
+      mascots = null;
+      shadowTexture?.dispose();
+      shadowTexture = null;
+      stoneTexture?.dispose();
+      stoneTexture = null;
       selectionMaterial?.dispose();
       selectionMaterial = null;
       controls?.dispose();
@@ -350,6 +552,10 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
       const gl = renderer;
       gl.setPixelRatio(Math.min(typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1, MAX_DPR));
       gl.shadowMap.enabled = false;
+      // Filmic tone mapping keeps the warm key and the coral/orange figures
+      // from clipping; status inlays and traffic opt out (toneMapped: false).
+      gl.toneMapping = ACESFilmicToneMapping;
+      gl.toneMappingExposure = palette.atelier.exposure;
       const canvas = gl.domElement;
       canvas.setAttribute("data-testid", "spatial-canvas");
       canvas.setAttribute("aria-hidden", "true");
@@ -364,7 +570,7 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
       host.appendChild(labelRenderer.domElement);
 
       const scene = new Scene();
-      scene.background = toColor(palette.background);
+      scene.background = toColor(palette.atelier.stage);
       const camera = new PerspectiveCamera(FOV, 1, 0.5, 5000);
       camera.position.set(60, 70, 80);
 
@@ -378,22 +584,45 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
       orbit.maxDistance = 1200;
       orbit.zoomToCursor = true;
 
-      const hemi = new HemisphereLight(0xffffff, toColor(palette.ground), 1.35);
-      const ambient = new AmbientLight(0xffffff, 0.35);
-      const sun = new DirectionalLight(0xffffff, 1.25);
-      sun.position.set(40, 90, 55);
-      scene.add(hemi, ambient, sun);
+      // Lighting: hemisphere fill, a warm key from the upper left/front, a
+      // cool rim from behind, and one selection spotlight (intensity 0 until
+      // a seat is selected). Colours/intensities come from the palette.
+      const hemi = new HemisphereLight(0xffffff, 0x000000, 1);
+      const key = new DirectionalLight(0xffffff, 1);
+      key.position.set(-45, 80, 55);
+      const rim = new DirectionalLight(0xffffff, 1);
+      rim.position.set(35, 40, -70);
+      // Front fill: low, from the viewer's side, so a dark figure (Null)
+      // keeps its form and faces read; never the dominant light.
+      const fill = new DirectionalLight(0xffffff, 1);
+      fill.position.set(12, 22, 90);
+      const spot = new SpotLight(0xffffff, 0, 0, 0.36, 0.85, 0);
+      scene.add(hemi, key, rim, fill, spot, spot.target);
 
-      const geometries = {
-        puck: new CylinderGeometry(0.95, 1.08, 0.7, 36),
-        infra: new BoxGeometry(1.7, 0.7, 1.7),
-        ring: new TorusGeometry(1.5, 0.1, 8, 56),
-        selection: new TorusGeometry(2.05, 0.07, 6, 64),
-        arrow: new ConeGeometry(0.34, 0.95, 14),
-        beaconHead: new OctahedronGeometry(0.42, 0),
+      const shadowGeo = new PlaneGeometry(1, 1);
+      shadowGeo.rotateX(-Math.PI / 2);
+      const geometries: Engine["shared"] = {
+        plinth: new RoundedBoxGeometry(PLINTH.width, PLINTH.height, PLINTH.width, 2, PLINTH.radius),
+        shadow: shadowGeo,
+        selection: new TorusGeometry(PLINTH.width * 0.46, 0.045, 6, 64),
+        arrow: new ConeGeometry(0.16, 0.42, 10),
+        beacon: new OctahedronGeometry(0.24, 0),
+        statusActive: new SphereGeometry(0.15, 12, 8),
+        statusNeedsInput: new OctahedronGeometry(0.2, 0),
+        statusBlocked: new BoxGeometry(0.28, 0.28, 0.12),
+        statusIdle: new TorusGeometry(0.13, 0.045, 6, 18),
+        statusUnknown: new BoxGeometry(0.34, 0.07, 0.07),
+        trafficHead: new SphereGeometry(0.17, 14, 10),
+        trafficHalo: new SphereGeometry(0.5, 14, 10),
+        // Grounded arrival accent hugging the receiver's plinth-top edge.
+        trafficArrival: new TorusGeometry(PLINTH.width * 0.5, 0.06, 6, 56),
       };
       shared = geometries;
-      const selectionMat = new MeshBasicMaterial({ color: toColor(palette.selection), transparent: true, opacity: 0.95 });
+      geometries.trafficArrival.rotateX(Math.PI / 2);
+      mascots = buildMascotGeometries();
+      shadowTexture = makeShadowTexture();
+      stoneTexture = makeStoneTexture();
+      const selectionMat = new MeshBasicMaterial({ color: toColor(palette.atelier.selection), transparent: true, opacity: 0.95, toneMapped: false });
       selectionMaterial = selectionMat;
       const selectionMarker = new Mesh(geometries.selection, selectionMat);
       selectionMarker.rotation.x = Math.PI / 2;
@@ -402,6 +631,48 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
 
       const content = new Group();
       scene.add(content);
+
+      // Traffic arc pool (bounded; reused, never grown).
+      const trafficLayer = new Group();
+      scene.add(trafficLayer);
+      for (let i = 0; i < MAX_TRAFFIC_ARCS; i++) {
+        const lineGeo = new BufferGeometry();
+        lineGeo.setAttribute("position", new Float32BufferAttribute(new Float32Array((TRAFFIC_SEGMENTS + 1) * 3), 3));
+        const lineMaterial = new LineBasicMaterial({ transparent: true, opacity: 0, depthWrite: false, toneMapped: false });
+        const luminous = { transparent: true, depthWrite: false, toneMapped: false, blending: AdditiveBlending } as const;
+        const headMaterial = new MeshBasicMaterial({ toneMapped: false });
+        const haloMaterial = new MeshBasicMaterial({ ...luminous, opacity: 0.3 });
+        const arrivalMaterial = new MeshBasicMaterial({ ...luminous, opacity: 0 });
+        const coreMaterial = new MeshBasicMaterial({ ...luminous, opacity: 0 });
+        const glowMaterial = new MeshBasicMaterial({ ...luminous, opacity: 0 });
+        const beadMaterial = new MeshBasicMaterial({ ...luminous, opacity: 1 });
+        const line = new Line(lineGeo, lineMaterial);
+        const head = new Mesh(geometries.trafficHead, headMaterial);
+        const halo = new Mesh(geometries.trafficHalo, haloMaterial);
+        const arrival = new Mesh(geometries.trafficArrival, arrivalMaterial);
+        const placeholder = new QuadraticBezierCurve3(new Vector3(), new Vector3(0, 1, 0), new Vector3(1, 0, 0));
+        const core = new Mesh(new TubeGeometry(placeholder, TRAFFIC_SEGMENTS, TRAFFIC_CORE_RADIUS, TRAFFIC_RADIAL, false), coreMaterial);
+        const glow = new Mesh(new TubeGeometry(placeholder, TRAFFIC_SEGMENTS, TRAFFIC_GLOW_RADIUS, TRAFFIC_RADIAL, false), glowMaterial);
+        const beads = new InstancedMesh(geometries.trafficHead, beadMaterial, TRAFFIC_BEADS);
+        beads.count = 0;
+        beads.frustumCulled = false;
+        line.name = "traffic-line";
+        core.name = "traffic-core";
+        glow.name = "traffic-glow";
+        beads.name = "traffic-beads";
+        head.name = "traffic-head";
+        halo.name = "traffic-halo";
+        arrival.name = "traffic-arrival";
+        const caption = document.createElement("div");
+        caption.className = "spatial-label spatial-label--traffic";
+        caption.dataset.spatialLabel = "traffic";
+        const label = new CSS2DObject(caption);
+        label.center.set(0.5, 1.2);
+        for (const o of [line, core, glow, beads, head, halo, arrival, label]) o.visible = false;
+        line.renderOrder = core.renderOrder = glow.renderOrder = beads.renderOrder = head.renderOrder = halo.renderOrder = 2;
+        trafficLayer.add(glow, core, line, beads, halo, head, arrival, label);
+        trafficPool.push({ record: null, line, lineMaterial, core, coreMaterial, glow, glowMaterial, beads, beadMaterial, head, headMaterial, halo, haloMaterial, arrival, arrivalMaterial, label, points: [], apex: new Vector3() });
+      }
 
       const renderNow = () => {
         if (disposed) return;
@@ -441,10 +712,26 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
           // frame; the budget guarantees this terminates.
           orbit.update();
         }
+        // Traffic: position arcs for the wall clock (records carry epoch ms).
+        const engine = engineRef.current;
+        const reduced = propsRef.current.reducedMotion;
+        const remaining = engine ? updateTraffic(engine, Date.now(), reduced) : null;
         renderNow();
-        if (again) requestRender();
-        else reportSettled();
+        if (trafficTimer) clearTimeout(trafficTimer);
+        trafficTimer = null;
+        // In flight + visible tab + motion allowed: keep painting (bounded by
+        // the arcs' own lifetime). Otherwise one timer clears it at expiry.
+        const trafficAgain = remaining !== null && !reduced && !documentHidden();
+        if (remaining !== null && !trafficAgain && !documentHidden()) {
+          trafficTimer = setTimeout(() => { trafficTimer = null; requestRender(); }, remaining + 20);
+        }
+        if (again || trafficAgain) requestRender();
+        if (!again) reportSettled();
       };
+      // Returning to a hidden tab re-evaluates arcs once (expired ones clear).
+      const onVisibility = () => { if (!documentHidden()) requestRender(); };
+      document.addEventListener("visibilitychange", onVisibility);
+      cleanups.push(() => document.removeEventListener("visibilitychange", onVisibility));
 
       const requestRender = () => {
         if (disposed || frame) return;
@@ -480,6 +767,11 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
         camera,
         controls: orbit,
         shared: geometries,
+        mascots,
+        shadowTexture,
+        lights: { hemi, key, rim, fill, spot },
+        stoneTexture,
+        traffic: { pool: trafficPool, seen: new Map() },
         content,
         contentDisposables: [],
         grid: null,
@@ -513,6 +805,7 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
           matchKeys: propsRef.current.matchKeys,
           palette,
           density: propsRef.current.density ?? "full",
+          reducedMotion: propsRef.current.reducedMotion,
         },
       };
       engineRef.current = engine;
@@ -551,7 +844,12 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
         ndc.set(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
         raycaster.setFromCamera(ndc, camera);
         const hit = raycaster.intersectObjects(engine.pickables, false)[0];
-        const key = hit?.object.userData.spatialKey;
+        if (!hit) return null;
+        const direct = hit.object.userData.spatialKey;
+        if (typeof direct === "string") return direct;
+        // Instanced plinth: the instance index names the seat.
+        const keys = hit.object.userData.instanceKeys as string[] | undefined;
+        const key = hit.instanceId !== undefined ? keys?.[hit.instanceId] : undefined;
         return typeof key === "string" ? key : null;
       };
       // Touch tolerance: the nearest seat centre within TOUCH_PICK_RADIUS_PX
@@ -560,10 +858,11 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
         const rect = canvas.getBoundingClientRect();
         if (rect.width === 0 || rect.height === 0) return null;
         const points: Array<{ key: string; x: number; y: number }> = [];
-        for (const visual of engine.agents.values()) {
-          visual.group.getWorldPosition(_pickPoint).project(camera);
+        // The figure's centre: the same point camera focus frames.
+        for (const [key, center] of engine.agentPositions) {
+          _pickPoint.copy(center).project(camera);
           if (_pickPoint.z < -1 || _pickPoint.z > 1) continue;
-          points.push({ key: visual.key, x: rect.left + (_pickPoint.x + 1) * 0.5 * rect.width, y: rect.top + (1 - _pickPoint.y) * 0.5 * rect.height });
+          points.push({ key, x: rect.left + (_pickPoint.x + 1) * 0.5 * rect.width, y: rect.top + (1 - _pickPoint.y) * 0.5 * rect.height });
         }
         return nearestWithin(points, clientX, clientY, TOUCH_PICK_RADIUS_PX);
       };
@@ -706,15 +1005,21 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
       const controller: SpatialCameraController = {
         fit: () => {
           engine.userMoved = true;
-          fitAlong(viewDirection(), true);
+          // Keep the operator's angle unless it shows the figures' backs (or
+          // looks up from below): then return to the three-quarter front.
+          const dir = viewDirection();
+          const facing = dir.x * FIGURE_FACING.x + dir.z * FIGURE_FACING.z;
+          const horizontal = Math.hypot(dir.x, dir.z);
+          const showsFronts = horizontal < 1e-3 || facing / horizontal > 0.1;
+          fitAlong(showsFronts && dir.y > 0 ? dir : v3(ATELIER_ISO), true);
         },
         reset: () => {
           engine.userMoved = false;
-          fitAlong(v3(SPATIAL_CAMERA_DIRECTIONS.iso), true);
+          fitAlong(v3(ATELIER_ISO), true);
         },
         preset: (preset) => {
           engine.userMoved = true;
-          fitAlong(v3(SPATIAL_CAMERA_DIRECTIONS[preset]), true);
+          fitAlong(v3(presetDirection(preset)), true);
         },
         zoom: (factor) => {
           engine.userMoved = true;
@@ -742,8 +1047,9 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
           const point = engine.agentPositions.get(key);
           if (!point) return;
           engine.userMoved = true;
-          // Close enough that the seat and its neighbours are legible.
-          const dist = Math.min(cameraDistance(), 34);
+          // A portrait framing: the figure reads clearly, its neighbours stay
+          // in view (figures are ~3 units tall; seats are 4.4 apart).
+          const dist = Math.min(cameraDistance(), 26);
           tweenTo(point.clone().add(viewDirection().multiplyScalar(dist)), point.clone());
         },
         snapshot: () => engine.snapshot(),
@@ -781,7 +1087,7 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
         if (!snapshot.userMoved) {
           // An auto-fit pose stays auto-fit: frame the current data.
           engine.userMoved = false;
-          fitAlong(v3(SPATIAL_CAMERA_DIRECTIONS.iso), false);
+          fitAlong(v3(ATELIER_ISO), false);
           return true;
         }
         const target = v3(snapshot.target);
@@ -789,7 +1095,7 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
         const distance = offset.length();
         if (!(distance > 1e-6)) return false;
         // Establish this viewport's control limits, then clamp into them.
-        fitAlong(v3(SPATIAL_CAMERA_DIRECTIONS.iso), false);
+        fitAlong(v3(ATELIER_ISO), false);
         const clamped = Math.min(orbit.maxDistance, Math.max(orbit.minDistance, distance));
         const phi = Math.min(orbit.maxPolarAngle, Math.max(0.02, Math.acos(Math.min(1, Math.max(-1, offset.y / distance)))));
         const theta = Math.atan2(offset.x, offset.z);
@@ -809,7 +1115,7 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
         return true;
       };
       propsRef.current.controllerRef.current = controller;
-      engine.fitInitial = () => fitAlong(v3(SPATIAL_CAMERA_DIRECTIONS.iso), false);
+      engine.fitInitial = () => fitAlong(v3(ATELIER_ISO), false);
 
       // Stage overlays (camera HUD, legend) mark themselves as occluders so
       // labels never hide underneath them. Measured on resize / rebuild only.
@@ -903,6 +1209,16 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
     engine.requestRender();
   }, [props.selectedKey, props.hoveredKey, props.matchKeys]);
 
+  // --- Traffic (real activity records) -------------------------------------
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const before = engine.traffic.pool.filter((v) => v.record).length;
+    syncTraffic(engine, props.traffic, Date.now());
+    const after = engine.traffic.pool.filter((v) => v.record).length;
+    if (after > 0 || before > 0) engine.requestRender();
+  }, [props.traffic]);
+
   // --- Label density (stage size) restyles labels in place ------------------
   useEffect(() => {
     const engine = engineRef.current;
@@ -919,6 +1235,8 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
     const engine = engineRef.current;
     if (!engine) return;
     engine.controls.enableDamping = !props.reducedMotion;
+    // An in-flight arc's own frame reads the new setting; idle stays idle.
+    engine.state.reducedMotion = props.reducedMotion;
     if (props.reducedMotion) engine.settleMotion();
   }, [props.reducedMotion]);
 
@@ -967,7 +1285,7 @@ function disposeGrid(engine: Engine) {
   engine.grid = null;
 }
 
-type AnchorSpec = { at: Vec3; cx: number; cy: number };
+type AnchorSpec = { at: Vec3; cx: number; cy: number; name?: string };
 
 /** Registers a label with its preferred anchor and fallbacks, applies the
  *  preferred one, and adds it to `parent`. */
@@ -990,7 +1308,9 @@ function registerLabel(
   object.center.set(resolved[0]!.cx, resolved[0]!.cy);
   parent.add(object);
   const metaElement = object.element.querySelector<HTMLElement>(".spatial-label__meta");
-  engine.labelEntries.push({ object, kind, key, w, h, priority, anchors: resolved, anchorIndex: 0, offset: 0, text, meta, metaElement });
+  const anchorNames = anchors.map((a) => a.name ?? null);
+  if (anchorNames[0]) object.element.dataset.anchor = anchorNames[0];
+  engine.labelEntries.push({ object, kind, key, w, h, priority, anchors: resolved, anchorIndex: 0, offset: 0, text, meta, metaElement, anchorNames });
 }
 
 /** Density restyle in place: class toggles only; sizes and status lines are
@@ -1016,63 +1336,89 @@ function makeLabel(className: string, text: string, sub?: string): CSS2DObject {
   return new CSS2DObject(el);
 }
 
+/** Visual plinth top (figure base) for a laid-out seat: the shared layout
+ *  lifts pod seats to podTop; the atelier stands them on a low dais instead,
+ *  each seat on its own stone plinth. Positions stay on the layout's x/z. */
+function seatBaseY(position: Vec3): number {
+  const inPod = position[1] > SPATIAL_LAYOUT.agentLift + 1e-3;
+  return (inPod ? DAIS_HEIGHT : 0) + PLINTH.height;
+}
+
 function buildContent(engine: Engine, model: SpatialModel, layout: SpatialLayout, palette: SpatialPalette) {
   clearContent(engine);
   const L = SPATIAL_LAYOUT;
-  const { content, shared } = engine;
+  const A = palette.atelier;
+  const { content, shared, mascots } = engine;
 
-  engine.scene.background = toColor(palette.background);
-  engine.selectionMaterial.color = toColor(palette.selection);
+  engine.scene.background = toColor(A.stage);
+  engine.selectionMaterial.color = toColor(A.selection);
+  applyLights(engine, palette);
 
-  // Ground survey grid sized to the layout.
+  // Floor: matte stone with faint tile joints, sized to the layout.
   disposeGrid(engine);
   const span = Math.max(120, Math.ceil((layout.bounds.radius * 4.5) / 10) * 10);
-  const grid = new GridHelper(span, Math.max(12, Math.round(span / 5)), toColor(palette.grid), toColor(palette.grid));
+  const floorY = -L.deckThickness - 0.01;
+  const floorMat = track(engine, new MeshStandardMaterial({ color: toColor(A.floor), roughness: 0.97, metalness: 0 }));
+  const floorGeo = track(engine, new PlaneGeometry(span, span));
+  floorGeo.rotateX(-Math.PI / 2);
+  const floor = new Mesh(floorGeo, floorMat);
+  floor.position.set(layout.bounds.center[0], floorY, layout.bounds.center[2]);
+  content.add(floor);
+  const grid = new GridHelper(span, Math.max(12, Math.round(span / 4.4)), toColor(A.floorLine), toColor(A.floorLine));
   const gridMat = grid.material as Material;
   gridMat.transparent = true;
-  gridMat.opacity = palette.theme === "dark" ? 0.5 : 0.55;
+  gridMat.opacity = palette.theme === "dark" ? 0.42 : 0.5;
   gridMat.depthWrite = false;
-  grid.position.set(layout.bounds.center[0], -L.deckThickness - 0.02, layout.bounds.center[2]);
+  grid.position.set(layout.bounds.center[0], floorY + 0.004, layout.bounds.center[2]);
   engine.scene.add(grid);
   engine.grid = grid;
 
+  // Camera-pose compatibility keeps the layout's own bounds (snapshots are
+  // compared against them); FRAMING uses the occupied stone below.
   engine.boundsCenter.set(...layout.bounds.center);
   engine.boundsRadius = layout.bounds.radius;
-  engine.boundsMin = layout.bounds.min;
-  engine.boundsMax = layout.bounds.max;
   const fitDist = fitDistance(layout.bounds.radius, FOV, 1.6);
-  engine.scene.fog = new Fog(toColor(palette.background), fitDist * 1.15, fitDist * 3.6);
+  engine.scene.fog = new Fog(toColor(A.stage), fitDist * 1.3, fitDist * 3.6);
 
-  const deckMat = track(engine, new MeshStandardMaterial({ color: toColor(palette.deck), roughness: 0.95, metalness: 0 }));
-  const deckEdgeMat = track(engine, new LineBasicMaterial({ color: toColor(palette.deckEdge), transparent: true, opacity: 0.85 }));
-  const platformMat = track(engine, new MeshStandardMaterial({ color: toColor(palette.platform), roughness: 0.9, metalness: 0, transparent: true, opacity: 0.94 }));
-  const platformEdgeMat = track(engine, new LineBasicMaterial({ color: toColor(palette.platformEdge) }));
-  const plumbMat = track(engine, new LineDashedMaterial({ color: toColor(palette.platformEdge), dashSize: 0.35, gapSize: 0.35, transparent: true, opacity: 0.7 }));
+  const stone = { map: engine.stoneTexture, roughness: 0.88, metalness: 0 };
+  const slabMat = track(engine, new MeshStandardMaterial({ color: toColor(A.slab), ...stone, roughness: 0.92 }));
+  const slabEdgeMat = track(engine, new LineBasicMaterial({ color: toColor(A.slabEdge), transparent: true, opacity: 0.6 }));
+  const daisMat = track(engine, new MeshStandardMaterial({ color: toColor(A.dais), ...stone }));
+  const daisEdgeMat = track(engine, new LineBasicMaterial({ color: toColor(A.plinthEdge), transparent: true, opacity: 0.5 }));
 
+  // Stone sized to what it holds: each dais hugs its seats' plinths, each
+  // slab hugs its daises and loose plinths (empty pods/rigs keep the layout's
+  // rectangle, so nothing is hidden). Seat x/z come from the shared layout.
+  const seatXZ = new Map(layout.agents.map((a) => [a.key, [a.position[0], a.position[2]] as const]));
+  const seatHalf = PLINTH.width / 2;
+  const podRects = new Map<string, Box2>();
+  for (const rect of layout.pods) {
+    const pod = model.podsByKey.get(rect.key);
+    const seats = (pod?.agentKeys ?? []).map((k) => seatXZ.get(k)).filter((p): p is readonly [number, number] => !!p);
+    podRects.set(rect.key, seats.length > 0 ? padBox(boxOfPoints(seats), seatHalf + DAIS_MARGIN) : boxOfRect(rect));
+  }
   const rigByKey = new Map(model.rigs.map((r) => [r.key, r]));
+  const rigRects = new Map<string, Box2>();
   for (const rect of layout.rigs) {
     const rig = rigByKey.get(rect.key);
-    const deckGeo = track(engine, new BoxGeometry(rect.w, L.deckThickness, rect.d));
-    const deck = new Mesh(deckGeo, deckMat);
-    deck.position.set(rect.x + rect.w / 2, -L.deckThickness / 2, rect.z + rect.d / 2);
-    const edgeGeo = track(engine, new EdgesGeometry(deckGeo));
-    const outline = new LineSegments(edgeGeo, deckEdgeMat);
-    outline.position.copy(deck.position);
-    content.add(deck, outline);
-
-    // Survey tick marks along the header band: a quiet instrument detail
-    // that also reads the rig's front edge at oblique angles.
-    const tickPositions: number[] = [];
-    const tickCount = Math.max(2, Math.floor(rect.w / 3));
-    for (let i = 0; i <= tickCount; i++) {
-      const x = rect.x + (rect.w * i) / tickCount;
-      const len = i % 5 === 0 ? 0.9 : 0.45;
-      tickPositions.push(x, 0.01, rect.z, x, 0.01, rect.z + len);
+    const parts: Box2[] = [...layout.pods.filter((p) => p.rigKey === rect.key).map((p) => podRects.get(p.key)!)];
+    for (const key of rig?.looseAgentKeys ?? []) {
+      const at = seatXZ.get(key);
+      if (at) parts.push(padBox(boxOfPoints([at]), seatHalf));
     }
-    const tickGeo = track(engine, new BufferGeometry());
-    tickGeo.setAttribute("position", new Float32BufferAttribute(tickPositions, 3));
-    content.add(new LineSegments(tickGeo, deckEdgeMat));
+    rigRects.set(rect.key, parts.length > 0 ? padBox(unionBoxes(parts), SLAB_MARGIN) : boxOfRect(rect));
+  }
 
+  for (const rect of layout.rigs) {
+    const rig = rigByKey.get(rect.key);
+    const box = rigRects.get(rect.key)!;
+    const w = box.x1 - box.x0, d = box.z1 - box.z0;
+    const slabGeo = track(engine, new BoxGeometry(w, L.deckThickness, d));
+    const slab = new Mesh(slabGeo, slabMat);
+    slab.position.set(box.x0 + w / 2, -L.deckThickness / 2, box.z0 + d / 2);
+    const outline = new LineSegments(track(engine, new EdgesGeometry(slabGeo)), slabEdgeMat);
+    outline.position.copy(slab.position);
+    content.add(slab, outline);
     if (rig) {
       const seatCount = rig.agents.length;
       const podCount = rig.pods.length;
@@ -1080,92 +1426,121 @@ function buildContent(engine: Engine, model: SpatialModel, layout: SpatialLayout
       if (rig.summaryNodeCount !== null && rig.summaryNodeCount !== seatCount) parts.push(`summary ${rig.summaryNodeCount}`);
       const meta = parts.join(" · ");
       const label = makeLabel("spatial-label spatial-label--rig", rig.rigName, meta);
-      const headerZ = rect.z + L.rigHeader * 0.5;
+      // Engraved on the slab's front edge, then its back corners.
       registerLabel(engine, content, label, "rig", rig.key, rig.rigName, meta, [
-        { at: [rect.x + 0.8, 0.05, headerZ], cx: 0, cy: 0.5 },
-        // Far end of the header band, then the deck's front edge.
-        { at: [rect.x + rect.w - 0.8, 0.05, headerZ], cx: 1, cy: 0.5 },
-        { at: [rect.x + 0.8, 0.05, rect.z + rect.d - 0.8], cx: 0, cy: 0.5 },
+        { at: [box.x0 + 0.5, 0.05, box.z1 - 0.45], cx: 0, cy: 0.5 },
+        { at: [box.x0 + 0.5, 0.05, box.z0 + 0.45], cx: 0, cy: 0.5 },
+        { at: [box.x1 - 0.5, 0.05, box.z0 + 0.45], cx: 1, cy: 0.5 },
       ]);
     }
   }
 
+  // Pods: a low stone dais the pod's seats stand on (containment by mass,
+  // not by floating platforms).
   for (const rect of layout.pods) {
     const pod = model.podsByKey.get(rect.key);
-    const geo = track(engine, new BoxGeometry(rect.w, L.podThickness, rect.d));
-    const platform = new Mesh(geo, platformMat);
-    platform.position.set(rect.x + rect.w / 2, rect.top - L.podThickness / 2, rect.z + rect.d / 2);
-    const edgeGeo = track(engine, new EdgesGeometry(geo));
-    const outline = new LineSegments(edgeGeo, platformEdgeMat);
-    outline.position.copy(platform.position);
-    content.add(platform, outline);
-
-    // Plumb lines from the platform corners to the rig deck: containment.
-    const bottom = rect.top - L.podThickness;
-    const corners: Array<[number, number]> = [
-      [rect.x, rect.z], [rect.x + rect.w, rect.z], [rect.x, rect.z + rect.d], [rect.x + rect.w, rect.z + rect.d],
-    ];
-    const plumb: number[] = [];
-    for (const [x, z] of corners) plumb.push(x, bottom, z, x, 0.02, z);
-    const plumbGeo = track(engine, new BufferGeometry());
-    plumbGeo.setAttribute("position", new Float32BufferAttribute(plumb, 3));
-    const plumbLines = new LineSegments(plumbGeo, plumbMat);
-    plumbLines.computeLineDistances();
-    content.add(plumbLines);
-
+    const box = podRects.get(rect.key)!;
+    const w = box.x1 - box.x0, d = box.z1 - box.z0;
+    const geo = track(engine, new BoxGeometry(w, DAIS_HEIGHT, d));
+    const dais = new Mesh(geo, daisMat);
+    dais.position.set(box.x0 + w / 2, DAIS_HEIGHT / 2, box.z0 + d / 2);
+    const outline = new LineSegments(track(engine, new EdgesGeometry(geo)), daisEdgeMat);
+    outline.position.copy(dais.position);
+    content.add(dais, outline);
     if (pod) {
       const n = pod.agentKeys.length;
       const meta = `${n} seat${n === 1 ? "" : "s"}`;
       const label = makeLabel("spatial-label spatial-label--pod", pod.label, meta);
-      const podHeaderZ = rect.z + L.podHeader * 0.5;
       registerLabel(engine, content, label, "pod", pod.key, pod.label, meta, [
-        { at: [rect.x + 0.7, rect.top + 0.05, podHeaderZ], cx: 0, cy: 0.5 },
-        { at: [rect.x + rect.w - 0.7, rect.top + 0.05, podHeaderZ], cx: 1, cy: 0.5 },
-        { at: [rect.x + 0.7, rect.top + 0.05, rect.z + rect.d - 0.5], cx: 0, cy: 0.5 },
+        { at: [box.x0 + 0.4, DAIS_HEIGHT + 0.05, box.z1 - 0.3], cx: 0, cy: 0.5 },
+        { at: [box.x0 + 0.4, DAIS_HEIGHT + 0.05, box.z0 + 0.3], cx: 0, cy: 0.5 },
+        { at: [box.x1 - 0.4, DAIS_HEIGHT + 0.05, box.z0 + 0.3], cx: 1, cy: 0.5 },
       ]);
     }
   }
 
-  for (const placed of layout.agents) {
-    const agent = model.agentsByKey.get(placed.key);
-    if (!agent) continue;
+  // Shared per-build materials: one per figure kind (+ a dimmed twin for
+  // search), one per status tone. Never one per seat.
+  const figureMats = {} as Record<MascotKind, { normal: Material; dim: Material; glow: Material | null; glowDim: Material | null }>;
+  for (const kind of ["clawd", "null", "neutral", "infrastructure"] as const) {
+    // No environment map: low metalness keeps dark Null readable under the
+    // key/rim/fill instead of reflecting nothing.
+    const finish = kind === "clawd" ? { roughness: 0.52, metalness: 0 } : kind === "null" ? { roughness: 0.42, metalness: 0.1 } : { roughness: 0.8, metalness: 0.05 };
+    const hasGlow = mascots[kind].glow !== null;
+    figureMats[kind] = {
+      normal: track(engine, new MeshStandardMaterial({ vertexColors: true, ...finish })),
+      dim: track(engine, new MeshStandardMaterial({ vertexColors: true, ...finish, transparent: true, opacity: 0.18, depthWrite: false })),
+      glow: hasGlow ? track(engine, new MeshBasicMaterial({ vertexColors: true, toneMapped: false })) : null,
+      glowDim: hasGlow ? track(engine, new MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.18, depthWrite: false })) : null,
+    };
+  }
+  const statusMats = {} as Record<SpatialTone, { normal: MeshBasicMaterial; stale: MeshBasicMaterial; dim: MeshBasicMaterial }>;
+  for (const tone of Object.keys(palette.tones) as SpatialTone[]) {
+    const color = toColor(palette.tones[tone]);
+    statusMats[tone] = {
+      normal: track(engine, new MeshBasicMaterial({ color, toneMapped: false })),
+      stale: track(engine, new MeshBasicMaterial({ color, transparent: true, opacity: 0.45, toneMapped: false })),
+      dim: track(engine, new MeshBasicMaterial({ color, transparent: true, opacity: 0.12, depthWrite: false, toneMapped: false })),
+    };
+  }
+
+  const placedAgents = layout.agents.filter((p) => model.agentsByKey.has(p.key));
+  // One instanced draw for every plinth and one for every contact shadow.
+  const plinthMat = track(engine, new MeshStandardMaterial({ color: toColor(A.plinth), map: engine.stoneTexture, roughness: 0.84, metalness: 0.02 }));
+  const plinths = track(engine, new InstancedMesh(shared.plinth, plinthMat, Math.max(1, placedAgents.length)));
+  plinths.count = placedAgents.length;
+  plinths.userData.instanceKeys = placedAgents.map((p) => p.key);
+  const shadowMat = track(engine, new MeshBasicMaterial({ color: 0x000000, map: engine.shadowTexture, transparent: true, opacity: A.shadowOpacity, depthWrite: false }));
+  const shadows = track(engine, new InstancedMesh(shared.shadow, shadowMat, Math.max(1, placedAgents.length * 2)));
+  shadows.count = placedAgents.length * 2;
+  shadows.renderOrder = 1;
+  const m = new Matrix4();
+  const q = new Quaternion();
+  const one = new Vector3(1, 1, 1);
+
+  placedAgents.forEach((placed, index) => {
+    const agent = model.agentsByKey.get(placed.key)!;
     const status = deriveSeatStatus(agent);
-    const toneColor = toColor(palette.tones[status.tone]);
+    const kind = mascotKindFor(agent);
+    const figure = mascots[kind];
+    const base = seatBaseY(placed.position);
+    const [x, , z] = placed.position;
     const group = new Group();
-    group.position.set(...placed.position);
+    group.position.set(x, base, z);
 
-    const bodyMaterial = track(engine, new MeshStandardMaterial({
-      color: toColor(palette.platform).lerp(toneColor, status.stale ? 0.12 : 0.28),
-      roughness: 0.6,
-      metalness: 0.05,
-      transparent: true,
-      opacity: 1,
-    }));
-    const body = new Mesh(agent.nodeKind === "infrastructure" ? shared.infra : shared.puck, bodyMaterial);
+    m.compose(new Vector3(x, base - PLINTH.height / 2, z), q.identity(), one);
+    plinths.setMatrixAt(index, m);
+    // Contact shadows: under the plinth on its dais/slab, and under the figure.
+    m.compose(new Vector3(x, base - PLINTH.height + 0.012, z), q.identity(), new Vector3(PLINTH.width * 1.45, 1, PLINTH.width * 1.45));
+    shadows.setMatrixAt(index * 2, m);
+    m.compose(new Vector3(x, base + 0.012, z), q.identity(), new Vector3(figure.width * 1.15, 1, figure.width * 0.85));
+    shadows.setMatrixAt(index * 2 + 1, m);
+
+    const mats = figureMats[kind];
+    const body = new Mesh(figure.body, mats.normal);
+    body.rotation.y = FIGURE_YAW;
     body.userData.spatialKey = agent.key;
-    const ringMaterial = track(engine, new MeshBasicMaterial({
-      color: toneColor,
-      transparent: true,
-      opacity: status.stale ? 0.4 : 0.95,
-    }));
-    const ring = new Mesh(shared.ring, ringMaterial);
-    ring.rotation.x = Math.PI / 2;
-    ring.position.y = -0.22;
-    group.add(body, ring);
+    group.add(body);
+    let glow: Mesh | null = null;
+    if (figure.glow && mats.glow) {
+      glow = new Mesh(figure.glow, mats.glow);
+      glow.rotation.y = FIGURE_YAW;
+      glow.userData.spatialKey = agent.key;
+      group.add(glow);
+    }
 
-    let beacon: Group | null = null;
-    const beaconMaterials: Material[] = [];
-    if (status.problems.length > 0 || status.tone === "needs_input" || status.tone === "blocked") {
-      beacon = new Group();
-      const beaconColor = toColor(palette.tones[status.tone === "blocked" ? "blocked" : "needs_input"]);
-      const stemMat = track(engine, new LineBasicMaterial({ color: beaconColor, transparent: true, opacity: 0.9 }));
-      const stemGeo = track(engine, new BufferGeometry());
-      stemGeo.setAttribute("position", new Float32BufferAttribute([0, 0.4, 0, 0, 2.5, 0], 3));
-      const headMat = track(engine, new MeshBasicMaterial({ color: beaconColor, transparent: true, opacity: 1 }));
-      const head = new Mesh(shared.beaconHead, headMat);
-      head.position.y = 2.85;
-      beacon.add(new Line(stemGeo, stemMat), head);
-      beaconMaterials.push(stemMat, headMat);
+    // Status: a small lit inlay on the plinth's front edge whose SHAPE names
+    // the state (not colour alone).
+    const statusMesh = new Mesh(statusShape(shared, status.tone), status.stale ? statusMats[status.tone].stale : statusMats[status.tone].normal);
+    statusMesh.position.set(0, -0.2, PLINTH.width / 2 + 0.03);
+    group.add(statusMesh);
+
+    const urgent = status.problems.length > 0 || status.tone === "needs_input" || status.tone === "blocked";
+    let beacon: Mesh | null = null;
+    if (urgent) {
+      const beaconTone: SpatialTone = status.tone === "blocked" ? "blocked" : "needs_input";
+      beacon = new Mesh(shared.beacon, statusMats[beaconTone].normal);
+      beacon.position.set(0, figure.height + 0.55, 0);
       group.add(beacon);
     }
 
@@ -1175,53 +1550,169 @@ function buildContent(engine: Engine, model: SpatialModel, layout: SpatialLayout
       status.label,
     );
     label.element.style.setProperty("--spatial-tone", hslCss(palette.tones[status.tone]));
-    // Status shape for compact labels (not colour alone; see spatial.css).
     label.element.dataset.tone = status.tone;
-    const urgent = status.problems.length > 0 || status.tone === "needs_input" || status.tone === "blocked";
+    label.element.dataset.figure = kind;
     if (urgent) label.element.classList.add("is-urgent");
     registerLabel(engine, group, label, "agent", agent.key, agent.displayName, status.label, [
-      { at: [0, beacon ? 3.5 : 1.15, 0], cx: 0.5, cy: 1 },
-      // Hang below the puck when the space above is taken.
-      { at: [0, -0.45, 0], cx: 0.5, cy: 0 },
+      // Low and quiet: on the plinth's front face, like an engraved plate.
+      { at: [0, -PLINTH.height * 0.55, PLINTH.width / 2 + 0.05], cx: 0.5, cy: 0.5, name: "plinth" },
+      // Above the figure, clear of its whole silhouette (beacon included).
+      { at: [0, figure.height * 1.12 + (beacon ? 1.1 : 0.55), 0], cx: 0.5, cy: 1, name: "above" },
+      // Under the plinth, on the dais/slab in front of it.
+      { at: [0, -PLINTH.height - 0.02, PLINTH.width / 2 + 0.25], cx: 0.5, cy: 0, name: "below" },
+      // Beside the figure, outside its silhouette.
+      { at: [figure.width * 0.62 + 0.35, figure.height * 0.5, 0], cx: 0, cy: 0.5, name: "right" },
+      { at: [-(figure.width * 0.62 + 0.35), figure.height * 0.5, 0], cx: 1, cy: 0.5, name: "left" },
     ], urgent);
 
     content.add(group);
+    const center = new Vector3(x, base + figure.height * 0.5, z);
+    engine.agentPositions.set(agent.key, center);
     engine.pickables.push(body);
-    engine.agentPositions.set(agent.key, group.position.clone());
+    if (glow) engine.pickables.push(glow);
     engine.agents.set(agent.key, {
       key: agent.key,
       group,
       body,
-      bodyMaterial,
-      ring,
-      ringMaterial,
+      glow,
+      mats,
+      status: statusMesh,
+      statusMats: statusMats[status.tone],
       beacon,
-      beaconMaterials,
       label,
       tone: status.tone,
       stale: status.stale,
+      base: new Vector3(x, base, z),
+      height: figure.height,
+      width: figure.width,
+      corners: silhouetteCorners(figure),
     });
-  }
+  });
+  plinths.instanceMatrix.needsUpdate = true;
+  shadows.instanceMatrix.needsUpdate = true;
+  plinths.computeBoundingSphere();
+  shadows.computeBoundingSphere();
+  content.add(plinths, shadows);
 
+  // Framing bounds: the occupied plinths and the figures standing on them
+  // (a small margin; the surrounding dais/slab stone may run into the fit
+  // insets). With no seats, the drawn stone, else the layout.
+  if (engine.agents.size > 0) {
+    const seats = [...engine.agents.values()];
+    const all = padBox(boxOfPoints(seats.map((v) => [v.base.x, v.base.z] as const)), seatHalf + 0.3);
+    let top = 1;
+    for (const v of seats) top = Math.max(top, v.base.y + v.height + (v.beacon ? 0.8 : 0.1));
+    engine.boundsMin = [all.x0, 0, all.z0];
+    engine.boundsMax = [all.x1, top, all.z1];
+  } else if (rigRects.size > 0) {
+    const all = unionBoxes([...rigRects.values()]);
+    engine.boundsMin = [all.x0, -L.deckThickness, all.z0];
+    engine.boundsMax = [all.x1, 1, all.z1];
+  } else {
+    engine.boundsMin = layout.bounds.min;
+    engine.boundsMax = layout.bounds.max;
+  }
+  // Plinths are a generous, stable touch/click target for their seat; figures
+  // stay first so an exact figure hit wins.
+  engine.pickables.push(plinths);
+
+  // Relationships: quiet ground-level lines between plinth feet. They are
+  // structure, never traffic: they do not move, and only brighten when a
+  // seat they touch is selected or hovered.
   const edgeByKey = new Map(model.edges.map((e) => [e.key, e]));
+  const linkColor = toColor(A.link);
   for (const placed of layout.edges) {
     const edge = edgeByKey.get(placed.key);
-    const curve = new QuadraticBezierCurve3(v3(placed.from), v3(placed.control), v3(placed.to));
-    const geo = track(engine, new BufferGeometry().setFromPoints(curve.getPoints(32)));
+    const from = engine.agents.get(placed.sourceKey);
+    const to = engine.agents.get(placed.targetKey);
+    if (!from || !to) continue;
+    const a = new Vector3(from.base.x, from.base.y - PLINTH.height + 0.05, from.base.z);
+    const b = new Vector3(to.base.x, to.base.y - PLINTH.height + 0.05, to.base.z);
+    const flat = new Vector3(b.x - a.x, 0, b.z - a.z);
+    const dist = flat.length();
+    if (dist < 1e-3) continue;
+    flat.normalize().multiplyScalar(Math.min(PLINTH.width * 0.62, dist * 0.3));
+    a.add(flat);
+    b.sub(flat);
+    const control = a.clone().add(b).multiplyScalar(0.5);
+    control.y = Math.max(a.y, b.y) + 0.35 + dist * 0.035;
+    const curve = new QuadraticBezierCurve3(a, control, b);
+    const geo = track(engine, new BufferGeometry().setFromPoints(curve.getPoints(28)));
     const material = edge?.crossPod
-      ? track(engine, new LineDashedMaterial({ color: toColor(palette.link), dashSize: 0.8, gapSize: 0.5, transparent: true, opacity: 0.7 }))
-      : track(engine, new LineBasicMaterial({ color: toColor(palette.link), transparent: true, opacity: 0.7 }));
+      ? track(engine, new LineDashedMaterial({ color: linkColor, dashSize: 0.6, gapSize: 0.45, transparent: true, opacity: 0.5 }))
+      : track(engine, new LineBasicMaterial({ color: linkColor, transparent: true, opacity: 0.5 }));
     const line = new Line(geo, material);
     if (edge?.crossPod) line.computeLineDistances();
-    // Direction cue: a small cone near the target, aligned with the tangent.
-    const arrowMaterial = track(engine, new MeshBasicMaterial({ color: toColor(palette.link), transparent: true, opacity: 0.8 }));
-    const arrow = new Mesh(engine.shared.arrow, arrowMaterial);
-    const t = 0.78;
+    const arrowMaterial = track(engine, new MeshBasicMaterial({ color: linkColor, transparent: true, opacity: 0.55 }));
+    const arrow = new Mesh(shared.arrow, arrowMaterial);
+    const t = 0.84;
     arrow.position.copy(curve.getPoint(t));
-    const tangent = curve.getTangent(t).normalize();
-    arrow.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), tangent);
+    arrow.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), curve.getTangent(t).normalize());
     content.add(line, arrow);
     engine.edges.push({ key: placed.key, sourceKey: placed.sourceKey, targetKey: placed.targetKey, line, material, arrow, arrowMaterial });
+  }
+
+  // Active traffic follows the rebuilt seats (or ends if a seat is gone).
+  refreshTrafficGeometry(engine);
+}
+
+interface Box2 { x0: number; z0: number; x1: number; z1: number }
+function boxOfPoints(points: ReadonlyArray<readonly [number, number]>): Box2 {
+  let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
+  for (const [x, z] of points) { x0 = Math.min(x0, x); z0 = Math.min(z0, z); x1 = Math.max(x1, x); z1 = Math.max(z1, z); }
+  return { x0, z0, x1, z1 };
+}
+function boxOfRect(r: { x: number; z: number; w: number; d: number }): Box2 {
+  return { x0: r.x, z0: r.z, x1: r.x + r.w, z1: r.z + r.d };
+}
+function padBox(b: Box2, m: number): Box2 {
+  return { x0: b.x0 - m, z0: b.z0 - m, x1: b.x1 + m, z1: b.z1 + m };
+}
+function unionBoxes(boxes: readonly Box2[]): Box2 {
+  return boxes.reduce((a, b) => ({ x0: Math.min(a.x0, b.x0), z0: Math.min(a.z0, b.z0), x1: Math.max(a.x1, b.x1), z1: Math.max(a.z1, b.z1) }));
+}
+
+/** The figure's bounding-box corners (yaw applied), relative to its base. */
+function silhouetteCorners(figure: MascotGeometry): Vector3[] {
+  const b = figure.body.boundingBox!;
+  const out: Vector3[] = [];
+  const c = Math.cos(FIGURE_YAW), sn = Math.sin(FIGURE_YAW);
+  for (const x of [b.min.x, b.max.x]) for (const y of [b.min.y, b.max.y]) for (const z of [b.min.z, b.max.z]) {
+    out.push(new Vector3(x * c + z * sn, y, -x * sn + z * c));
+  }
+  return out;
+}
+
+function statusShape(shared: Engine["shared"], tone: SpatialTone): BufferGeometry {
+  if (tone === "active") return shared.statusActive;
+  if (tone === "needs_input") return shared.statusNeedsInput;
+  if (tone === "blocked") return shared.statusBlocked;
+  if (tone === "idle") return shared.statusIdle;
+  return shared.statusUnknown;
+}
+
+function applyLights(engine: Engine, palette: SpatialPalette) {
+  const A = palette.atelier;
+  const { hemi, key, rim, spot } = engine.lights;
+  hemi.color = toColor(A.hemiSky);
+  hemi.groundColor = toColor(A.hemiGround);
+  hemi.intensity = A.hemiIntensity;
+  key.color = toColor(A.key);
+  key.intensity = A.keyIntensity;
+  rim.color = toColor(A.rim);
+  rim.intensity = A.rimIntensity;
+  engine.lights.fill.color = toColor(A.fill);
+  engine.lights.fill.intensity = A.fillIntensity;
+  spot.color = toColor(A.spot);
+  engine.renderer.toneMappingExposure = A.exposure;
+  for (const visual of engine.traffic.pool) {
+    visual.lineMaterial.color = toColor(A.trafficCore);
+    visual.coreMaterial.color = toColor(A.trafficCore);
+    visual.glowMaterial.color = toColor(A.traffic);
+    visual.beadMaterial.color = toColor(A.trafficCore);
+    visual.headMaterial.color = toColor(A.trafficCore);
+    visual.haloMaterial.color = toColor(A.traffic);
+    visual.arrivalMaterial.color = toColor(A.traffic);
   }
 }
 
@@ -1231,18 +1722,23 @@ function buildContent(engine: Engine, model: SpatialModel, layout: SpatialLayout
 
 function applyInteractionState(engine: Engine) {
   const { selectedKey, hoveredKey, matchKeys, palette } = engine.state;
+  const A = palette.atelier;
   const searching = matchKeys !== null;
-  const link = toColor(palette.link);
-  const linkActive = toColor(palette.linkActive);
+  const link = toColor(A.link);
+  const linkActive = toColor(A.linkActive);
 
   for (const visual of engine.agents.values()) {
     const dimmed = searching && !matchKeys!.has(visual.key);
     const emphasized = visual.key === selectedKey || visual.key === hoveredKey;
-    const scale = emphasized ? 1.14 : 1;
-    visual.group.scale.setScalar(scale);
-    visual.bodyMaterial.opacity = dimmed ? 0.22 : 1;
-    visual.ringMaterial.opacity = dimmed ? 0.12 : visual.stale ? 0.4 : 0.95;
-    for (const m of visual.beaconMaterials) m.opacity = dimmed ? 0.15 : 0.95;
+    const scale = emphasized ? 1.1 : 1;
+    visual.body.scale.setScalar(scale);
+    visual.body.material = dimmed ? visual.mats.dim : visual.mats.normal;
+    if (visual.glow) {
+      visual.glow.scale.setScalar(scale);
+      visual.glow.material = (dimmed ? visual.mats.glowDim : visual.mats.glow)!;
+    }
+    visual.status.material = dimmed ? visual.statusMats.dim : visual.stale ? visual.statusMats.stale : visual.statusMats.normal;
+    if (visual.beacon) visual.beacon.visible = !dimmed;
     visual.label.element.classList.toggle("is-dimmed", dimmed);
     visual.label.element.classList.toggle("is-selected", visual.key === selectedKey);
     visual.label.element.classList.toggle("is-hovered", visual.key === hoveredKey);
@@ -1255,22 +1751,186 @@ function applyInteractionState(engine: Engine) {
       || (searching && !(matchKeys!.has(edge.sourceKey) || matchKeys!.has(edge.targetKey)));
     const color = touches ? linkActive : link;
     edge.material.color = color;
-    edge.material.opacity = dimmed ? 0.12 : touches ? 1 : 0.7;
+    edge.material.opacity = dimmed ? 0.1 : touches ? 0.95 : 0.5;
     edge.arrowMaterial.color = color;
-    edge.arrowMaterial.opacity = dimmed ? 0.12 : 0.9;
+    edge.arrowMaterial.opacity = dimmed ? 0.1 : touches ? 0.95 : 0.55;
   }
 
-  const selectedPos = selectedKey ? engine.agentPositions.get(selectedKey) : undefined;
-  if (selectedPos) {
+  // Selected seat: a warm inlay ring on its plinth and the one spotlight
+  // (always present, so selection never changes the light count / shaders).
+  const selected = selectedKey ? engine.agents.get(selectedKey) : undefined;
+  const { spot } = engine.lights;
+  if (selected) {
     engine.selectionMarker.visible = true;
-    engine.selectionMarker.position.set(selectedPos.x, selectedPos.y - 0.22, selectedPos.z);
+    engine.selectionMarker.position.set(selected.base.x, selected.base.y + 0.02, selected.base.z);
+    spot.intensity = A.spotIntensity;
+    spot.position.set(selected.base.x - 3.5, selected.base.y + 15, selected.base.z + 6);
+    spot.target.position.set(selected.base.x, selected.base.y + selected.height * 0.4, selected.base.z);
+    spot.target.updateMatrixWorld();
   } else {
     engine.selectionMarker.visible = false;
+    spot.intensity = 0;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Traffic arcs: REAL activity records only (props.traffic). Each record
+// animates from its own timestamp for a bounded window; ids are remembered so
+// a re-delivered record never restarts, and anything older than the window
+// (cached, replayed) never animates. Unplaced ends draw nothing.
+// ---------------------------------------------------------------------------
+
+/** Arc ends sit just outside each figure's silhouette, on the side facing
+ *  the other seat, so the light leaves and reaches the figure without
+ *  passing through it; `toBase` is the receiver's plinth top for the
+ *  grounded arrival accent. */
+function trafficEndpoints(engine: Engine, record: SpatialTrafficPulse): { from: Vector3; to: Vector3; toBase: Vector3 } | null {
+  const a = engine.agents.get(record.sourceKey);
+  const b = engine.agents.get(record.targetKey);
+  if (!a || !b || a === b) return null;
+  const toward = new Vector3(b.base.x - a.base.x, 0, b.base.z - a.base.z);
+  const span = toward.length();
+  if (span > 1e-6) toward.divideScalar(span);
+  const reachA = Math.min(a.width * 0.58, span * 0.3);
+  const reachB = Math.min(b.width * 0.58, span * 0.3);
+  return {
+    from: new Vector3(a.base.x, a.base.y + a.height * 0.62, a.base.z).addScaledVector(toward, reachA),
+    to: new Vector3(b.base.x, b.base.y + b.height * 0.62, b.base.z).addScaledVector(toward, -reachB),
+    toBase: b.base.clone(),
+  };
+}
+
+/** Refill a pooled tube's vertex buffers for a new curve (same topology). */
+function refillTube(mesh: Mesh, curve: QuadraticBezierCurve3, radius: number) {
+  const fresh = new TubeGeometry(curve, TRAFFIC_SEGMENTS, radius, TRAFFIC_RADIAL, false);
+  for (const name of ["position", "normal"] as const) {
+    const target = mesh.geometry.getAttribute(name) as Float32BufferAttribute;
+    (target.array as Float32Array).set(fresh.getAttribute(name).array as Float32Array);
+    target.needsUpdate = true;
+  }
+  fresh.dispose();
+  mesh.geometry.computeBoundingSphere();
+}
+
+function setTrafficCurve(visual: TrafficVisual, from: Vector3, to: Vector3, toBase: Vector3) {
+  const dist = from.distanceTo(to);
+  const control = from.clone().add(to).multiplyScalar(0.5);
+  control.y = Math.max(from.y, to.y) + 1.4 + dist * 0.3;
+  const curve = new QuadraticBezierCurve3(from, control, to);
+  const pts = curve.getPoints(TRAFFIC_SEGMENTS);
+  const attr = visual.line.geometry.getAttribute("position") as Float32BufferAttribute;
+  pts.forEach((p, i) => attr.setXYZ(i, p.x, p.y, p.z));
+  attr.needsUpdate = true;
+  visual.line.geometry.computeBoundingSphere();
+  refillTube(visual.core, curve, TRAFFIC_CORE_RADIUS);
+  refillTube(visual.glow, curve, TRAFFIC_GLOW_RADIUS);
+  visual.points = pts;
+  visual.apex = curve.getPoint(0.5);
+  visual.label.position.copy(visual.apex);
+  // Grounded on the receiver's plinth top: never a hoop through the figure.
+  visual.arrival.position.set(toBase.x, toBase.y + 0.03, toBase.z);
+}
+
+/** Admit new records (by id) into the bounded pool, and end any arc whose
+ *  record is no longer delivered (the activity hook empties its pulses on
+ *  disconnect, reconnect, hidden and reduced motion). Ids stay remembered, so
+ *  a record that comes back is never replayed. */
+function syncTraffic(engine: Engine, records: readonly SpatialTrafficPulse[] | undefined, nowMs: number) {
+  const T = engine.traffic;
+  const delivered = new Set((records ?? []).map((r) => r.id));
+  for (const visual of T.pool) {
+    if (visual.record && !delivered.has(visual.record.id)) visual.record = null;
+  }
+  for (const record of records ?? []) {
+    if (T.seen.has(record.id)) continue;
+    T.seen.set(record.id, record.occurredAt);
+    if (!trafficPhase(nowMs, record.occurredAt, false).visible) continue;
+    const ends = trafficEndpoints(engine, record);
+    if (!ends) continue;
+    // Reuse a free slot, else the one that started earliest.
+    const slot = T.pool.find((v) => v.record === null)
+      ?? T.pool.reduce((oldest, v) => (v.record!.occurredAt < oldest.record!.occurredAt ? v : oldest));
+    slot.record = record;
+    setTrafficCurve(slot, ends.from, ends.to, ends.toBase);
+    slot.label.element.textContent = record.label;
+  }
+  // Bound the remembered ids.
+  if (T.seen.size > 512) {
+    for (const [id, at] of T.seen) if (nowMs - at > TRAFFIC_TOTAL_MS * 2) T.seen.delete(id);
+  }
+}
+
+function refreshTrafficGeometry(engine: Engine) {
+  for (const visual of engine.traffic.pool) {
+    if (!visual.record) continue;
+    const ends = trafficEndpoints(engine, visual.record);
+    if (ends) setTrafficCurve(visual, ends.from, ends.to, ends.toBase);
+    else visual.record = null;
+  }
+}
+
+/** Position every active arc for `nowMs`. Returns the earliest remaining
+ *  lifetime (ms) among visible arcs, or null when none is visible. */
+function updateTraffic(engine: Engine, nowMs: number, reducedMotion: boolean): number | null {
+  let soonest: number | null = null;
+  let newest: TrafficVisual | null = null;
+  for (const visual of engine.traffic.pool) {
+    const record = visual.record;
+    const phase = record ? trafficPhase(nowMs, record.occurredAt, reducedMotion) : null;
+    if (!record || !phase || !phase.visible) {
+      visual.record = null;
+      visual.line.visible = visual.head.visible = visual.halo.visible = visual.arrival.visible = false;
+      visual.core.visible = visual.glow.visible = visual.beads.visible = false;
+      visual.label.visible = false;
+      continue;
+    }
+    const remaining = TRAFFIC_TOTAL_MS - Math.max(0, nowMs - record.occurredAt);
+    soonest = soonest === null ? remaining : Math.min(soonest, remaining);
+    if (!newest || record.occurredAt > newest.record!.occurredAt) newest = visual;
+    const from = Math.floor(phase.trailFrom * TRAFFIC_SEGMENTS);
+    const to = Math.ceil(phase.trailTo * TRAFFIC_SEGMENTS);
+    const shown = to > from;
+    visual.line.visible = visual.core.visible = visual.glow.visible = shown;
+    visual.line.geometry.setDrawRange(from, to - from + 1);
+    // Tube indices run segment by segment: 6 per quad, TRAFFIC_RADIAL quads each.
+    const perSegment = TRAFFIC_RADIAL * 6;
+    visual.core.geometry.setDrawRange(from * perSegment, Math.max(0, to - from) * perSegment);
+    visual.glow.geometry.setDrawRange(from * perSegment, Math.max(0, to - from) * perSegment);
+    visual.lineMaterial.opacity = 0.9 * phase.alpha;
+    visual.coreMaterial.opacity = 0.95 * phase.alpha;
+    visual.glowMaterial.opacity = 0.32 * phase.alpha;
+    const at = visual.points[Math.min(TRAFFIC_SEGMENTS, Math.round(phase.head * TRAFFIC_SEGMENTS))] ?? visual.apex;
+    visual.head.visible = visual.halo.visible = phase.headVisible;
+    visual.head.position.copy(at);
+    visual.halo.position.copy(at);
+    // Travelling sparks: brightness via instance colour (additive blending).
+    const beads = trafficBeads(phase);
+    visual.beads.visible = beads.length > 0;
+    visual.beads.count = beads.length;
+    beads.forEach((bead, i) => {
+      const p = visual.points[Math.min(TRAFFIC_SEGMENTS, Math.round(bead.t * TRAFFIC_SEGMENTS))] ?? at;
+      _beadMatrix.makeScale(bead.size * 0.72, bead.size * 0.72, bead.size * 0.72).setPosition(p);
+      visual.beads.setMatrixAt(i, _beadMatrix);
+      visual.beads.setColorAt(i, _beadColor.setScalar(bead.intensity));
+    });
+    if (beads.length > 0) {
+      visual.beads.instanceMatrix.needsUpdate = true;
+      if (visual.beads.instanceColor) visual.beads.instanceColor.needsUpdate = true;
+    }
+    visual.arrival.visible = phase.arrival > 0;
+    visual.arrivalMaterial.opacity = 0.9 * phase.arrival;
+    visual.arrival.scale.setScalar(0.92 + (1 - phase.arrival) * 0.22);
+    visual.label.visible = false;
+  }
+  // One small caption, for the newest arc only, and only on a roomy stage.
+  if (newest && engine.state.density === "full" && newest.record!.label) newest.label.visible = true;
+  return soonest;
 }
 
 const _labelPoint = new Vector3();
 const _pickPoint = new Vector3();
+const _beadMatrix = new Matrix4();
+const _beadColor = new Color();
 
 /**
  * Screen-space label placement, run after each WebGL render and before the
@@ -1341,7 +2001,32 @@ function placeLabels(engine: Engine) {
       clampX: entry.kind !== "agent",
     });
   }
-  const result = layoutLabels(candidates, { width: w, height: h, occluders: engine.occluders, maxVisible: compact ? MAX_COMPACT_LABELS : MAX_AMBIENT_LABELS });
+  // Every figure's projected silhouette is hard space: no label covers a
+  // figure, and the selected label moves off its own body if it must.
+  const silhouettes: Rect[] = [];
+  if (w > 0 && h > 0) {
+    for (const visual of engine.agents.values()) {
+      const scale = visual.body.scale.x;
+      let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+      let inFront = true;
+      for (const corner of visual.corners) {
+        _labelPoint.copy(corner).multiplyScalar(scale).add(visual.base).project(camera);
+        if (_labelPoint.z < -1 || _labelPoint.z > 1) { inFront = false; break; }
+        const sx = (_labelPoint.x + 1) * 0.5 * w;
+        const sy = (1 - _labelPoint.y) * 0.5 * h;
+        left = Math.min(left, sx); right = Math.max(right, sx);
+        top = Math.min(top, sy); bottom = Math.max(bottom, sy);
+      }
+      if (inFront && right > 0 && left < w && bottom > 0 && top < h) silhouettes.push({ left, top, right, bottom });
+    }
+  }
+  const result = layoutLabels(candidates, {
+    width: w,
+    height: h,
+    occluders: engine.occluders,
+    silhouettes,
+    maxVisible: compact ? MAX_COMPACT_LABELS : MAX_AMBIENT_LABELS,
+  });
   for (const entry of engine.labelEntries) {
     const id = `${entry.kind}:${entry.key}`;
     entry.object.visible = result.visible.has(id);
@@ -1352,6 +2037,8 @@ function placeLabels(engine: Engine) {
       entry.anchorIndex = anchorIndex;
       entry.object.position.copy(anchor.local);
       entry.object.center.set(anchor.cx, anchor.cy);
+      const name = entry.anchorNames[anchorIndex];
+      if (name) entry.object.element.dataset.anchor = name;
       // CSS2D projects from matrixWorld; refresh it for this same frame.
       entry.object.updateMatrixWorld();
     }

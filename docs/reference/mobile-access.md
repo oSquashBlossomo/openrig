@@ -82,6 +82,34 @@ desktop canvas. Graph, 3D and Table remain separate tabs at every width.
 
 Wider iPad landscape windows keep the desktop graph and Explorer layout.
 
+## 3D agent workspace
+
+The 3D tab uses a dark studio scene with runtime-specific figures: Clawd for
+Claude, a reconstructed Null figure for Codex, and neutral figures when the
+runtime is unknown or another provider. Their attribution and reconstruction
+details are recorded in
+[the mascot notice](../../packages/ui/src/components/topology/spatial/SPATIAL-MASCOTS-NOTICE.md).
+Small labels identify seats; selecting one reveals the fuller workspace.
+
+Select a figure or its entry in the seat index to open its live terminal beside
+the scene on wide screens, or below it on phones. The workspace also shows
+current work, queue, context and relationship details. Switching seats closes
+the previous viewer. Opening, resizing or rotating the workspace sends no
+terminal input and does not resize the native pane. The terminal follows the
+shared limit on live viewers; a released viewer offers Reconnect.
+
+Terminal admission reads the selected seat's current identity and attachment.
+If a later read fails or its pane changes, the viewer closes and requires an
+explicit Retry or reselection. A registered remote source remains read-only.
+Attention, trust and login prompts stay reachable when the current attachment
+can be verified; the browser does not approve those prompts automatically.
+
+Luminous arcs represent fresh observed queue creation, handoff or reroute
+events with identifiable endpoints. They are bounded effects, not delivery or
+read receipts. Historical events remain available in Evidence without replaying
+as new traffic. Missing endpoints, disconnected feeds and remote sources do not
+produce invented traffic; reduced-motion mode suppresses travel animation.
+
 ## Device verification
 
 Record the actual iPad model, OS, Safari version and effective viewport. An

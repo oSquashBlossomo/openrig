@@ -19,6 +19,15 @@
 // A selection names an exact graph node; when that node is filtered out,
 // temporarily unreadable or gone, the intent stays and the inspector says so.
 //
+// Night Atelier: the view is styled locally (spatial.css .spatial-atelier
+// scoped tokens). Selecting an exact seat docks the selected-agent workspace
+// (SpatialAgentWorkspace) — one admitted live terminal plus served details —
+// beside the scene on wide layouts (~60/40) and under a still-substantial
+// scene on stacked ones, with a tap-to-switch seat strip. With nothing
+// selected the scene keeps the room and the compact seat index stays beside
+// it. Observed traffic (useSpatialActivity) feeds the renderer's pulses and
+// the workspace's readable event history.
+//
 // Small stage (phone portrait, short phone landscape, a squeezed tablet
 // stage), decided from the stage's own measured size, not the device:
 // compact labels, camera controls collapsed to Fit + More, the legend behind
@@ -47,6 +56,8 @@ import { useSelectedHostId } from "../../../hooks/useHosts.js";
 import { usePrefersReducedMotion } from "../../../hooks/usePrefersReducedMotion.js";
 import { useShellViewport } from "../../../hooks/useShellViewport.js";
 import { useSpatialTopology } from "../../../hooks/useSpatialTopology.js";
+import { useSpatialActivity } from "../../../hooks/useSpatialActivity.js";
+import type { SpatialTrafficState } from "../../../lib/spatial-activity.js";
 import { LOCAL_HOST_ID } from "../../../lib/host-param.js";
 import {
   agentMatchesQuery,
@@ -57,6 +68,7 @@ import {
   spatialScopeKey,
   tallySeatStatuses,
   type SpatialAgent,
+  type SpatialModel,
   type SpatialScope,
   type SpatialSeatStatus,
   type SpatialTone,
@@ -72,9 +84,9 @@ import {
   type TopologyNavigation,
 } from "../topology-navigation.js";
 import { cn } from "../../../lib/utils.js";
-import { useTheme } from "../../ThemeProvider.js";
 import { ErrorBoundary } from "../../ui/ErrorBoundary.js";
 import { SpatialInspector } from "./SpatialInspector.js";
+import { SpatialAgentWorkspace, SpatialSeatSwitcher } from "./SpatialAgentWorkspace.js";
 import { SpatialNodeList } from "./SpatialNodeList.js";
 import { SpatialSelectionCard } from "./SpatialSelectionCard.js";
 import { hslCss, readSpatialPalette, type SpatialPalette } from "./spatial-palette.js";
@@ -241,8 +253,12 @@ function scopeTitle(scope: SpatialScope, rigName: string | null): string {
 function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: SpatialScope; hostId: string; nav: TopologyNavigation; loadRenderer: SpatialRendererLoader }) {
   const router = useRouter();
   const data = useSpatialTopology(scope);
-  const { resolved: theme } = useTheme();
-  const palette = useMemo<SpatialPalette>(() => readSpatialPalette(theme), [theme]);
+  // Night Atelier is an explicit dark subtree (Option 1), independent of the
+  // app theme: the renderer palette reads the scoped tokens from this view's
+  // own .spatial-atelier root as "dark", so a light shell still gets the warm
+  // charcoal stage and matching label ink. The shell/global theme is untouched.
+  const [atelierRoot, setAtelierRoot] = useState<HTMLDivElement | null>(null);
+  const palette = useMemo<SpatialPalette>(() => readSpatialPalette("dark", atelierRoot), [atelierRoot]);
   const reducedMotion = usePrefersReducedMotion();
   const { isWideLayout } = useShellViewport();
 
@@ -372,10 +388,42 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
   // setSelectedKey closes over the current model and navigation; without it
   // here, a rig graph arriving later would leave index clicks using an older
   // model that cannot resolve the new rig's seats.
+  // Explicit-selection reveal (stacked layouts): after an operator picks a
+  // seat, bring the docked workspace's heading into view and focus it
+  // (preventScroll). Only these handlers request it — never an initial URL
+  // restore, a poll/refetch, rotation, search typing or a camera move.
+  //   "always": index rows, list rows, relationship rows — the workspace
+  //             sits ABOVE them, so without this the operator would stay at
+  //             the old index position with no visible change.
+  //   "mount":  a scene tap — only when the workspace first docks; tapping
+  //             another figure while docked keeps the operator on the scene.
+  //   switcher: none — the strip sits on the heading anchor already.
+  //
+  // A request is STATE (with a nonce), so it is delivered by its own commit
+  // even when the selection does not change (re-picking the seat already
+  // selected), and it is consumed exactly once: applied when the selection is
+  // its key, dropped when another selection supersedes it or the layout
+  // changes first — a resize/rotation can never replay an old request.
+  const [revealRequest, setRevealRequest] = useState<RevealRequest | null>(null);
+  const revealNonceRef = useRef(0);
+  const dockAnchorRef = useRef<HTMLDivElement | null>(null);
+  const selectedKeyRef = useRef<string | null>(null);
+  const requestReveal = useCallback((key: string, mode: "always" | "mount") => {
+    setRevealRequest({ key, mode, nonce: ++revealNonceRef.current, fromKey: selectedKeyRef.current });
+  }, []);
   const selectFromIndex = useCallback((key: string) => {
+    requestReveal(key, "always");
+    setSelectedKey(key);
+    if (sceneActive) controllerRef.current?.focus(key);
+  }, [sceneActive, setSelectedKey, requestReveal]);
+  const selectFromSwitcher = useCallback((key: string) => {
     setSelectedKey(key);
     if (sceneActive) controllerRef.current?.focus(key);
   }, [sceneActive, setSelectedKey]);
+  const selectFromScene = useCallback((key: string | null) => {
+    if (key) requestReveal(key, "mount");
+    setSelectedKey(key);
+  }, [setSelectedKey, requestReveal]);
 
   const onRendererFailure = useCallback((reason: SpatialViewFailure) => {
     controllerRef.current = null;
@@ -454,6 +502,10 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
   const scrollRef = useRef<SpatialVisitSnapshot["scroll"]>(initialSaved?.scroll ?? { main: 0, index: 0, inspector: 0, list: 0 });
   const focusRef = useRef<SpatialVisitSnapshot["focus"]>(undefined);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const rootRefCallback = useCallback((el: HTMLDivElement | null) => {
+    rootRef.current = el;
+    setAtelierRoot(el);
+  }, []);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const indexRegionRef = useRef<HTMLDivElement | null>(null);
@@ -602,6 +654,53 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nav.visitId, modelReady, writeSnapshot]);
 
+  // Deliver an explicit-selection reveal once the URL selection is its key.
+  const selectedKeyNow = selectedAgent?.key ?? null;
+  selectedKeyRef.current = selectedKeyNow;
+  // Docked state as of the previous commit (updated after delivery below).
+  const dockedRef = useRef(selectedKeyNow !== null);
+  // A layout change drops any undelivered request; it never applies one.
+  const layoutRef = useRef(isWideLayout);
+  useEffect(() => {
+    if (layoutRef.current === isWideLayout) return;
+    layoutRef.current = isWideLayout;
+    setRevealRequest(null);
+  }, [isWideLayout]);
+  useEffect(() => {
+    const request = revealRequest;
+    if (!request) return;
+    if (selectedKeyNow !== request.key) {
+      // Still waiting for this request's selection to land in the URL.
+      if (selectedKeyNow === request.fromKey) return;
+      setRevealRequest(null); // superseded by another selection
+      return;
+    }
+    setRevealRequest(null); // consumed: delivered exactly once
+    const wasDocked = dockedRef.current;
+    const dock = dockAnchorRef.current;
+    if (!dock) return;
+    if (isWideLayout) {
+      // Wide: the index row the operator used is replaced by the switcher;
+      // keep keyboard focus on the same seat there instead of losing it.
+      const active = document.activeElement;
+      if (request.mode === "always" && (!active || active === document.body || !active.isConnected)) {
+        // Exact key comparison (no selector escaping of served identities).
+        Array.from(dock.querySelectorAll<HTMLElement>("[data-testid='spatial-seat-chip']"))
+          .find((chip) => chip.getAttribute("data-spatial-key") === selectedKeyNow)
+          ?.focus({ preventScroll: true });
+      }
+      return;
+    }
+    if (request.mode === "mount" && wasDocked) return;
+    dock.scrollIntoView?.({ block: "start", behavior: reducedMotion ? "auto" : "smooth" });
+    dock.querySelector<HTMLElement>("[data-testid='spatial-inspector-name']")?.focus({ preventScroll: true });
+    // isWideLayout / reducedMotion are read at delivery; a change never re-runs this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealRequest, selectedKeyNow]);
+  useEffect(() => {
+    dockedRef.current = selectedKeyNow !== null;
+  }, [selectedKeyNow]);
+
   // Overlays changed size (compact toggles, rotation): labels re-read them.
   useEffect(() => {
     controllerRef.current?.refreshOverlays?.();
@@ -618,10 +717,10 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
 
   return (
     <div
-      ref={rootRef}
+      ref={rootRefCallback}
       data-testid="spatial-topology-view"
       data-scope={data.scopeKey}
-      className="spatial-frame flex min-h-0 flex-1 flex-col px-4 pb-4 pt-3 lg:px-6"
+      className="spatial-frame spatial-atelier flex min-h-0 flex-1 flex-col px-4 pb-4 pt-3 lg:px-6"
     >
       {/* Instrument header */}
       <div className="flex flex-wrap items-end gap-x-6 gap-y-3 border-b border-on-surface pb-3">
@@ -730,25 +829,30 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
           No rigs on this host yet. Run <code className="text-on-surface">rig up</code> to start one.
         </div>
       ) : (
+        <SpatialActivityScope model={model} hostId={hostId} reducedMotion={reducedMotion}>
+        {(activity) => (
         <div
           data-testid="spatial-body"
           data-layout={isWideLayout ? "bounded" : "stacked"}
-          className={cn("mt-3", isWideLayout && "relative min-h-[20rem] min-w-0 flex-1")}
+          data-docked={selectedAgent ? "true" : "false"}
+          className={cn("mt-3", isWideLayout && "spatial-body--bounded relative min-w-0 flex-1")}
         >
-          {/* Wide: the body takes exactly the page height left under the
-              header (flex-1 of the frame) and the grid is positioned inside it
-              out of flow, so the seat index can never grow the page. The
-              AppShell route wrapper sizes to its content (it has no min-h-0),
-              so an in-flow grid's intrinsic height — the full index — would
-              otherwise stretch the stage far below the fold. The 20rem floor
-              only applies on very short windows; the page then scrolls.
-              Narrow: stage, inspector and index stack and the page scrolls. */}
+          {/* Wide: the body is sized from the viewport (spatial.css: the
+              window height less the shell/scope chrome, with a ~31rem floor),
+              not from whatever is left under the scope header, and the grid is
+              positioned inside it out of flow, so neither the index nor the
+              workspace can grow the page. Short windows keep the floor and
+              the page scrolls instead of nesting a tiny workspace.
+              Narrow: stage, workspace and index stack and the page scrolls. */}
           <div
             data-testid="spatial-grid"
             className={cn(
               "grid gap-0 border border-outline-variant",
               isWideLayout
-                ? "absolute inset-0 grid-cols-[minmax(0,1fr)_20rem] grid-rows-[minmax(0,1fr)] 2xl:grid-cols-[minmax(0,1fr)_22rem]"
+                ? selectedAgent
+                  // Selected: scene ≈60%, workspace ≈40% (never under 22rem).
+                  ? "absolute inset-0 grid-cols-[minmax(0,3fr)_minmax(22rem,2fr)] grid-rows-[minmax(0,1fr)]"
+                  : "absolute inset-0 grid-cols-[minmax(0,1fr)_20rem] grid-rows-[minmax(0,1fr)] 2xl:grid-cols-[minmax(0,1fr)_22rem]"
                 : "grid-cols-1",
             )}
           >
@@ -765,6 +869,7 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
                 className={cn(
                   "spatial-stage relative min-h-0 min-w-0 overflow-hidden",
                   !isWideLayout && "spatial-stage--stacked",
+                  !isWideLayout && selectedAgent && "spatial-stage--docked",
                 )}
               >
                 {overBudget && budget ? (
@@ -784,7 +889,9 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
                         </div>
                       }
                     >
-                      {layout ? (
+                      {/* The palette is read from the mounted atelier root;
+                          never start the scene with document-root tokens. */}
+                      {layout && atelierRoot ? (
                         <SpatialRenderer
                           key={rendererEpoch}
                           model={model}
@@ -795,13 +902,14 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
                           matchKeys={matchKeys}
                           reducedMotion={reducedMotion}
                           controllerRef={controllerRef}
-                          onSelect={setSelectedKey}
+                          onSelect={selectFromScene}
                           onHover={setHoveredKey}
                           onFailure={onRendererFailure}
                           onReady={() => setRendererReady(true)}
                           initialCamera={cameraRef.current}
                           onCameraSettle={onCameraSettle}
                           density={compactStage ? "compact" : "full"}
+                          traffic={activity.pulses}
                         />
                       ) : null}
                     </Suspense>
@@ -833,7 +941,7 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
                   selectedKey={selectedAgent?.key ?? null}
                   matchKeys={matchKeys}
                   variant="table"
-                  onSelect={setSelectedKey}
+                  onSelect={selectFromIndex}
                   onHover={setHoveredKey}
                   linkSource={linkSource}
                   from={fromScope}
@@ -861,9 +969,11 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
                 className={cn(
                   "border-b border-outline-variant",
                   isWideLayout
-                    ? mode === "scene"
-                      ? "max-h-[55%] shrink-0 overflow-auto"
-                      : "min-h-0 flex-1 overflow-auto"
+                    ? selectedAgent
+                      ? "min-h-0 flex-1 overflow-auto"
+                      : mode === "scene"
+                        ? "max-h-[55%] shrink-0 overflow-auto"
+                        : "min-h-0 flex-1 overflow-auto"
                     : "shrink-0",
                 )}
               >
@@ -877,11 +987,59 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
                     <button type="button" onClick={clearQuery} className="underline hover:text-on-surface">Clear search</button>
                   </div>
                 ) : null}
-                {useCard && (selectionView.kind === "none" || selectionView.kind === "ok") ? (
+                {selectionView.kind === "ok" ? (
+                  <div ref={dockAnchorRef} data-testid="spatial-dock" className="scroll-mt-2">
+                    <div className={cn("border-b border-outline-variant bg-surface-lowest", isWideLayout && "sticky top-0 z-10")}>
+                      <SpatialSeatSwitcher
+                        model={model}
+                        selectedKey={selectionView.agent.key}
+                        matchKeys={matchKeys}
+                        statusByKey={statusByKey}
+                        palette={palette}
+                        onSelect={selectFromSwitcher}
+                      />
+                    </div>
+                    <SpatialAgentWorkspace
+                      agent={selectionView.agent}
+                      model={model}
+                      status={statusByKey.get(selectionView.agent.key) ?? deriveSeatStatus(selectionView.agent)}
+                      palette={palette}
+                      hostId={hostId}
+                      isRemote={isRemote}
+                      linkSource={linkSource}
+                      from={fromScope}
+                      canFocus={sceneActive && rendererReady}
+                      onFocus={(key) => controllerRef.current?.focus(key)}
+                      onSelect={selectFromIndex}
+                      onClose={() => setSelectedKey(null)}
+                      activity={activity}
+                      layout={isWideLayout ? "side" : "stacked"}
+                    />
+                    {mode === "scene" ? (
+                      // The full grouped index stays one tap away while a seat
+                      // is docked (rig/pod drills, every seat by exact key).
+                      <AllSeatsDisclosure count={matchKeys === null ? model.counts.agents : matchKeys.size}>
+                        <SpatialNodeList
+                          model={model}
+                          statusByKey={statusByKey}
+                          palette={palette}
+                          selectedKey={selectionView.agent.key}
+                          matchKeys={matchKeys}
+                          variant="compact"
+                          onSelect={selectFromIndex}
+                          onHover={setHoveredKey}
+                          linkSource={linkSource}
+                          from={fromScope}
+                          spatialMode={mode}
+                        />
+                      </AllSeatsDisclosure>
+                    ) : null}
+                  </div>
+                ) : useCard && selectionView.kind === "none" ? (
                   <SpatialSelectionCard
                     model={model}
-                    agent={selectedAgent}
-                    status={selectedAgent ? statusByKey.get(selectedAgent.key) ?? null : null}
+                    agent={null}
+                    status={null}
                     palette={palette}
                     canFocus={sceneActive && rendererReady}
                     detailsOpen={detailsOpen}
@@ -891,11 +1049,11 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
                     linkSource={linkSource}
                     from={fromScope}
                   />
-                ) : selectionView.kind === "none" || selectionView.kind === "ok" ? (
+                ) : selectionView.kind === "none" ? (
                   <SpatialInspector
                     model={model}
-                    agent={selectedAgent}
-                    status={selectedAgent ? statusByKey.get(selectedAgent.key) ?? null : null}
+                    agent={null}
+                    status={null}
                     palette={palette}
                     canFocus={sceneActive && rendererReady}
                     onSelect={selectFromIndex}
@@ -915,7 +1073,7 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
                   />
                 )}
               </div>
-              {mode === "scene" ? (
+              {mode === "scene" && !selectedAgent ? (
                 <div
                   ref={indexRegionRef}
                   onScroll={onRegionScroll("index")}
@@ -929,7 +1087,7 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
                     model={model}
                     statusByKey={statusByKey}
                     palette={palette}
-                    selectedKey={selectedAgent?.key ?? null}
+                    selectedKey={null}
                     matchKeys={matchKeys}
                     variant="compact"
                     onSelect={selectFromIndex}
@@ -943,9 +1101,56 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
             </aside>
           </div>
         </div>
+        )}
+        </SpatialActivityScope>
       )}
     </div>
   );
+}
+
+/** An operator's explicit selection asking for the docked workspace to be
+ *  brought into view (see requestReveal). */
+interface RevealRequest {
+  key: string;
+  mode: "always" | "mount";
+  nonce: number;
+  /** Selection when requested: while unchanged, the request is still pending. */
+  fromKey: string | null;
+}
+
+/** The full seat index behind one disclosure while a seat is docked. */
+function AllSeatsDisclosure({ count, children }: { count: number; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  return (
+    <div data-testid="spatial-all-seats" className="mx-4 mb-4 border border-outline-variant">
+      <button
+        type="button"
+        data-testid="spatial-all-seats-toggle"
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => setOpen((o) => !o)}
+        className="flex min-h-11 w-full items-center gap-2 px-3 text-left font-mono text-[11px] uppercase tracking-[0.12em] text-on-surface"
+      >
+        <ListIcon aria-hidden="true" className="h-3.5 w-3.5" /> All seats · {count}
+      </button>
+      <div id={id} hidden={!open} className="border-t border-outline-variant">
+        {open ? children : null}
+      </div>
+    </div>
+  );
+}
+
+/** Calls the activity hook only where a model exists (hook order stays
+ *  fixed: this component mounts with the model and unmounts without it). */
+function SpatialActivityScope({ model, hostId, reducedMotion, children }: {
+  model: SpatialModel;
+  hostId: string;
+  reducedMotion: boolean;
+  children: (activity: SpatialTrafficState) => React.ReactNode;
+}) {
+  const activity = useSpatialActivity(model, hostId, reducedMotion);
+  return <>{children(activity)}</>;
 }
 
 const SELECTION_COPY: Record<Exclude<SelectionView["kind"], "none" | "ok">, (rig: string, node: string) => string> = {
