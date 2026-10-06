@@ -3017,6 +3017,29 @@ describe("RestoreOrchestrator", () => {
     });
   });
 
+  it.each(["full", "subset"])("#729: persists startup warnings in the original %s restore receipt", async mode => {
+    const snap = seedRigAndSnapshot({ nodes: [{ logicalId: "agent-a", role: "worker", runtime: "claude-code" }], resumeType: "none", restorePolicy: "relaunch_fresh", edges: [] });
+    const snapshot = updateSnapshotData(snap, data => {
+      data.nodeStartupContext[data.nodes[0]!.id] = { projectionEntries: [], resolvedStartupFiles: [], startupActions: [], runtime: "claude-code" };
+    });
+    const { StartupOrchestrator } = await import("../src/domain/startup-orchestrator.js");
+    const warnings = ["Existing projection warning", "Startup submission unverified in agent-a@test-rig: capture unavailable."];
+    const start = vi.spyOn(StartupOrchestrator.prototype, "startNode").mockResolvedValue({ ok: true, startupStatus: "ready", continuityOutcome: "fresh", warnings });
+    const adapter = { runtime: "claude-code" } as import("../src/domain/runtime-adapter.js").RuntimeAdapter;
+    try {
+      const orch = createOrchestrator();
+      const options = { adapters: { "claude-code": adapter }, freshLogicalIds: ["agent-a"] };
+      const result = mode === "full" ? await orch.restore(snapshot.id, options)
+        : await orch.launchNodeSubset(snapshot.rigId, ["agent-a"], { adapters: options.adapters, snapshotId: snapshot.id });
+      expect(start).toHaveBeenCalled();
+      const eventType = mode === "full" ? "restore.completed" : "restore.subset_completed";
+      const rows = db.prepare("SELECT payload FROM events WHERE type = ? ORDER BY seq DESC LIMIT 1").all(eventType) as Array<{ payload: string }>;
+      expect(rows).toHaveLength(1);
+      expect(JSON.parse(rows[0]!.payload).result.warnings).toEqual(expect.arrayContaining(warnings));
+      expect(result.ok).toBe(true);
+    } finally { start.mockRestore(); }
+  });
+
   it("D1/D4: missing optional startup file is a warning, not a blocker", async () => {
     const snap = seedRigAndSnapshot({
       nodes: [{ logicalId: "agent-a", role: "worker", runtime: "claude-code" }],
@@ -4165,6 +4188,31 @@ describe("RestoreOrchestrator", () => {
       expect(result.ok).toBe(true);
       const delivered = deliverStartup.mock.calls.flatMap((c) => (c[0] as Array<{ absolutePath: string }>).map((f) => f.absolutePath));
       expect(delivered.sort()).toEqual([`${RUNNING_SPECS}/rigs/launch/kernel/culture/CULTURE.md`, "/user-rig/CULTURE-default.md"].sort());
+    });
+
+    it("restores a stored first-project culture from the upgraded shipped tree", async () => {
+      const OLD_SPECS = "/old-openrig/lib/node_modules/@openrig/cli/daemon/specs";
+      const RUNNING_SPECS = path.resolve(import.meta.dirname, "../specs");
+      const { snap, deliverStartup, adapter } = seedPodAware(false);
+      const culture = {
+        path: "CULTURE.md", absolutePath: `${OLD_SPECS}/rigs/launch/first-project/CULTURE.md`,
+        ownerRoot: `${OLD_SPECS}/rigs/launch/first-project`, deliveryHint: "guidance_merge",
+        required: true, appliesOn: ["fresh_start", "restore"],
+      };
+      const fixed = updateSnapshotData(snap, (data) => {
+        for (const context of Object.values(data.nodeStartupContext)) context.resolvedStartupFiles = [culture];
+      });
+      const result = await createOrchestrator().restore(fixed.id, {
+        adapters: { "claude-code": adapter }, freshLogicalIds: ["dev.impl"],
+        fsOps: { exists: (p) => p.startsWith(RUNNING_SPECS) ? fs.existsSync(p) : notOld(p) },
+      });
+      expect(result.ok).toBe(true);
+      const delivered = deliverStartup.mock.calls.flatMap((c) => c[0] as Array<typeof culture>);
+      expect(delivered).toEqual([{
+        ...culture, absolutePath: `${RUNNING_SPECS}/rigs/launch/first-project/CULTURE.md`,
+        ownerRoot: `${RUNNING_SPECS}/rigs/launch/first-project`,
+      }]);
+      expect(fs.readFileSync(delivered[0]!.absolutePath, "utf8")).toContain("ask dev-check for an independent check");
     });
 
     it("same-native resume: replay stays contained (no startup files delivered), stored built-ins notwithstanding", async () => {

@@ -1,6 +1,5 @@
 import type Database from "better-sqlite3";
 import { NativePermissionStore } from "./native-permission-store.js";
-import { permissionBindingOverride } from "./native-permission-selection.js";
 import { ulid } from "ulid";
 import type { RigRepository } from "./rig-repository.js";
 import type { SessionRegistry } from "./session-registry.js";
@@ -125,6 +124,7 @@ interface SeatHandoverServiceDeps {
   discoveryRepo: DiscoveryRepository;
   eventBus: EventBus;
   tmuxAdapter: TmuxAdapter;
+  successorLauncher?: SuccessorSessionLauncher;
   now?: () => Date;
   /** OpenRig identity/activity env stamped onto a created successor session,
    *  mirroring the launch identity env. Defaults to {} (the three core identity
@@ -245,7 +245,7 @@ export class SeatHandoverService {
     this.now = deps.now ?? (() => new Date());
     this.statusService = new SeatStatusService({ rigRepo: deps.rigRepo });
     this.planner = new SeatHandoverPlanner({ rigRepo: deps.rigRepo });
-    this.successorLauncher = new SuccessorSessionLauncher(deps.tmuxAdapter, deps.discoveryRepo, {
+    this.successorLauncher = deps.successorLauncher ?? new SuccessorSessionLauncher(deps.tmuxAdapter, deps.discoveryRepo, {
       sessionEnv: deps.sessionEnv,
       runtimeSessionEnv: deps.runtimeSessionEnv,
       newId: deps.newSuccessorId,
@@ -442,13 +442,13 @@ export class SeatHandoverService {
     const successorPosture = this.rigRepo.getNodePolicyProvenance(node.id)?.launchPosture
       ?? this.rigRepo.getRigPolicyProvenance(statusResult.status.rig_id)?.launchPosture
       ?? "floor"; // R2 terminal: absence = the locked floor on the continuity edge too
-    let permissionOverride: ReturnType<typeof permissionBindingOverride>;
+    let permissionOverride: ReturnType<NativePermissionStore["launchOverride"]>;
     try {
-      const selection = new NativePermissionStore(this.db).read(node.id);
-      if (selection && selection.runtime !== node.runtime) throw new Error("Seat runtime changed since permission selection; explicitly select again or inherit.");
-      permissionOverride = permissionBindingOverride(selection);
+      permissionOverride = new NativePermissionStore(this.db).launchOverride(node.id, node.runtime ?? "");
     } catch (error) { return { ok: false, code: "successor_create_failed", message: `Permission selection: ${(error as Error).message}`,
       guidance: "No successor was created. Inspect the seat permission selection before a separately authorized retry." }; }
+    const effectivePosture = permissionOverride.launchPosture ?? successorPosture;
+    const effectivePermissionMode = permissionOverride.permissionMode ?? (effectivePosture === "auto" && node.runtime === "claude-code" ? "auto" : undefined);
     // The successor must carry its own generation from its first byte. This reservation writes no
     // ledger row; commit consumes it, while every failed pre-commit branch remains unregistered.
     const occupantGeneration = this.sessionRegistry.reserveOccupantGeneration();
@@ -458,7 +458,7 @@ export class SeatHandoverService {
       // spec (else the running topology drifts from the founder-designed one at every handover).
       // A4-profile: likewise carry the codex config profile (adapter emits -p) — the restore path
       // already threads it; handover must too, or a profile-pinned codex seat reverts at handover.
-      node: { id: node.id, runtime: node.runtime, cwd: node.cwd, launchPosture: successorPosture, ...permissionOverride, model: node.model, effort: node.effort ?? undefined, codexConfigProfile: node.codex_config_profile ?? undefined },
+      node: { id: node.id, runtime: node.runtime, cwd: node.cwd, kernelAuthority: permissionOverride.kernelAuthority, nonInterruptive: this.rigRepo.getRigNonInterruptive(statusResult.status.rig_id), launchPosture: effectivePosture, ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}), model: node.model, effort: node.effort ?? undefined, codexConfigProfile: node.codex_config_profile ?? undefined },
       departingSessionName: latestSession.session_name,
       occupantGeneration,
       // OPR.0.5.5.5: a fork-sourced successor launches as a NATIVE FORK of the
