@@ -116,9 +116,9 @@ test("review tools are read-only except for the one comment tool", () => {
     "mcp__github__get_file_contents",
     "mcp__github__get_issue_comments",
     "mcp__github__get_pull_request",
-    "mcp__github__get_pull_request_comments",
     "mcp__github__get_pull_request_diff",
     "mcp__github__get_pull_request_files",
+    "mcp__github__get_pull_request_review_comments",
     "mcp__github__get_pull_request_reviews",
     "mcp__github__search_code",
   ]);
