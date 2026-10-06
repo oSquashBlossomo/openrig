@@ -34,6 +34,18 @@ Regression cases failed before the corresponding repairs. Existing retained
 media and legacy raw-URL rendering are not claimed to be globally redesigned.
 Physical Safari/Tailscale acceptance and installed-fleet rollout remain separate.
 
+The next review pass also removed macOS-only temporary paths from the identity
+fixtures and added explicit terminal size-limit notices, preserving the existing
+500-column, 300-row and 100,000-cell bounds. Exact allowed boundaries and oversized
+panes are covered; **105 targeted terminal tests**, daemon typecheck, and **28
+identity/timestamp tests** passed after this follow-up, with independent review.
+All production workflow-frontier and library-read callers were audited without
+another demonstrated defect. A short isolated ten-broker experiment confirmed
+high sampling overhead during busy repaint but no lost input or disconnected
+viewers; [issue #12](https://github.com/oSquashBlossomo/openrig/issues/12) tracks
+performance work with its measurement limits. Visible grid seats do not each
+create a live broker; the GUI defaults to two explicitly opened live terminals.
+
 ## Human-style review follow-up — October 5, 2026
 
 Astra independently explored the actual GUI through computer use before the

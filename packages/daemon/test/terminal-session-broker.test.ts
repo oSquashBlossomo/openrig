@@ -693,7 +693,10 @@ describe("native geometry mirroring", () => {
     for (const cursor of [null, { x: 0, y: 0, width: 501, height: 43 }, { x: 0, y: 0, width: 500, height: 300 }]) {
       const bad = track(new TerminalSessionBroker("bad@rig", makeTmux({ getPaneCursorPosition: async () => cursor })));
       const sub = makeSub(); await bad.attach(sub);
-      expect(sub.closed[0]).toEqual({ code: 1011, reason: "terminal geometry unavailable or outside supported bounds" });
+      const reason = cursor
+        ? `terminal geometry exceeds browser display limits (${cursor.width}x${cursor.height}; max 500x300, 100000 cells)`
+        : "terminal geometry unavailable or outside supported bounds";
+      expect(sub.closed[0]).toEqual({ code: 1011, reason });
       expect(bad.subscriberCount).toBe(0);
       expect(bad.pipeOutputPath).toBeNull();
     }
@@ -1044,4 +1047,77 @@ it("resets the display failure budget after successful recovery between separate
   }
   expect(broker.pipeOutputPath).toBe(pipe);
   expect(broker.subscriberCount).toBe(2);
+});
+
+describe("browser geometry limit reporting", () => {
+  it.each([[500, 200], [333, 300], [400, 250]])("admits native %ix%i at the supported column, row or cell boundary without resizing", async (width, height) => {
+    const resizeWindow = vi.fn(async () => ({ ok: true }));
+    const setWindowOption = vi.fn(async () => ({ ok: true }));
+    const geometry = vi.fn();
+    const cursor = { x: width - 1, y: height - 1, width, height };
+    const broker = track(new TerminalSessionBroker("boundary-size@fixture", makeTmux({
+      resizeWindow, setWindowOption,
+      getPaneCursorPosition: async () => cursor,
+      capturePaneScreen: async () => "NATIVE_CURRENT_SCREEN",
+    }), { pollMs: 5 }));
+    const sub = makeSub(); sub.geometry = geometry;
+    await broker.attach(sub);
+    expect(sub.closed).toEqual([]);
+    expect(geometry).toHaveBeenCalledExactlyOnceWith(width, height);
+    expect(sub.received.at(-1)).toContain("NATIVE_CURRENT_SCREEN");
+    expect(sub.received.at(-1)).toContain(cursorPositionEscape(cursor.x, cursor.y));
+    expect(resizeWindow).not.toHaveBeenCalled(); expect(setWindowOption).not.toHaveBeenCalled();
+  });
+
+  it.each([[501, 60], [300, 301], [500, 201], [520, 60], [400, 260], [500, 300]])("closes unsupported native %ix%i with an explicit static limit error instead of clipping or resizing", async (width, height) => {
+    const resizeWindow = vi.fn(async () => ({ ok: true }));
+    const setWindowOption = vi.fn(async () => ({ ok: true }));
+    const broker = track(new TerminalSessionBroker("oversized@fixture", makeTmux({
+      resizeWindow, setWindowOption,
+      getPaneCursorPosition: async () => ({ x: 0, y: 0, width, height }),
+    }), { pollMs: 5 }));
+    const sub = makeSub(); sub.geometry = vi.fn();
+    await broker.attach(sub);
+    expect(sub.closed).toEqual([{ code: 1011, reason: `terminal geometry exceeds browser display limits (${width}x${height}; max 500x300, 100000 cells)` }]);
+    expect(sub.geometry).not.toHaveBeenCalled();
+    expect(sub.received).toEqual([]);
+    expect(broker.subscriberCount).toBe(0); expect(broker.pipeOutputPath).toBeNull();
+    expect(resizeWindow).not.toHaveBeenCalled(); expect(setWindowOption).not.toHaveBeenCalled();
+  });
+
+  it("preserves bounded shared-viewer recovery and reports the actual unsupported native resize", async () => {
+    let width = 90, height = 27;
+    const resizeWindow = vi.fn(async () => ({ ok: true }));
+    const broker = track(new TerminalSessionBroker("oversized-resize@fixture", makeTmux({
+      resizeWindow,
+      capturePaneScreen: async () => "BASELINE",
+      getPaneCursorPosition: async () => ({ x: 0, y: 0, width, height }),
+    }), { pollMs: 5, geometryMs: 5 }));
+    const a = makeSub(), b = makeSub();
+    await broker.attach(a); await broker.attach(b);
+    width = 520; height = 60;
+    await vi.waitFor(() => expect(a.closed).toEqual([{ code: 1011, reason: "terminal geometry exceeds browser display limits (520x60; max 500x300, 100000 cells)" }]));
+    expect(b.closed).toEqual(a.closed);
+    expect(broker.pipeOutputPath).toBeNull();
+    expect(resizeWindow).not.toHaveBeenCalled();
+  });
+});
+
+it.each([null, { x: 500, y: 0, width: 500, height: 200 }, { x: 0, y: 0, width: Number.NaN, height: 27 }])("keeps unavailable or malformed cursor information distinct from browser size limits", async cursor => {
+  const broker = track(new TerminalSessionBroker("unavailable-size@fixture", makeTmux({
+    getPaneCursorPosition: async () => cursor,
+  }), { pollMs: 5 }));
+  const sub = makeSub();
+  await broker.attach(sub);
+  expect(sub.closed).toEqual([{ code: 1011, reason: "terminal geometry unavailable or outside supported bounds" }]);
+});
+
+it("reports bounds without inventing an exact size for unsafe integer geometry and keeps the WebSocket close reason bounded", async () => {
+  const broker = track(new TerminalSessionBroker("unsafe-size@fixture", makeTmux({
+    getPaneCursorPosition: async () => ({ x: 0, y: 0, width: Number.MAX_SAFE_INTEGER + 1, height: 60 }),
+  }), { pollMs: 5 }));
+  const sub = makeSub();
+  await broker.attach(sub);
+  expect(sub.closed).toEqual([{ code: 1011, reason: "terminal geometry exceeds browser display limits (max 500x300, 100000 cells)" }]);
+  expect(Buffer.byteLength(sub.closed[0]!.reason)).toBeLessThanOrEqual(123);
 });

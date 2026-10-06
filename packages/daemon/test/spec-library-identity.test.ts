@@ -3,13 +3,14 @@ import { Hono } from "hono";
 import { createHash } from "node:crypto";
 import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { SpecLibraryService } from "../src/domain/spec-library-service.js";
 import { SpecReviewService } from "../src/domain/spec-review-service.js";
 import { specLibraryRoutes } from "../src/routes/spec-library.js";
 const temps: string[] = [];
 afterEach(() => temps.splice(0).forEach(path => rmSync(path, { recursive: true, force: true })));
 const yaml = (name: string) => `name: ${name}\nversion: "1"\nprofiles:\n  default: {}\nresources: {}\nstartup: {}\n`;
-function temp() { const path = mkdtempSync("/private/tmp/spec-address-test-"); temps.push(path); return path; }
+function temp() { const path = realpathSync(mkdtempSync(join(tmpdir(), "spec-address-test-"))); temps.push(path); return path; }
 function file(root: string, relative: string, name: string) { const path = join(root, relative); mkdirSync(join(path, ".."), { recursive: true }); writeFileSync(path, yaml(name)); return path; }
 function library(roots: Array<{ path: string; sourceType: "builtin" | "user_file" }>) {
   const service = new SpecReviewService(); const lib = new SpecLibraryService({ roots, specReviewService: service }); lib.scan();

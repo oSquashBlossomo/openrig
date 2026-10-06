@@ -41,6 +41,27 @@ export const MAX_TERMINAL_COLS = 500;
 export const MAX_TERMINAL_ROWS = 300;
 export const MAX_TERMINAL_CELLS = 100_000;
 
+class GeometryLimitError extends Error {
+  constructor(cursor: TmuxCursorPosition) {
+    const actual = Number.isSafeInteger(cursor.width) && Number.isSafeInteger(cursor.height)
+      ? `${cursor.width}x${cursor.height}; ` : "";
+    super(`terminal geometry exceeds browser display limits (${actual}max ${MAX_TERMINAL_COLS}x${MAX_TERMINAL_ROWS}, ${MAX_TERMINAL_CELLS} cells)`);
+  }
+}
+
+function geometryError(cursor: TmuxCursorPosition | null): Error {
+  if (cursor && Number.isInteger(cursor.width) && Number.isInteger(cursor.height)
+    && cursor.width > 0 && cursor.height > 0
+    && (cursor.width > MAX_TERMINAL_COLS || cursor.height > MAX_TERMINAL_ROWS
+      || cursor.width * cursor.height > MAX_TERMINAL_CELLS)) return new GeometryLimitError(cursor);
+  return new Error(GEOMETRY_UNAVAILABLE);
+}
+
+function displayErrorReason(error: unknown): string {
+  if (error instanceof BusyScreenError || error instanceof GeometryLimitError) return error.message;
+  return GEOMETRY_UNAVAILABLE;
+}
+
 function validCursor(cursor: TmuxCursorPosition | null): cursor is TmuxCursorPosition {
   return !!cursor && [cursor.x, cursor.y, cursor.width, cursor.height].every(Number.isInteger)
     && cursor.width > 0 && cursor.width <= MAX_TERMINAL_COLS && cursor.height > 0 && cursor.height <= MAX_TERMINAL_ROWS
@@ -327,7 +348,7 @@ export class TerminalSessionBroker {
    */
   async scroll(sub: TerminalSubscriber, offset: number): Promise<void> {
     if (!Number.isFinite(offset)) return;
-    try { await this.enqueueDisplay(() => this.paintScroll(sub, Math.min(100_000, offset))); } catch { await this.recoverDisplay(); }
+    try { await this.enqueueDisplay(() => this.paintScroll(sub, Math.min(100_000, offset))); } catch (error) { await this.recoverDisplay(error); }
   }
 
   private async paintScroll(sub: TerminalSubscriber, offset: number): Promise<void> {
@@ -394,9 +415,10 @@ export class TerminalSessionBroker {
     // Native geometry can change between reads. Output has no atomic shared
     // sequence with capture-pane: use a bounded quiet sample, never skip bytes
     // to make a snapshot look current. Busy output defers repaint, not delivery.
+    let failure = new Error(GEOMETRY_UNAVAILABLE);
     for (let attempt = 0; attempt < 3; attempt++) {
       const before = await this.tmux.getPaneCursorPosition(this.sessionName);
-      if (!validCursor(before)) throw new Error("terminal geometry unavailable");
+      if (!validCursor(before)) throw geometryError(before);
       const position = this.pipeSize();
       const snapshot = await this.tmux.capturePaneScreen(this.sessionName);
       await this.settlePipe();
@@ -405,8 +427,9 @@ export class TerminalSessionBroker {
         return { snapshot, cursor, position, stable: position === this.lastSize && position === this.pipeSize()
           && before.x === cursor.x && before.y === cursor.y };
       }
+      failure = geometryError(cursor);
     }
-    throw new Error("terminal geometry unavailable");
+    throw failure;
   }
 
   private applyGeometry(cursor: TmuxCursorPosition): void {
@@ -457,18 +480,18 @@ export class TerminalSessionBroker {
       try { if (!await this.tmux.hasSession(this.sessionName)) this.handleSessionDeath(); } catch { /* unavailable read */ }
     }
     if (this.torndown) { this.closeTorndown(sub); return; }
-    try { sub.close(1011, error instanceof BusyScreenError ? SCREEN_BUSY : GEOMETRY_UNAVAILABLE); } catch { /* dead socket */ }
+    try { sub.close(1011, displayErrorReason(error)); } catch { /* dead socket */ }
   }
 
-  private async recoverDisplay(): Promise<void> {
+  private async recoverDisplay(error: unknown): Promise<void> {
     if (this.torndown) return;
     // Keep the consumed pipe cursor and decoder intact. A later valid native
     // geometry sample drains every unread byte, then repairs the visible screen.
     for (const sub of this.subscribers) this.pendingRepaints.add(sub);
-    if (++this.displayFailures >= MAX_DISPLAY_ATTEMPTS) await this.failGeometry();
+    if (++this.displayFailures >= MAX_DISPLAY_ATTEMPTS) await this.failGeometry(displayErrorReason(error));
   }
 
-  private async failGeometry(): Promise<void> {
+  private async failGeometry(reason: string): Promise<void> {
     if (this.torndown) return;
     let alive = true;
     try { alive = await this.tmux.hasSession(this.sessionName); } catch { /* geometry remains unavailable */ }
@@ -476,7 +499,7 @@ export class TerminalSessionBroker {
     if (!alive) { this.handleSessionDeath(); return; }
     const subs = [...this.subscribers];
     this.dispose();
-    this.lastClose = { code: 1011, reason: GEOMETRY_UNAVAILABLE };
+    this.lastClose = { code: 1011, reason };
     for (const sub of subs) { try { sub.close(this.lastClose.code, this.lastClose.reason); } catch { /* dead socket */ } }
   }
 
@@ -587,7 +610,7 @@ export class TerminalSessionBroker {
         if (Date.now() - this.lastGeometryRead >= this.geometryMs) {
           this.lastGeometryRead = Date.now();
           const cursor = await this.tmux.getPaneCursorPosition(this.sessionName);
-          if (!validCursor(cursor)) throw new Error("terminal geometry unavailable");
+          if (!validCursor(cursor)) throw geometryError(cursor);
           this.applyGeometry(cursor);
         }
         this.readTail();
@@ -597,7 +620,7 @@ export class TerminalSessionBroker {
           await this.repaintPending(screen);
         }
         this.displayFailures = 0;
-      }).catch(() => this.recoverDisplay()).finally(() => { this.tickPending = false; });
+      }).catch(error => this.recoverDisplay(error)).finally(() => { this.tickPending = false; });
     }, this.pollMs);
   }
 

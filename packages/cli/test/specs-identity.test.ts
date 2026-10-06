@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { Command } from "commander";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { specsCommand, resolveLibrarySpec } from "../src/commands/specs.js";
 import { STATE_FILE } from "../src/daemon-lifecycle.js";
 import type { DaemonClient } from "../src/client.js";
@@ -17,7 +18,7 @@ it("exact current/workflow IDs and unambiguous names still resolve; duplicate na
   expect((await resolveLibrarySpec(client, "specfile:v2:exact")).name).toBe("worker"); expect((await resolveLibrarySpec(client, "workflow:exact:1")).name).toBe("flow"); expect((await resolveLibrarySpec(client, "worker")).id).toBe("specfile:v2:exact"); entries.push({ id: "second", kind: "agent", name: "worker" }); await expect(resolveLibrarySpec(client, "worker")).rejects.toThrow(/ambiguous/);
 });
 it.each(["file", "directory"])("specs add %s reports exact installed canonical source, never same-name legacy suffix", async kind => {
-  const root = mkdtempSync("/private/tmp/cli-spec-identity-"); dirs.push(root); const home = join(root, "home"), source = kind === "file" ? join(root, "agent.yaml") : join(root, "worker"); if (kind === "directory") mkdirSync(source); const yamlPath = kind === "file" ? source : join(source, "agent.yaml"); writeFileSync(yamlPath, "name: worker\n"); vi.stubEnv("OPENRIG_HOME", home);
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "cli-spec-identity-"))); dirs.push(root); const home = join(root, "home"), source = kind === "file" ? join(root, "agent.yaml") : join(root, "worker"); if (kind === "directory") mkdirSync(source); const yamlPath = kind === "file" ? source : join(source, "agent.yaml"); writeFileSync(yamlPath, "name: worker\n"); vi.stubEnv("OPENRIG_HOME", home);
   const installed = join(home, "specs", kind === "file" ? "agent.yaml" : "worker/agent.yaml"), legacy = join(root, "legacy", kind === "file" ? "agent.yaml" : "worker/agent.yaml"); mkdirSync(join(legacy, ".."), { recursive: true }); writeFileSync(legacy, "name: worker\n");
   const client = { post: vi.fn(async (route: string) => route === "/api/specs/review/rig" ? { status: 400 } : route === "/api/specs/review/agent" ? { status: 200, data: { name: "worker" } } : { status: 200, data: [{ id: "wrong-legacy-id", kind: "agent", name: "worker", sourcePath: realpathSync(legacy) }, { id: "exact-installed-id", kind: "agent", name: "worker", sourcePath: realpathSync(installed) }] }) };
   const deps = { lifecycleDeps: { exists: (path: string) => path === STATE_FILE, readFile: () => JSON.stringify({ pid: 1, port: 17499 }), isProcessAlive: () => true, fetch: async () => ({ ok: true }) }, clientFactory: () => client } as unknown as StatusDeps;
