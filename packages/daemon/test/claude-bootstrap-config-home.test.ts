@@ -2,14 +2,15 @@
 // provider or real user configuration. The fake reads the selected state; this
 // proves OpenRig's routing, not Claude ingestion or successful login.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import Database from "better-sqlite3";
+import { createFullTestDb } from "./helpers/test-app.js";
+import { RigRepository } from "../src/domain/rig-repository.js";
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { ClaudeManagedLaunch } from "../src/domain/claude-managed-launch.js";
 import { StartupOrchestrator } from "../src/domain/startup-orchestrator.js";
-import type { SessionRegistry } from "../src/domain/session-registry.js";
+import { SessionRegistry } from "../src/domain/session-registry.js";
 import type { EventBus } from "../src/domain/event-bus.js";
 import { ClaudeCodeAdapter, type ClaudeAdapterFsOps } from "../src/adapters/claude-code-adapter.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
@@ -55,12 +56,11 @@ if (process.argv.includes('--fork-session')) {
 console.log(JSON.stringify({env:{HOME:process.env.HOME,CLAUDE_CONFIG_DIR:dir}, statePath,
   state:fs.existsSync(statePath)?JSON.parse(fs.readFileSync(statePath,'utf8')):null,args:process.argv.slice(2)}));\n`);
   fs.chmodSync(executable, 0o700);
-  const db = new Database(":memory:"); cleanup.push(() => db.close());
-  db.exec(`CREATE TABLE nodes(id TEXT, runtime TEXT, cwd TEXT);
-    CREATE TABLE bindings(id TEXT, node_id TEXT, tmux_session TEXT, tmux_pane TEXT);
-    CREATE TABLE occupant_tenures(node_id TEXT, generation_uuid TEXT, generation_ordinal INTEGER);`);
-  db.prepare("INSERT INTO nodes VALUES ('node','claude-code',?)").run(cwd);
-  db.exec("INSERT INTO bindings VALUES ('binding','node','seat','%1'); INSERT INTO occupant_tenures VALUES ('node','generation',1)");
+  const db = createFullTestDb(); cleanup.push(() => db.close());
+  const repo = new RigRepository(db), rig = repo.createRig("bootstrap-fixture");
+  const node = repo.addNode(rig.id, "worker", { runtime: "claude-code", cwd });
+  const registry = new SessionRegistry(db), session = registry.registerSession(node.id, "worker@bootstrap-fixture");
+  const storedBinding = registry.updateBinding(node.id, { tmuxSession: session.sessionName, tmuxPane: "%1" });
   const managed = new ClaudeManagedLaunch(db, env, {});
   const reads: string[] = [], writes: string[] = [], launches: any[] = [];
   const fsOps: ClaudeAdapterFsOps = {
@@ -74,8 +74,8 @@ console.log(JSON.stringify({env:{HOME:process.env.HOME,CLAUDE_CONFIG_DIR:dir}, s
     return { ok: true as const };
   }, getPaneCommand: async () => "claude", capturePaneContent: async () => "Claude Code\n>" } as unknown as TmuxAdapter;
   const adapter = new ClaudeCodeAdapter({ tmux, fsOps, claudeManagedLaunch: managed, sessionIdFactory: () => "fixture-fresh", sleep: async () => {} });
-  const binding = { id: "binding", nodeId: "node", cwd, tmuxSession: "seat", tmuxPane: "%1", permissionMode: "acceptEdits" } as NodeBinding;
-  return { root, cwd, env, statePath, untouched, reads, writes, launches, adapter, binding, fsOps, tmux, db };
+  const binding = { ...storedBinding, cwd, permissionMode: "acceptEdits" } as NodeBinding;
+  return { root, cwd, env, statePath, untouched, reads, writes, launches, adapter, binding, fsOps, tmux, db, rigId: rig.id, sessionId: session.id };
 }
 
 describe.skipIf(process.platform === "win32")("Claude managed bootstrap selects the launch config home", () => {
@@ -115,8 +115,6 @@ describe.skipIf(process.platform === "win32")("Claude managed bootstrap selects 
   });
   it.each(["relative", "unset"] as const)("startup with missing binding cwd bootstraps the stored node's %s selection", async selection => {
     const f = fixture(selection, true, true);
-    f.db.exec(`CREATE TABLE node_permission_selections(node_id TEXT, runtime TEXT, mode TEXT);
-      CREATE TABLE node_startup_context(node_id TEXT PRIMARY KEY, projection_entries_json TEXT, resolved_files_json TEXT, startup_actions_json TEXT, runtime TEXT);`);
     const statuses: string[] = [];
     // Persistence/readiness boundaries are synthetic; orchestration, projection,
     // bootstrap, prepare and the emitted child command are the production path.
@@ -128,11 +126,11 @@ describe.skipIf(process.platform === "win32")("Claude managed bootstrap selects 
     const orchestrator = new StartupOrchestrator({ db: f.db, sessionRegistry: registry, eventBus, tmuxAdapter: f.tmux });
     const binding = { ...f.binding };
     delete (binding as Partial<NodeBinding>).cwd;
-    const result = await orchestrator.startNode({ rigId: "rig", nodeId: "node", sessionId: "session",
+    const result = await orchestrator.startNode({ rigId: f.rigId, nodeId: f.binding.nodeId, sessionId: f.sessionId,
       binding, adapter: f.adapter,
       plan: { runtime: "claude-code", cwd: f.cwd, entries: [], startup: { files: [], actions: [] }, conflicts: [], noOps: [], diagnostics: [] },
       resolvedStartupFiles: [], startupActions: [], isRestore: false });
-    expect(result).toMatchObject({ ok: true });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
     expect(statuses).toEqual(["pending", "ready"]);
     expect(f.launches[0].statePath).toBe(f.statePath);
     expect(f.launches[0].state).toMatchObject({ ...sentinel, hasCompletedOnboarding: true,
@@ -199,7 +197,7 @@ describe.skipIf(process.platform === "win32")("Claude managed bootstrap selects 
     const result = await f.adapter.launchHarness(f.binding, mode === "resume"
       ? { name: "seat", resumeToken: "fixture-original" }
       : { name: "seat", forkSource: { kind: "native_id", value: "fixture-original" } });
-    expect(result).toMatchObject({ ok: true });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
     expect(f.launches[0].state).toMatchObject({ ...sentinel, hasCompletedOnboarding: true, projects: { ...sentinel.projects, [f.cwd]: { hasTrustDialogAccepted: true } } });
     expect(new Set(f.writes)).toEqual(new Set([f.statePath]));
     for (const [file, text] of f.untouched) expect(fs.readFileSync(file, "utf8")).toBe(text);
