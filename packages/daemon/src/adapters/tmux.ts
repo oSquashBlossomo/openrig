@@ -152,8 +152,12 @@ function isNoServerError(err: unknown): boolean {
 function isSessionAbsenceError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   const msg = err.message.toLowerCase();
+  if (/permission denied|operation not permitted|EACCES|EPERM/i.test(msg)) return false;
+  // After an exact-name miss, has-session can parse a dotted target as a
+  // window/pane. These diagnostics still prove this requested target is absent.
   return msg.includes("session not found") ||
     msg.includes("can't find session") ||
+    msg.includes("can't find window:") || isPaneAbsenceError(err) ||
     msg.includes("no current target") ||
     msg.includes("no session");
 }

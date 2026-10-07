@@ -153,11 +153,20 @@ export function registerTerminalWs(
               // this viewer cannot drain queued frames into a surviving broker.
               closed = true;
               clearQueuedFrames();
+              stopHeartbeat?.();
               try { ws.close(code, reason); } catch { /* already closed */ }
             },
           };
           subscriber = sub;
-          const b = await getRegistry(tmux as unknown as BrokerTmux).attach(sessionName, sub);
+          let b: TerminalSessionBroker;
+          try {
+            b = await getRegistry(tmux as unknown as BrokerTmux).attach(sessionName, sub);
+          } catch {
+            // The broker cleans up failed admission. An async WebSocket event
+            // rejection must close this viewer rather than escape the daemon.
+            sub.close(1011, "terminal attachment failed");
+            return;
+          }
           broker = b;
           // If the socket closed while attach was in flight, detach now so the
           // broker does not retain a dead subscriber (detach is idempotent).
