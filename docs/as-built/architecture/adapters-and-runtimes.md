@@ -154,7 +154,8 @@ continue, restore and handover all take this decision per launch.
 `operationalLaunchArgs()` (`packages/daemon/src/adapters/kernel-authority.ts:19`)
 then replaces the non-interruptive arguments for that seat:
 
-- Claude Code keeps the floor, `--permission-mode acceptEdits`, and gets
+- Claude Code inherits a selected user, project or local native default, otherwise
+  uses `--permission-mode acceptEdits`, and gets
   `--settings '{"permissions":{"allow":[…]}}'` with `KERNEL_CLAUDE_ALLOW`
   (`:7`): `Skill`, `Read`, `Edit`, `Write`, `Glob`, `Grep`, `Bash(<command>:*)`
   for 31 operational commands (`rig`, `tmux`, `node`, `npm`, `git`, `ssh` and
@@ -166,6 +167,10 @@ then replaces the non-interruptive arguments for that seat:
 It writes no settings file. If the rig lookup fails, the seat keeps its floor.
 `rig seat status` reports the source as "kernel operational default"
 (`kernel_default`, `native-permission-store.ts:180`).
+
+If a native settings file cannot be read or parsed, an inherited Claude launch
+also defers to Claude, which handles its own settings error. OpenRig records the
+deliberate deferral without claiming to know the effective native permission mode.
 
 ### ClaudeCodeAdapter (`claude-code-adapter.ts:55`)
 

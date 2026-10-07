@@ -232,13 +232,15 @@ The destructive class is `delete_everything`, `drop_persistent_store` and
 `-s danger-full-access -a never`, and Pi `--approve`. `builtin:auto` selects Claude
 `--permission-mode auto`, while Codex and Pi do not have an auto mode and launch at the floor.
 Every other seat launches at the floor:
-- Claude `--permission-mode acceptEdits`;
+- Claude inherits a selected native default from user, project or local settings;
+  without a selection, it uses `--permission-mode acceptEdits`;
 - Codex `-s workspace-write`, or `-p <profile>` when the member sets
   `codex_config_profile`, in which case the profile governs its own sandbox;
 - Pi `--no-approve` by default.
 
 Seats of the rig named `kernel` are the exception. With no member or rig policy, no
-per-seat choice and (for Codex) no named profile, Claude launches in `acceptEdits` with a
+per-seat choice and (for Codex) no named profile, Claude inherits its selected native
+default or uses `acceptEdits`, with a
 per-launch `--settings` allow list for its file tools and operational commands, and Codex
 launches with `-s danger-full-access -a never`.
 
