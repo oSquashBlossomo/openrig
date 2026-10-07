@@ -121,7 +121,7 @@ describe("non-interruptive launch choice", () => {
     const { tmux, fsOps, binding } = fixture("claude-code");
     if (mode === "restore") {
       await new ClaudeResumeAdapter(tmux, { maxWaitMs: 0 }).resume("dev@test", "claude_id", "old-id", "/work",
-        "full_bypass", null, undefined, undefined, "xhigh", true, false, "claude-fable-5-1");
+        "full_bypass", null, undefined, undefined, "xhigh", true, false, undefined, "claude-fable-5-1");
     } else {
       await new ClaudeCodeAdapter({ tmux, fsOps, sleep: async () => {} }).launchHarness({ ...binding, advisorModel: "claude-fable-5-1", effort: "xhigh" },
         { name: "dev@test", ...(mode === "resume" ? { resumeToken: "old-id" } : {}),
