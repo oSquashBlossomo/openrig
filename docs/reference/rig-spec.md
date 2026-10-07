@@ -349,7 +349,7 @@ directory's `CLAUDE.md`, including blocks written by other rigs.
 | `starter_ref` | object | no | — | `{ name }` of an agent starter (`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`) whose files lead the seat's startup. Not valid on terminal members or with a fork. |
 | `startup` | StartupBlock | no | — | Member-level startup files and actions. Applied only to this member. |
 
-Per-seat model configuration can also be persisted with `rig seat set-model <seat> --model <id> --effort <level> --advisor <model|off|inherit> --reason <text>`. Omitted flags preserve existing values; `inherit` removes the seat override. The change is audited and applies to later managed launches. The running native conversation is not restarted. Snapshot restore uses the configuration captured in that snapshot, so take a new snapshot after configuration changes when it should become the recovery default.
+Per-seat model configuration can also be persisted with `rig seat set-model <seat> --model <id> --effort <level> --advisor <model|off|inherit> --reason <text>`. Omitted flags preserve existing values; `inherit` removes the seat override. The change is audited and applies to later managed launches. The running native conversation is not restarted. Launching a member from its RigSpec again re-resolves effort and advisor from the spec, replacing a `set-model` value. Snapshot restore uses the configuration captured in that snapshot, so take a new snapshot after configuration changes when it should become the recovery default.
 
 ### Pi (`runtime: pi`)
 
