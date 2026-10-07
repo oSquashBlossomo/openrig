@@ -159,6 +159,17 @@ describe("authored Claude floor versus native inheritance", () => {
       expect(command).toContain(current === "floor" ? "--permission-mode acceptEdits" : "--dangerously-skip-permissions");
       if (current === "full_bypass") expect(command).not.toContain("--permission-mode");
     });
+  it.each(["auto", "full_bypass"].flatMap(rigPosture => [undefined, "auto", "floor", "full_bypass"].map(selection => ({ rigPosture, selection }))))(
+    "legacy member none survives actual $rigPosture restore resolution with selection $selection", async ({ rigPosture, selection }) => {
+      const f = fixture(); f.policy("rig", rigPosture === "auto" ? "builtin:auto" : "builtin:yolo", rigPosture as "auto" | "full_bypass");
+      f.db.prepare("UPDATE nodes SET permission_policy='none' WHERE id=?").run(f.node.id);
+      expect(f.repo.getNodePolicyProvenance(f.node.id)).toBeNull();
+      if (selection) f.store.write(f.node.id, { runtime: "claude-code", mode: selection }, "operator", "explicit selection");
+      const resolved = (RestoreOrchestrator.prototype as any).resolveRestorePosture.call({ rigRepo: f.repo }, f.node.id, f.rig.id);
+      const command = await f.launch("legacy restore", resolved);
+      if (!selection) expect(command).not.toMatch(/--permission-mode|--dangerously-skip-permissions/);
+      else expect(command).toContain(selection === "full_bypass" ? "--dangerously-skip-permissions" : `--permission-mode ${selection === "floor" ? "acceptEdits" : selection}`);
+    });
   it("an invalid legacy ref is refused without resolving a relative policy file", () => {
     const f = fixture();
     f.db.prepare("UPDATE nodes SET permission_policy='../outside.md' WHERE id=?").run(f.node.id);

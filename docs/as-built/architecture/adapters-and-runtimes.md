@@ -120,7 +120,8 @@ builtin/custom policy provenance carries `claudePermissionFloor: true`. The stat
 flag selector emits `acceptEdits` while retaining the classic pane-shell executable
 and provider environment; explicitly named native modes still use the managed
 capability-checked launch path. Valid legacy policy refs without provenance also
-select the floor. Absent and `deliberate_none` choices retain native inheritance. Restore passes its
+select the floor. A legacy member `none` masks the inherited rig posture even
+without provenance. Absent and `deliberate_none` choices retain native inheritance. Restore passes its
 current re-derived posture, so a stale persisted custom floor cannot replace a
 newly resolved `auto` or `full_bypass`. `bundle-behaviour.ts` is the read-only
 preview of the same mapping for an unopened bundle (see

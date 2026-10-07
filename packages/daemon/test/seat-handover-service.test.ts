@@ -160,6 +160,23 @@ describe("SeatHandoverService", () => {
       expect(launched.claudePermissionFloor).toBe(choice === "authored floor" || choice === "stored floor");
     });
 
+  it.each(["auto", "full_bypass"].flatMap(rigPosture => [undefined, "auto", "floor", "full_bypass"].map(selection => ({ rigPosture, selection }))))(
+    "legacy member none masks rig $rigPosture at successor launch with selection $selection", async ({ rigPosture, selection }) => {
+      const { rig, node } = seedSeat({ runtime: "claude-code" });
+      rigRepo.setRigPermissionPolicy(rig.id, rigPosture === "auto" ? "builtin:auto" : "builtin:yolo");
+      rigRepo.setRigPolicyProvenance(rig.id, { origin: "builtin", launchPosture: rigPosture as "auto" | "full_bypass", resolvedTarget: null, declaringDir: null });
+      db.prepare("UPDATE nodes SET permission_policy='none' WHERE id=?").run(node.id);
+      expect(rigRepo.getNodePolicyProvenance(node.id)).toBeNull();
+      if (selection) new NativePermissionStore(db).write(node.id, { runtime: "claude-code", mode: selection }, "operator", "explicit selection");
+      launchHarness.mockResolvedValueOnce({ ok: false, error: "inert successor launch" });
+      await service.handover({ seatRef: "dev-impl@seat-rig", operator: "operator", reason: "test continuity", source: "fresh" });
+      expect(launchHarness).toHaveBeenCalledTimes(1);
+      const launched = launchHarness.mock.calls[0]![0];
+      expect(launched.permissionMode).toBe(selection === "auto" ? "auto" : undefined);
+      expect(launched.claudePermissionFloor).toBe(selection === "floor");
+      if (selection !== "auto") expect(launched.launchPosture).toBe(selection === "full_bypass" ? "full_bypass" : "floor");
+    });
+
   function seedDiscovery(opts?: { id?: string; tmuxSession?: string; tmuxPane?: string; runtimeHint?: "codex" | "claude-code" | "terminal" | "unknown" }) {
     const discovered = discoveryRepo.upsertDiscoveredSession({
       tmuxSession: opts?.tmuxSession ?? "successor-session",

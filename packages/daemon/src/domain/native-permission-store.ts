@@ -51,7 +51,7 @@ export class NativePermissionStore {
     if (!selection && this.hasKernelDefault(nodeId, runtime)) {
       return { kernelAuthority: true, claudePermissionFloor: false, launchPosture: runtime === "codex" ? "full_bypass" : "floor" };
     }
-    if (!selection && runtime === "claude-code" && resolvedPosture === "floor") {
+    if (!selection && runtime === "claude-code") {
       // Lifecycle bindings also use floor for honest absence, to suppress ambient
       // YOLO. Only an authored policy selects the static floor. Use the caller's
       // current posture: restore may have re-derived a changed custom policy.
@@ -67,7 +67,10 @@ export class NativePermissionStore {
         const error = validatePermissionPolicyRef(ref, "Stored permission policy");
         if (error) throw new Error(error);
       }
-      if (ref !== "none" && (ref != null || row?.origin === "builtin" || row?.origin === "custom")) {
+      // Older none rows can reach this boundary with the rig fallback posture.
+      // The literal choice is still inheritance and masks that fallback.
+      if (ref === "none") return { kernelAuthority: false, claudePermissionFloor: false, launchPosture: "floor" };
+      if (resolvedPosture === "floor" && (ref != null || row?.origin === "builtin" || row?.origin === "custom")) {
         return { kernelAuthority: false, claudePermissionFloor: true };
       }
     }
