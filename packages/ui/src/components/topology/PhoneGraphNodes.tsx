@@ -47,15 +47,22 @@ export function ToneDot({ tone, className }: { tone: SpatialTone; className?: st
   return <span aria-hidden="true" className={cn("inline-block h-2.5 w-2.5 shrink-0 rounded-full border", PHONE_TONE_DOT[tone], className)} />;
 }
 
-export function TallyRow({ tally, className }: { tally: PhoneTally; className?: string }) {
+/** `fit`: one line inside a fixed-height node row. Past three tones the
+ *  labels collapse to dot + count (full text in the title and for screen
+ *  readers) instead of wrapping into a second line the node would clip. */
+export function TallyRow({ tally, className, fit = false }: { tally: PhoneTally; className?: string; fit?: boolean }) {
   const entries = tallyEntries(tally);
   if (entries.length === 0) return <span className={cn("text-on-surface-variant", className)}>no seats</span>;
+  const dense = fit && entries.length > 3;
   return (
-    <span className={cn("inline-flex flex-wrap items-center gap-x-2 gap-y-0.5", className)}>
+    <span
+      className={cn("inline-flex items-center gap-x-2", fit ? "max-w-full flex-nowrap overflow-hidden" : "flex-wrap gap-y-0.5", className)}
+      title={dense ? entries.map(([tone, n]) => `${n} ${PHONE_TONE_LABEL[tone]}`).join(" · ") : undefined}
+    >
       {entries.map(([tone, n]) => (
-        <span key={tone} className="inline-flex items-center gap-1" data-tone={tone}>
+        <span key={tone} className="inline-flex shrink-0 items-center gap-1" data-tone={tone}>
           <ToneDot tone={tone} />
-          {n} {PHONE_TONE_LABEL[tone]}
+          {n}{dense ? <span className="sr-only"> {PHONE_TONE_LABEL[tone]}</span> : ` ${PHONE_TONE_LABEL[tone]}`}
         </span>
       ))}
     </span>
@@ -139,7 +146,7 @@ export function PhoneRigNode({ data }: NodeProps) {
           ) : d.state === "loading" ? (
             <span>waiting for this rig&apos;s graph</span>
           ) : (
-            <TallyRow tally={d.tally} className="truncate" />
+            <TallyRow tally={d.tally} fit />
           )}
         </div>
       ) : null}
@@ -170,7 +177,7 @@ export function PhonePodNode({ data }: NodeProps) {
             {d.loose ? null : <span className="font-normal text-on-surface-variant"> pod</span>}
           </div>
           <div className="truncate text-[10px] leading-tight text-on-surface-variant">
-            {d.expanded ? `${d.seatCount} seat${d.seatCount === 1 ? "" : "s"}` : <TallyRow tally={d.tally} />}
+            {d.expanded ? `${d.seatCount} seat${d.seatCount === 1 ? "" : "s"}` : <TallyRow tally={d.tally} fit />}
           </div>
         </div>
         {d.loose ? null : <ToggleButton expanded={d.expanded} label={`pod ${d.label}`} onToggle={d.onToggle} testId="phone-graph-pod-toggle" />}

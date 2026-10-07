@@ -185,6 +185,10 @@ export interface LabelCandidate {
   /** Fallback anchors tried in order when the primary one does not fit
    *  (e.g. a seat name hanging below its puck instead of above it). */
   alternatives?: ReadonlyArray<LabelAnchor>;
+  /** When every anchor collides, move the box to the nearest free spot
+   *  instead of suppressing it (plan-view seat names; the renderer draws a
+   *  leader back to the seat). */
+  relocate?: boolean;
 }
 
 export interface LabelAnchor {
@@ -216,6 +220,8 @@ export interface LabelLayoutOptions {
   edge?: number;
   /** Hard cap on non-forced labels shown at once (bounds DOM work). */
   maxVisible?: number;
+  /** Total free-spot probes the relocation pass may spend (bounds CPU). */
+  relocateBudget?: number;
 }
 
 export interface LabelLayoutResult {
@@ -224,6 +230,8 @@ export interface LabelLayoutResult {
   choice: Map<string, number>;
   /** Horizontal pixel shift applied to clamped labels (only non-zero entries). */
   offsets: Map<string, number>;
+  /** Relocated labels: box shift from the primary anchor, px (choice is 0). */
+  shifts: Map<string, { dx: number; dy: number }>;
   /** Candidates suppressed by collision, viewport edge, occluders or the cap. */
   suppressed: number;
 }
@@ -298,6 +306,7 @@ export function layoutLabels(candidates: readonly LabelCandidate[], options: Lab
   };
   let shown = 0;
   let suppressed = 0;
+  const deferred: Array<{ c: LabelCandidate; a: LabelAnchor }> = [];
   for (const c of order) {
     const anchors: LabelAnchor[] = [{ x: c.x, y: c.y, cx: c.cx, cy: c.cy }, ...(c.alternatives ?? [])]
       .filter((a) => [a.x, a.y, a.cx, a.cy].every(Number.isFinite));
@@ -330,7 +339,11 @@ export function layoutLabels(candidates: readonly LabelCandidate[], options: Lab
       }
     }
     if (!placed) {
-      suppressed++;
+      // Only a seat on screen is relocated: a deliberate zoom may leave
+      // others out of view, and their names stay with them.
+      const a = anchors[0]!;
+      if (c.relocate && a.x >= 0 && a.x <= options.width && a.y >= 0 && a.y <= options.height) deferred.push({ c, a });
+      else suppressed++;
       continue;
     }
     visible.add(c.id);
@@ -339,7 +352,85 @@ export function layoutLabels(candidates: readonly LabelCandidate[], options: Lab
     occupy(placed.rect);
     if (!forced) shown++;
   }
-  return { visible, choice, offsets, suppressed };
+
+  // Relocation runs after every label that fits in place, so a moved label
+  // never takes a neighbour's own spot. Each takes the nearest free spot on
+  // a coarse grid of offsets, nearest first.
+  // ponytail: greedy nearest-free-spot with a global probe budget; a real
+  // label-placement solver only if dense fleets still run out of budget.
+  const shifts = new Map<string, { dx: number; dy: number }>();
+  let budget = options.relocateBudget ?? 24000;
+  const spots = deferred.length > 0 ? relocationOffsets(options.width, options.height) : [];
+  for (const { c, a } of deferred) {
+    let found: { dx: number; dy: number; rect: Rect } | null = null;
+    if (shown < maxVisible) {
+      const base = rectOf(c, a, gap);
+      for (const [dx, dy] of spots) {
+        if (budget-- <= 0) break;
+        const r = { left: base.left + dx, top: base.top + dy, right: base.right + dx, bottom: base.bottom + dy };
+        if (inside(r) && !collides(r)) { found = { dx, dy, rect: r }; break; }
+      }
+    }
+    if (!found) {
+      suppressed++;
+      continue;
+    }
+    visible.add(c.id);
+    choice.set(c.id, 0);
+    shifts.set(c.id, { dx: found.dx, dy: found.dy });
+    occupy(found.rect);
+    shown++;
+  }
+  return { visible, choice, offsets, shifts, suppressed };
+}
+
+const RELOCATE_STEP = { x: 12, y: 9 } as const;
+/** A relocated name stays this close to its seat (px), so its leader reads
+ *  as a local callout rather than a line across the scene. */
+const RELOCATE_MAX_PX = 200;
+
+let offsetCache: { key: string; spots: Array<[number, number]> } | null = null;
+
+/** Box offsets within RELOCATE_MAX_PX, clipped to the viewport, nearest first (ties: up, then left).
+ *  Cached per viewport size: placement runs every painted frame. */
+function relocationOffsets(width: number, height: number): Array<[number, number]> {
+  const key = `${width}x${height}`;
+  if (offsetCache?.key === key) return offsetCache.spots;
+  const out: Array<[number, number]> = [];
+  const nx = Math.ceil(Math.max(0, width) / RELOCATE_STEP.x);
+  const ny = Math.ceil(Math.max(0, height) / RELOCATE_STEP.y);
+  for (let i = -nx; i <= nx; i++) for (let j = -ny; j <= ny; j++) {
+    const dx = i * RELOCATE_STEP.x, dy = j * RELOCATE_STEP.y;
+    if ((i !== 0 || j !== 0) && Math.hypot(dx, dy) <= RELOCATE_MAX_PX) out.push([dx, dy]);
+  }
+  out.sort((p, q) => Math.hypot(p[0], p[1]) - Math.hypot(q[0], q[1]) || p[1] - q[1] || p[0] - q[0]);
+  offsetCache = { key, spots: out };
+  return out;
+}
+
+/**
+ * Leader from a relocated label back to its seat: a segment from the box
+ * edge (toward the anchor point) to the anchor, in the box's own pixel frame
+ * (origin top-left, before the shift). Null when the anchor is still at or
+ * inside the box edge, so a nudged label carries no line.
+ */
+export function leaderLine(
+  box: { w: number; h: number; cx: number; cy: number },
+  dx: number,
+  dy: number,
+): { x: number; y: number; length: number; angle: number } | null {
+  const ax = box.cx * box.w - dx;
+  const ay = box.cy * box.h - dy;
+  const hx = box.w / 2;
+  const hy = box.h / 2;
+  const vx = ax - hx;
+  const vy = ay - hy;
+  if (![ax, ay, hx, hy].every(Number.isFinite) || (Math.abs(vx) <= hx + 3 && Math.abs(vy) <= hy + 3)) return null;
+  const t = Math.min(vx ? hx / Math.abs(vx) : Infinity, vy ? hy / Math.abs(vy) : Infinity);
+  const x = hx + vx * t;
+  const y = hy + vy * t;
+  const round = (n: number) => Math.round(n * 10) / 10;
+  return { x: round(x), y: round(y), length: round(Math.hypot(ax - x, ay - y)), angle: round(Math.atan2(ay - y, ax - x) * 100) / 100 };
 }
 
 /** Label density. "compact" is the small-stage (phone, short landscape or a

@@ -1368,3 +1368,176 @@ describe("SpatialRenderer traffic effect geometry", () => {
     expect(rafQueue.size).toBe(0);
   });
 });
+
+// Top view is the plan: every seat's name shows, anchored to its own seat,
+// not just the hovered/selected one; the angled view keeps its quiet labels.
+describe("SpatialRenderer top view names every seat", () => {
+  function rigGraph(pods: Array<{ ns: string; seats: string[] }>) {
+    const nodes: Array<Record<string, unknown>> = [];
+    for (const { ns, seats } of pods) {
+      nodes.push({ id: `pod-${ns}`, type: "podGroup", data: { podNamespace: ns } });
+      seats.forEach((s, i) => nodes.push({ id: `${ns}-${s}`, type: "rigNode", parentId: `pod-${ns}`, data: { logicalId: `${ns}.${s}`, runtime: i % 2 ? "codex" : "claude-code", status: "running" } }));
+    }
+    return { nodes, edges: [] };
+  }
+  const gua = () => parseSpatialRig("local", { rigId: "gua", rigName: "gua", graph: rigGraph([{ ns: "gua", seats: ["orchestrator", "architect", "implementer", "reviewer", "designer", "qa-lead"] }]) });
+  const headwaters = () => parseSpatialRig("local", { rigId: "hw", rigName: "headwaters", graph: rigGraph([
+    { ns: "lead", seats: ["orchestrator", "advisor"] },
+    { ns: "build", seats: ["frontend", "backend", "infra"] },
+    { ns: "review", seats: ["reviewer", "qa"] },
+    { ns: "ops", seats: ["watchdog", "release", "docs"] },
+  ]) });
+  const viewport = (w: number, h: number) => {
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => w });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => h });
+  };
+  function renderTop(rigs: ReturnType<typeof gua>[], density: "full" | "compact") {
+    const model = buildSpatialModel("local", rigs);
+    const base = setup();
+    render(<SpatialRenderer {...base.props} model={model} layout={layoutSpatialModel(model)} density={density} />);
+    flushFrames();
+    act(() => base.controllerRef.current!.preset("top"));
+    flushFrames();
+    return model;
+  }
+
+  for (const [name, w, h, density] of [["desktop", 1006, 900, "full"], ["tablet", 768, 700, "full"], ["phone", 390, 560, "compact"]] as const) {
+    it(`shows all six GUA seat names in top view (${name})`, () => {
+      viewport(w, h);
+      renderTop([gua()], density);
+      const shown = agentLabels().filter(isShown);
+      expect(shown).toHaveLength(6);
+      // Plan names are one line; status stays in the card / on selection.
+      for (const label of shown) expect(metaOf(label)?.hidden).toBe(true);
+    });
+  }
+
+  it("shows every seat name in top view of a multi-rig scene (no ambient budget)", () => {
+    viewport(1006, 900);
+    const model = renderTop([gua(), headwaters()], "full");
+    const layer = document.querySelector<HTMLElement>(".spatial-label-layer")!;
+    expect(agentLabels().filter(isShown)).toHaveLength(model.agentsByKey.size);
+    // Names clip to the projected seat pitch instead of disappearing.
+    expect(parseFloat(layer.style.getPropertyValue("--spatial-plan-name-max"))).toBeGreaterThanOrEqual(48);
+  });
+
+  it("returning to the angled view restores its quiet full-density labels", () => {
+    viewport(1006, 900);
+    const model = buildSpatialModel("local", [gua(), headwaters()]);
+    const base = setup();
+    render(<SpatialRenderer {...base.props} model={model} layout={layoutSpatialModel(model)} density="full" />);
+    flushFrames();
+    const isoShown = agentLabels().filter(isShown).length;
+    act(() => base.controllerRef.current!.preset("top"));
+    flushFrames();
+    act(() => base.controllerRef.current!.preset("iso"));
+    flushFrames();
+    const layer = document.querySelector<HTMLElement>(".spatial-label-layer")!;
+    expect(layer.style.getPropertyValue("--spatial-plan-name-max")).toBe("");
+    expect(agentLabels().some((el) => el.classList.contains("is-compact"))).toBe(false);
+    expect(agentLabels().filter(isShown).length).toBe(isoShown);
+    for (const label of agentLabels().filter(isShown)) expect(metaOf(label)?.hidden).toBe(false);
+  });
+});
+
+// Astra's host-density case: 25 seats over five rigs, fitted in Top on a
+// phone stage with the compact HUD and Key toggle measured as occluders.
+// Every name must show, none may overlap another name or a control, and a
+// name with no room by its seat keeps a leader back to it.
+describe("SpatialRenderer top view names a 25-seat fleet on a phone stage", () => {
+  const NAMES = ["orchestrator", "architect", "implementer", "reviewer", "designer", "qa-lead"];
+  function fleet() {
+    let n = 0;
+    return ([[3], [4], [2], [6], [2, 3, 2, 3]] as const).map((pods, r) => {
+      const nodes: Array<Record<string, unknown>> = [];
+      pods.forEach((count, p) => {
+        nodes.push({ id: `pod-p${p}`, type: "podGroup", data: { podNamespace: `p${p}` } });
+        for (let i = 0; i < count; i++, n++) {
+          nodes.push({ id: `s${n}`, type: "rigNode", parentId: `pod-p${p}`, data: { logicalId: `p${p}.${NAMES[n % NAMES.length]}`, runtime: n % 2 ? "codex" : "claude-code", status: "running" } });
+        }
+      });
+      return parseSpatialRig("local", { rigId: `r${r}`, rigName: `rig-${r}`, graph: { nodes, edges: [] } });
+    });
+  }
+  type Box = { left: number; top: number; right: number; bottom: number };
+  const overlap = (a: Box, b: Box) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+
+  async function renderFleetTop(w: number, h: number, selected = false) {
+    const { estimateLabelSize } = await import("../src/components/topology/spatial/spatial-view-math.js");
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => w });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => h });
+    // SpatialTopologyView controls. Compact (< 600px): Fit + More top-right,
+    // Key bottom-left. Full: the five-button HUD column and the legend.
+    const density = w < 600 ? "compact" : "full";
+    const controls: Box[] = density === "compact"
+      ? [{ left: w - 8 - 88, top: 8, right: w - 8, bottom: 52 }, { left: 8, top: h - 8 - 44, right: 68, bottom: h - 8 }]
+      : [{ left: w - 12 - 34, top: 12, right: w - 12, bottom: 12 + 5 * 32 }, { left: 12, top: h - 12 - 70, right: 12 + 180, bottom: h - 12 }];
+    const original = HTMLElement.prototype.getBoundingClientRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      const i = this.dataset.occluderIndex;
+      if (i === undefined) return original.call(this);
+      const c = controls[Number(i)]!;
+      return { left: c.left, top: c.top, right: c.right, bottom: c.bottom, width: c.right - c.left, height: c.bottom - c.top, x: c.left, y: c.top, toJSON() {} } as DOMRect;
+    });
+    const model = buildSpatialModel("local", fleet());
+    const base = setup();
+    const selectedKey = selected ? [...model.agentsByKey.keys()][12]! : null;
+    render(
+      <div className="spatial-stage">
+        {controls.map((_, i) => <div key={i} data-spatial-occluder="" data-occluder-index={i} />)}
+        <SpatialRenderer {...base.props} model={model} layout={layoutSpatialModel(model)} density={density} selectedKey={selectedKey} />
+      </div>,
+    );
+    flushFrames();
+    act(() => base.controllerRef.current!.preset("top"));
+    flushFrames();
+    const layer = document.querySelector<HTMLElement>(".spatial-label-layer")!;
+    const cap = parseFloat(layer.style.getPropertyValue("--spatial-plan-name-max"));
+    // Painted box from the CSS2D transform, the applied shift and the size
+    // estimate the placement used (compact one-line name, pitch-clipped).
+    const boxOf = (el: HTMLElement): Box => {
+      const m = /translate\((-?[\d.]+)%, (-?[\d.]+)%\) translate\((-?[\d.]+)px, (-?[\d.]+)px\)/.exec(el.style.transform)!;
+      const forced = el.classList.contains("is-selected");
+      const text = el.querySelector(".spatial-label__text")!.textContent!;
+      const meta = forced ? el.querySelector(".spatial-label__meta")!.textContent : null;
+      const size = estimateLabelSize("agent", text, meta, "compact");
+      const bw = forced ? size.w : Math.min(size.w, cap);
+      const left = Number(m[3]) + (Number(m[1]) / 100) * bw + (parseFloat(el.style.marginLeft) || 0);
+      const top = Number(m[4]) + (Number(m[2]) / 100) * size.h + (parseFloat(el.style.marginTop) || 0);
+      return { left, top, right: left + bw, bottom: top + size.h };
+    };
+    return { model, controls, boxOf, selectedKey };
+  }
+
+  for (const [w, h] of [[430, 932], [430, 640], [390, 560], [1006, 900], [1006, 1224]] as const) {
+    it(`shows all 25 names at ${w}×${h} without overlapping names or controls`, async () => {
+      const { controls, boxOf } = await renderFleetTop(w, h);
+      const shown = agentLabels().filter(isShown);
+      expect(shown).toHaveLength(25);
+      const boxes = shown.map(boxOf);
+      boxes.forEach((b, i) => {
+        expect(b.left).toBeGreaterThanOrEqual(0);
+        expect(b.top).toBeGreaterThanOrEqual(0);
+        expect(b.right).toBeLessThanOrEqual(w);
+        expect(b.bottom).toBeLessThanOrEqual(h);
+        for (const c of controls) expect(overlap(b, c)).toBe(false);
+        for (let j = i + 1; j < boxes.length; j++) expect(overlap(b, boxes[j]!)).toBe(false);
+      });
+      // Names moved for room keep a leader; nudges within reach do not need one.
+      for (const el of shown.filter((e) => e.classList.contains("has-leader"))) {
+        expect(parseFloat(el.style.getPropertyValue("--leader-len"))).toBeGreaterThan(0);
+      }
+    });
+  }
+
+  it("keeps the selected seat's name and status line by its seat among the relocated names", async () => {
+    const { boxOf } = await renderFleetTop(430, 932, true);
+    const shown = agentLabels().filter(isShown);
+    expect(shown).toHaveLength(25);
+    const selected = shown.find((el) => el.classList.contains("is-selected"))!;
+    expect(metaOf(selected)?.hidden).toBe(false);
+    expect(selected.classList.contains("has-leader")).toBe(false);
+    const box = boxOf(selected);
+    for (const other of shown.filter((el) => el !== selected)) expect(overlap(box, boxOf(other))).toBe(false);
+  });
+});

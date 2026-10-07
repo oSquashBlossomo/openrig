@@ -5,6 +5,28 @@
 // gestures and hardware limits are verified in-browser by root.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+
+// The seat terminal is the 3D workspace's guarded dock: WebSocket and xterm
+// are stubbed, the node-detail read and admission machine are real.
+const sockets: Array<{ url: string; sent: string[]; closeCalled: boolean }> = [];
+class MockWS {
+  url: string; readyState = 1; sent: string[] = []; closeCalled = false;
+  onopen: (() => void) | null = null; onclose: ((e: { code: number; reason: string }) => void) | null = null;
+  onmessage: ((e: { data: string }) => void) | null = null; onerror: (() => void) | null = null;
+  constructor(url: string) { this.url = url; sockets.push(this); setTimeout(() => this.onopen?.(), 0); }
+  send(data: string) { this.sent.push(data); }
+  close() { this.closeCalled = true; this.readyState = 3; }
+  static OPEN = 1;
+}
+vi.stubGlobal("WebSocket", MockWS);
+vi.mock("@xterm/xterm", () => ({
+  Terminal: class {
+    open(el: HTMLElement) { const x = document.createElement("div"); x.className = "xterm"; x.tabIndex = 0; el.appendChild(x); }
+    write() {} onData() {} focus() {} scrollToBottom() {} attachCustomWheelEventHandler() {} dispose() {}
+    options = { fontSize: 13 };
+  },
+}));
+vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 import { render, cleanup, fireEvent, waitFor, act, within } from "@testing-library/react";
 import {
   createMemoryHistory,
@@ -21,6 +43,7 @@ import { AppShell } from "../src/components/AppShell.js";
 import { HostScopePage, PodScopePage, RigScopePage } from "../src/components/topology/ScopePages.js";
 import { parseSpatialRig } from "../src/lib/spatial-topology.js";
 import { layoutPhoneGraph, phoneGraphColumns, readablePhoneViewport } from "../src/lib/phone-graph-layout.js";
+import { TallyRow } from "../src/components/topology/PhoneGraphNodes.js";
 
 const mockFetch = vi.fn();
 let OriginalEventSource: typeof EventSource | undefined;
@@ -28,12 +51,25 @@ let OriginalEventSource: typeof EventSource | undefined;
 type Graph = { nodes: unknown[]; edges: unknown[] };
 let summary: Array<{ id: string; name: string; nodeCount: number }>;
 let graphs: Record<string, Graph | number>;
+/** Current node-detail payload per logical id (absent = unreadable). */
+let details: Record<string, Record<string, unknown> | number>;
+
+const seatDetail = (logicalId: string, pane: string | null = "%1") => ({
+  nodeId: logicalId, rigId: "abc-rig", rigName: "acme", logicalId, canonicalSessionName: `${logicalId}@acme`,
+  nodeKind: "agent", runtime: "claude-code", sessionStatus: pane ? "running" : "exited", podId: "pod", podNamespace: "core",
+  startupStatus: "ready", restoreOutcome: "n-a", tmuxAttachCommand: null, resumeCommand: null, latestError: null,
+  model: null, agentRef: null, profile: null, resolvedSpecName: null, resolvedSpecVersion: null, cwd: null,
+  startupFiles: [], startupActions: [], recentEvents: [], infrastructureStartupCommand: null, peers: [],
+  edges: { outgoing: [], incoming: [] }, transcript: { enabled: false, path: null, tailCommand: null },
+  compactSpec: { name: null, version: null, profile: null, skillCount: 0, guidanceCount: 0 },
+  binding: { attachmentType: "tmux", tmuxSession: `${logicalId}@acme`, tmuxPane: pane },
+});
 
 const seat = (id: string, pod: string | null, extra: Record<string, unknown> = {}) => ({
   id,
   type: "rigNode",
   ...(pod ? { parentId: pod } : {}),
-  data: { logicalId: id, status: "running", terminalActive: true, ...extra },
+  data: { logicalId: id, canonicalSessionName: `${id}@acme`, status: "running", terminalActive: true, ...extra },
 });
 
 function defaultFleet() {
@@ -57,11 +93,19 @@ function defaultFleet() {
 
 beforeEach(async () => {
   defaultFleet();
+  details = {};
+  sockets.length = 0;
   globalThis.fetch = mockFetch;
   mockFetch.mockReset();
   mockFetch.mockImplementation(async (url: string) => {
     if (url === "/api/hosts") return new Response(JSON.stringify({ ownName: "localhost", selected: "local", hosts: [] }));
     if (url === "/api/rigs/summary") return new Response(JSON.stringify(summary));
+    const nd = /^\/api\/rigs\/abc-rig\/nodes\/([^/?]+)/.exec(url);
+    if (nd) {
+      const d = details[decodeURIComponent(nd[1]!)];
+      if (d === undefined || typeof d === "number") return new Response("unavailable", { status: typeof d === "number" ? d : 503 });
+      return new Response(JSON.stringify(d));
+    }
     const m = /^\/api\/rigs\/([^/]+)\/graph$/.exec(url);
     if (m) {
       const g = graphs[decodeURIComponent(m[1]!)];
@@ -98,7 +142,7 @@ function SeatProbe() {
   return <div data-testid="seat-probe">{JSON.stringify(params)}</div>;
 }
 
-function renderAt(initialPath: string, width: number) {
+function renderAt(initialPath: string | string[], width: number) {
   setWidth(width);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   const rootRoute = createRootRoute({
@@ -119,7 +163,7 @@ function renderAt(initialPath: string, width: number) {
   ];
   const router = createRouter({
     routeTree: rootRoute.addChildren(routes),
-    history: createMemoryHistory({ initialEntries: [initialPath] }),
+    history: createMemoryHistory({ initialEntries: Array.isArray(initialPath) ? initialPath : [initialPath] }),
   });
   return { ...render(<RouterProvider router={router} />), router };
 }
@@ -169,36 +213,140 @@ describe("narrow Graph tab mounts an interactive phone graph (not the table)", (
   }, 15000);
 });
 
-describe("tap selects, an explicit action drills (no navigation from a tap)", () => {
-  it("a seat tap writes the exact URL selection, shows details and relationships, and keeps the route", async () => {
+/** The terminal is a portalled dialog (document.body), not inside the graph. */
+async function terminalOverlay(_container?: HTMLElement) {
+  return waitFor(() => {
+    const el = q(document.body, "[data-testid='phone-graph-terminal']");
+    expect(el).toBeTruthy();
+    return el!;
+  }, { timeout: 5000 });
+}
+
+describe("a seat tap opens its guarded live terminal; rig/pod taps only select", () => {
+  it("canvas chip and seat row open the same exact-seat terminal over the graph, sending nothing", async () => {
+    details["core.lead"] = seatDetail("core.lead");
+    details["ops.watch"] = seatDetail("ops.watch");
     const { container, router } = renderAt("/topology", 430);
-    const chip = await seatChip(container, "core.lead");
-    tapNode(chip);
+    tapNode(await seatChip(container, "core.lead"));
     await waitFor(() => expect(router.state.location.search).toMatchObject({ selectedRig: "abc-rig", selectedNode: "core.lead" }));
     expect(router.state.location.pathname).toBe("/topology");
-    const details = await waitFor(() => {
-      const el = q(container, "[data-testid='phone-graph-seat-details']");
+    const overlay = await terminalOverlay(container);
+    expect(overlay.getAttribute("data-agent-key")).toContain("/agent/core.lead");
+    await waitFor(() => expect(within(overlay).getByTestId("spatial-terminal-live").getAttribute("data-terminal-pane")).toBe("%1"));
+    await waitFor(() => expect(sockets).toHaveLength(1));
+    expect(sockets[0]!.url).toContain(encodeURIComponent("core.lead@acme"));
+    // Opening attaches only: no text, keys or Enter.
+    expect(sockets[0]!.sent.filter((f) => /"type":"(input|text|keys)"/.test(f))).toEqual([]);
+    // The graph's duplicate Relationships list is gone (edges are unchanged
+    // layout output; jsdom does not draw React Flow edges).
+    expect(q(container, "[data-testid='phone-graph-relations']")).toBeNull();
+
+    fireEvent.click(within(overlay).getByTestId("phone-graph-terminal-close"));
+    await waitFor(() => expect(q(document.body, "[data-testid='phone-graph-terminal']")).toBeNull());
+    expect(sockets[0]!.closeCalled).toBe(true);
+    expect(router.state.location.search).toMatchObject({ selectedNode: "core.lead" });
+
+    // A seat row (pod details) agrees with the canvas chip.
+    tapNode(qa(container, "[data-testid='phone-graph-pod']").find((p) => p.textContent?.includes("ops"))!);
+    const row = await waitFor(() => {
+      const el = qa(container, "[data-testid='phone-graph-seat-row']").find((r) => r.textContent?.includes("watch"));
       expect(el).toBeTruthy();
       return el!;
     });
-    expect(within(details).getByTestId("phone-graph-details-name").textContent).toBe("lead");
-    expect(q(container, "[data-testid='phone-graph-peek']")?.textContent).toContain("lead");
-    const relations = qa(details, "[data-testid='phone-graph-relation']").map((r) => r.textContent ?? "");
-    expect(relations).toHaveLength(2);
-    expect(relations.some((t) => t.includes("worker") && t.includes("delegates to"))).toBe(true);
-    expect(relations.some((t) => t.includes("watch") && t.includes("can observe"))).toBe(true);
-    // The selected chip is marked in the canvas.
-    expect((await seatChip(container, "core.lead")).getAttribute("data-selected")).toBe("true");
-
-    // Relationship row moves the selection without leaving the page.
-    fireEvent.click(qa(details, "[data-testid='phone-graph-relation']").find((r) => r.textContent?.includes("watch"))!);
-    await waitFor(() => expect(router.state.location.search).toMatchObject({ selectedNode: "ops.watch" }));
-    expect(router.state.location.pathname).toBe("/topology");
+    fireEvent.click(row);
+    const second = await terminalOverlay(container);
+    expect(second.getAttribute("data-agent-key")).toContain("/agent/ops.watch");
+    await waitFor(() => expect(sockets).toHaveLength(2));
+    expect(sockets[1]!.url).toContain(encodeURIComponent("ops.watch@acme"));
   }, 20000);
 
-  it("Open seat drills to the exact seat route with the source host", async () => {
+  it("a stopped seat or failed read shows the dock's refusal and opens no socket", async () => {
+    details["core.worker"] = seatDetail("core.worker", null);
+    const { container } = renderAt("/topology/rig/abc-rig", 430);
+    tapNode(await seatChip(container, "core.worker"));
+    const overlay = await terminalOverlay(container);
+    await waitFor(() => expect(within(overlay).getByTestId("spatial-terminal-state").getAttribute("data-state")).toBe("no-pane"));
+    fireEvent.click(within(overlay).getByTestId("phone-graph-terminal-close"));
+    tapNode(await seatChip(container, "core.lead")); // no detail served → 503
+    const failed = await terminalOverlay(container);
+    await waitFor(() => expect(within(failed).getByTestId("spatial-terminal-state").getAttribute("data-state")).toBe("unreadable"));
+    expect(sockets).toHaveLength(0);
+  }, 20000);
+
+  it("Back leaves with the socket closed; returning restores the selection but never reopens the terminal", async () => {
+    details["core.lead"] = seatDetail("core.lead");
+    const { container, router } = renderAt(["/elsewhere", "/topology/pod/abc-rig/core?sourceHost=local"], 430);
+    tapNode(await seatChip(container, "core.lead"));
+    await terminalOverlay(container);
+    await waitFor(() => expect(sockets).toHaveLength(1));
+    act(() => router.history.back());
+    await waitFor(() => expect(router.state.location.pathname).toBe("/elsewhere"));
+    await waitFor(() => expect(sockets[0]!.closeCalled).toBe(true));
+    act(() => router.history.forward());
+    await waitFor(() => expect(q(container, "[data-testid='phone-graph-seat-details']")).toBeTruthy(), { timeout: 5000 });
+    expect(router.state.location.search).toMatchObject({ sourceHost: "local", selectedRig: "abc-rig", selectedNode: "core.lead" });
+    expect(q(document.body, "[data-testid='phone-graph-terminal']")).toBeNull();
+    expect(sockets).toHaveLength(1);
+    // Explicit re-entry from the selected card.
+    fireEvent.click(q(container, "[data-testid='phone-graph-open-terminal']")!);
+    await terminalOverlay(container);
+    await waitFor(() => expect(sockets).toHaveLength(2));
+  }, 20000);
+
+  it("is a top-level modal: page inert, Close focused (no soft keyboard), Tab trapped, Escape in the pane stays in the pane", async () => {
+    details["core.lead"] = seatDetail("core.lead");
+    const { container } = renderAt("/topology/rig/abc-rig", 430);
+    tapNode(await seatChip(container, "core.lead"));
+    const overlay = await terminalOverlay();
+    // Portalled outside the routed content (whose stacking context the shell
+    // bars sit above), and everything else is hidden from assistive tech.
+    expect(container.contains(overlay)).toBe(false);
+    // (React Flow's own aria-live region stays exposed by design of the
+    // aria-hidden walk; the graph's controls and the shell are hidden.)
+    await waitFor(() => expect(q(container, "[data-testid='phone-graph-controls']")!.closest("[aria-hidden='true']")).toBeTruthy());
+    expect(q(container, "[data-testid='phone-graph-details']")!.closest("[aria-hidden='true']")).toBeTruthy();
+    const close = within(overlay).getByTestId("phone-graph-terminal-close");
+    expect(document.activeElement).toBe(close);
+    expect(overlay.getAttribute("aria-labelledby")).toBeTruthy();
+
+    // Tab from the last control wraps inside the dialog, never to the page.
+    await waitFor(() => expect(within(overlay).getByTestId("spatial-terminal-live")).toBeTruthy());
+    const xterm = await waitFor(() => { const x = overlay.querySelector<HTMLElement>(".xterm"); expect(x).toBeTruthy(); return x!; });
+    act(() => xterm.focus());
+    fireEvent.keyDown(xterm, { key: "Tab" });
+    expect(overlay.contains(document.activeElement)).toBe(true);
+    for (let i = 0; i < 4; i++) {
+      fireEvent.keyDown(document.activeElement!, { key: "Tab" });
+      expect(overlay.contains(document.activeElement)).toBe(true);
+    }
+
+    // Escape typed into the terminal is the pane's; Escape elsewhere closes.
+    act(() => xterm.focus());
+    fireEvent.keyDown(xterm, { key: "Escape" });
+    expect(q(document.body, "[data-testid='phone-graph-terminal']")).toBeTruthy();
+    act(() => close.focus());
+    fireEvent.keyDown(close, { key: "Escape" });
+    await waitFor(() => expect(q(document.body, "[data-testid='phone-graph-terminal']")).toBeNull());
+    await waitFor(() => expect(sockets[0]!.closeCalled).toBe(true));
+    expect(q(container, "[data-testid='phone-graph-controls']")!.closest("[aria-hidden='true']")).toBeNull();
+  }, 20000);
+
+  it("closing restores focus to the control that opened it", async () => {
+    details["core.lead"] = seatDetail("core.lead");
+    const { container } = renderAt("/topology/rig/abc-rig?selectedRig=abc-rig&selectedNode=core.lead", 430);
+    const open = await waitFor(() => { const el = q(container, "[data-testid='phone-graph-open-terminal']"); expect(el).toBeTruthy(); return el!; }, { timeout: 5000 });
+    act(() => open.focus());
+    fireEvent.click(open);
+    const overlay = await terminalOverlay();
+    fireEvent.click(within(overlay).getByTestId("phone-graph-terminal-close"));
+    await waitFor(() => expect(q(document.body, "[data-testid='phone-graph-terminal']")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(q(container, "[data-testid='phone-graph-open-terminal']")));
+  }, 20000);
+
+  it("Open seat still drills to the exact seat route with the source host", async () => {
     const { container, router } = renderAt("/topology", 430);
     tapNode(await seatChip(container, "core.worker"));
+    fireEvent.click(within(await terminalOverlay(container)).getByTestId("phone-graph-terminal-close"));
     const open = await waitFor(() => {
       const el = q(container, "[data-testid='phone-graph-open-seat']");
       expect(el).toBeTruthy();
@@ -268,20 +416,21 @@ describe("progressive hierarchy keeps a dense fleet usable without hiding rigs",
     await waitFor(() => expect(qa(container, "[data-testid='phone-graph-seat']")).toHaveLength(0));
   }, 20000);
 
-  it("pod collapse keeps relationships listed and re-expands to reveal a related seat", async () => {
+  it("opening a seat in a collapsed pod re-expands the pod to reveal it", async () => {
     const { container, router } = renderAt("/topology/rig/abc-rig", 430);
     await seatChip(container, "ops.watch");
     const ops = qa(container, "[data-testid='phone-graph-pod']").find((p) => p.textContent?.includes("ops"))!;
     fireEvent.click(within(ops).getByTestId("phone-graph-pod-toggle"));
     await waitFor(() => expect(qa(container, "[data-testid='phone-graph-seat']")).toHaveLength(2));
-    tapNode(await seatChip(container, "core.lead"));
-    const details = await waitFor(() => {
-      const el = q(container, "[data-testid='phone-graph-seat-details']");
+    tapNode(qa(container, "[data-testid='phone-graph-pod']").find((p) => p.textContent?.includes("ops"))!);
+    const row = await waitFor(() => {
+      const el = q(container, "[data-testid='phone-graph-seat-row']");
       expect(el).toBeTruthy();
       return el!;
     });
-    fireEvent.click(qa(details, "[data-testid='phone-graph-relation']").find((r) => r.textContent?.includes("watch"))!);
+    fireEvent.click(row);
     await waitFor(() => expect(router.state.location.search).toMatchObject({ selectedRig: "abc-rig", selectedNode: "ops.watch" }));
+    await terminalOverlay(container);
     // The collapsed pod opened so the newly selected seat is drawn.
     await seatChip(container, "ops.watch");
   }, 20000);
@@ -406,4 +555,20 @@ describe("camera controls never cover node controls (reserved space, measured su
       HTMLElement.prototype.getBoundingClientRect = original;
     }
   }, 15000);
+});
+
+describe("node status tallies fit their fixed-height row", () => {
+  it("five tones stay on one line as dot + count, with full labels for title and screen readers", () => {
+    const tally = { active: 3, needs_input: 1, blocked: 1, idle: 2, unknown: 0, offline: 1 };
+    const { container } = render(<TallyRow tally={tally} fit />);
+    const row = container.firstElementChild as HTMLElement;
+    expect(row.className).toContain("flex-nowrap");
+    expect(row.className).not.toContain("flex-wrap ");
+    expect(row.getAttribute("title")).toBe("3 active · 1 needs input · 1 blocked · 2 idle · 1 offline");
+    expect(row.querySelectorAll(".sr-only")).toHaveLength(5);
+    // Three or fewer tones keep their visible labels.
+    const few = render(<TallyRow tally={{ ...tally, blocked: 0, idle: 0, offline: 0 }} fit />).container.firstElementChild as HTMLElement;
+    expect(few.querySelectorAll(".sr-only")).toHaveLength(0);
+    expect(few.textContent).toContain("3 active");
+  });
 });

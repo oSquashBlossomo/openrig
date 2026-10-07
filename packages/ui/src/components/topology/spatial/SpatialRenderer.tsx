@@ -110,9 +110,11 @@ import { hslCss, type Hsl, type SpatialPalette } from "./spatial-palette.js";
 import { isSpatialCameraSnapshot, type SpatialCameraSnapshot, type Vec3Tuple } from "./spatial-visit-store.js";
 import {
   LABEL_TIER,
+  COMPACT_LABEL_MAX_WIDTH_PX,
   estimateLabelSize,
   frameBox,
   layoutLabels,
+  leaderLine,
   nearestWithin,
   trafficBeads,
   trafficPhase,
@@ -195,9 +197,19 @@ const MAX_AMBIENT_LABELS = 80;
 const COMPACT_AMBIENT_LABEL_SPACING_PX = 64;
 const COMPACT_ALWAYS_LABEL_SEATS = 6;
 const MAX_COMPACT_LABELS = 16;
+/** View directions steeper than this (camera y of the unit view vector) are
+ *  the plan view: Top preset, or an orbit close to it. */
+const PLAN_VIEW_MIN_Y = 0.85;
+/** Plan-view seat names are clipped to the projected seat pitch, never below
+ *  this (px, about ten characters); a name with no room by its seat is
+ *  relocated with a leader instead of shrinking further or vanishing. */
+const PLAN_NAME_MIN_PX = 80;
+/** Plan view tries the slab in front of the plinth first (straight below the
+ *  seat on screen), then the plinth plate and the other fallbacks. */
+const PLAN_AGENT_ANCHOR_ORDER = [2, 0, 1, 3, 4] as const;
 /** A finger tap within this many px of a seat's centre selects it. */
 const TOUCH_PICK_RADIUS_PX = 24;
-/** Scene staging (world units; layout spacing is 4.4). */
+/** Scene staging (world units; seat pitch is SPATIAL_LAYOUT.agentSpacing). */
 const PLINTH = { width: 3.7, height: 1.0, radius: 0.12 } as const;
 const DAIS_HEIGHT = 0.9;
 /** Stone margins around the OCCUPIED seats (the shared layout's padding and
@@ -282,6 +294,10 @@ interface LabelEntry {
   anchorIndex: number;
   /** Last applied horizontal clamp offset, px. */
   offset: number;
+  /** Last applied vertical shift (plan-view relocation), px. */
+  offsetY: number;
+  /** Last applied leader line ("" = none), as its CSS custom properties. */
+  leader: string;
   text: string;
   meta: string | null;
   metaElement: HTMLElement | null;
@@ -334,6 +350,8 @@ interface Engine {
   agentPositions: Map<string, Vector3>;
   edges: EdgeVisual[];
   labelEntries: LabelEntry[];
+  /** Camera looks (near) straight down: every seat gets a one-line name. */
+  planView: boolean;
   occluders: Rect[];
   viewport: { w: number; h: number };
   pickables: Array<Mesh | InstancedMesh>;
@@ -781,6 +799,7 @@ export default function SpatialRenderer(props: SpatialRendererProps) {
         agentPositions: new Map(),
         edges: [],
         labelEntries: [],
+        planView: false,
         occluders: [],
         viewport: { w: 0, h: 0 },
         pickables: [],
@@ -1302,7 +1321,7 @@ function registerLabel(
 ) {
   const { w, h } = estimateLabelSize(kind, text, meta);
   object.element.dataset.spatialLabel = kind;
-  object.element.classList.toggle("is-compact", engine.state.density === "compact");
+  object.element.classList.toggle("is-compact", labelsCompact(engine));
   const resolved = anchors.map((a) => ({ local: v3(a.at), cx: a.cx, cy: a.cy }));
   object.position.copy(resolved[0]!.local);
   object.center.set(resolved[0]!.cx, resolved[0]!.cy);
@@ -1310,13 +1329,18 @@ function registerLabel(
   const metaElement = object.element.querySelector<HTMLElement>(".spatial-label__meta");
   const anchorNames = anchors.map((a) => a.name ?? null);
   if (anchorNames[0]) object.element.dataset.anchor = anchorNames[0];
-  engine.labelEntries.push({ object, kind, key, w, h, priority, anchors: resolved, anchorIndex: 0, offset: 0, text, meta, metaElement, anchorNames });
+  engine.labelEntries.push({ object, kind, key, w, h, priority, anchors: resolved, anchorIndex: 0, offset: 0, offsetY: 0, leader: "", text, meta, metaElement, anchorNames });
+}
+
+/** One-line names: a small stage, or the plan view at any stage size. */
+function labelsCompact(engine: Engine): boolean {
+  return engine.state.density === "compact" || engine.planView;
 }
 
 /** Density restyle in place: class toggles only; sizes and status lines are
  *  resolved by the next placement pass. */
 function applyLabelDensity(engine: Engine) {
-  const compact = engine.state.density === "compact";
+  const compact = labelsCompact(engine);
   for (const entry of engine.labelEntries) entry.object.element.classList.toggle("is-compact", compact);
 }
 
@@ -1938,7 +1962,9 @@ const _beadColor = new Color();
  * test (see layoutLabels). Selected/hovered labels always show; problem
  * seats, search hits, rig names, pod names and finally ambient seat names
  * fill the remaining room only where they do not collide with each other,
- * the camera HUD or the legend, or run off the stage edge.
+ * the camera HUD or the legend, or run off the stage edge. In the plan view
+ * (Top) every seat name is a candidate ahead of rig/pod names, one line,
+ * clipped to the projected seat pitch, with no ambient gate or cap.
  */
 function placeLabels(engine: Engine) {
   const { w, h } = engine.viewport;
@@ -1947,11 +1973,25 @@ function placeLabels(engine: Engine) {
   const camera = engine.camera;
   // Projected seat spacing decides whether ambient seat names have room.
   const distance = camera.position.distanceTo(engine.controls.target);
+  const plan = distance > 1e-6 && (camera.position.y - engine.controls.target.y) / distance >= PLAN_VIEW_MIN_Y;
+  if (plan !== engine.planView) {
+    engine.planView = plan;
+    applyLabelDensity(engine);
+  }
   const pxPerUnit = h / (2 * Math.max(distance, 1e-3) * Math.tan((camera.fov * Math.PI) / 360));
-  const compact = engine.state.density === "compact";
-  const ambient = compact
-    ? engine.agents.size <= COMPACT_ALWAYS_LABEL_SEATS || SPATIAL_LAYOUT.agentSpacing * pxPerUnit >= COMPACT_AMBIENT_LABEL_SPACING_PX
-    : engine.agents.size <= 18 || SPATIAL_LAYOUT.agentSpacing * pxPerUnit >= AMBIENT_LABEL_SPACING_PX;
+  const pitchPx = SPATIAL_LAYOUT.agentSpacing * pxPerUnit;
+  const smallStage = engine.state.density === "compact";
+  const compact = labelsCompact(engine);
+  const ambient = smallStage
+    ? engine.agents.size <= COMPACT_ALWAYS_LABEL_SEATS || pitchPx >= COMPACT_AMBIENT_LABEL_SPACING_PX
+    : engine.agents.size <= 18 || pitchPx >= AMBIENT_LABEL_SPACING_PX;
+  const nameMax = plan ? Math.max(PLAN_NAME_MIN_PX, Math.min(COMPACT_LABEL_MAX_WIDTH_PX, Math.floor(pitchPx - 8))) : null;
+  const layerStyle = engine.labels.domElement.style;
+  const nameMaxCss = nameMax === null ? "" : `${nameMax}px`;
+  if (layerStyle.getPropertyValue("--spatial-plan-name-max") !== nameMaxCss) {
+    if (nameMaxCss) layerStyle.setProperty("--spatial-plan-name-max", nameMaxCss);
+    else layerStyle.removeProperty("--spatial-plan-name-max");
+  }
   // Compact shows a status line only on the selected/hovered seat; the DOM
   // `hidden` state is kept in step so the painted box matches its estimate.
   const showsMeta = (entry: LabelEntry) =>
@@ -1962,6 +2002,8 @@ function placeLabels(engine: Engine) {
   }
 
   const candidates: LabelCandidate[] = [];
+  // Box size and primary anchor per candidate, for relocated labels' leaders.
+  const boxes = new Map<string, { w: number; h: number; cx: number; cy: number }>();
   // Candidate anchor index -> entry.anchors index (culled anchors are skipped).
   const anchorMap = new Map<string, number[]>();
   for (const entry of engine.labelEntries) {
@@ -1972,7 +2014,7 @@ function placeLabels(engine: Engine) {
       if (isForced) tier = LABEL_TIER.forced;
       else if (dimmed) tier = null;
       else if (entry.priority) tier = LABEL_TIER.problem;
-      else if (searching) tier = LABEL_TIER.match;
+      else if (searching || plan) tier = LABEL_TIER.match;
       else tier = ambient ? LABEL_TIER.agent : null;
     } else {
       tier = entry.kind === "rig" ? LABEL_TIER.rig : LABEL_TIER.pod;
@@ -1981,24 +2023,34 @@ function placeLabels(engine: Engine) {
     const anchors: LabelAnchor[] = [];
     const indices: number[] = [];
     let depth = 0;
-    entry.anchors.forEach((anchor, index) => {
+    const order = plan && entry.kind === "agent" ? PLAN_AGENT_ANCHOR_ORDER : entry.anchors.keys();
+    for (const index of order) {
+      const anchor = entry.anchors[index];
+      if (!anchor) continue;
       entry.object.parent!.localToWorld(_labelPoint.copy(anchor.local)).project(camera);
-      if (_labelPoint.z < -1 || _labelPoint.z > 1) return;
+      if (_labelPoint.z < -1 || _labelPoint.z > 1) continue;
       if (anchors.length === 0) depth = _labelPoint.z;
       anchors.push({ x: (_labelPoint.x + 1) * 0.5 * w, y: (1 - _labelPoint.y) * 0.5 * h, cx: anchor.cx, cy: anchor.cy });
       indices.push(index);
-    });
+    }
     if (anchors.length === 0) continue;
     const id = `${entry.kind}:${entry.key}`;
     anchorMap.set(id, indices);
+    const size = compact ? estimateLabelSize(entry.kind, entry.text, showsMeta(entry) ? entry.meta : null, "compact") : { w: entry.w, h: entry.h };
+    // Mirrors spatial.css: unforced plan names clip to the seat pitch.
+    if (nameMax !== null && entry.kind === "agent" && tier !== LABEL_TIER.forced) size.w = Math.min(size.w, nameMax);
+    boxes.set(id, { ...size, cx: anchors[0]!.cx, cy: anchors[0]!.cy });
     candidates.push({
       id,
       ...anchors[0]!,
       alternatives: anchors.slice(1),
-      ...(compact ? estimateLabelSize(entry.kind, entry.text, showsMeta(entry) ? entry.meta : null, "compact") : { w: entry.w, h: entry.h }),
+      ...size,
       tier,
       depth,
       clampX: entry.kind !== "agent",
+      // Top names every seat: a name with no room by its seat moves to the
+      // nearest free spot and keeps a leader to it rather than vanishing.
+      relocate: plan && entry.kind === "agent" && tier !== LABEL_TIER.forced,
     });
   }
   // Every figure's projected silhouette is hard space: no label covers a
@@ -2025,7 +2077,7 @@ function placeLabels(engine: Engine) {
     height: h,
     occluders: engine.occluders,
     silhouettes,
-    maxVisible: compact ? MAX_COMPACT_LABELS : MAX_AMBIENT_LABELS,
+    maxVisible: plan ? engine.labelEntries.length : smallStage ? MAX_COMPACT_LABELS : MAX_AMBIENT_LABELS,
   });
   for (const entry of engine.labelEntries) {
     const id = `${entry.kind}:${entry.key}`;
@@ -2042,10 +2094,29 @@ function placeLabels(engine: Engine) {
       // CSS2D projects from matrixWorld; refresh it for this same frame.
       entry.object.updateMatrixWorld();
     }
-    const offset = result.offsets.get(id) ?? 0;
+    const shift = result.shifts.get(id);
+    const offset = shift ? shift.dx : result.offsets.get(id) ?? 0;
+    const element = entry.object.element;
     if (offset !== entry.offset) {
       entry.offset = offset;
-      entry.object.element.style.marginLeft = offset ? `${offset}px` : "";
+      element.style.marginLeft = offset ? `${offset}px` : "";
+    }
+    const offsetY = shift?.dy ?? 0;
+    if (offsetY !== entry.offsetY) {
+      entry.offsetY = offsetY;
+      element.style.marginTop = offsetY ? `${offsetY}px` : "";
+    }
+    const line = shift ? leaderLine(boxes.get(id)!, shift.dx, shift.dy) : null;
+    const leader = line ? `${line.x}|${line.y}|${line.length}|${line.angle}` : "";
+    if (leader !== entry.leader) {
+      entry.leader = leader;
+      element.classList.toggle("has-leader", line !== null);
+      for (const [name, value] of [["x", line?.x], ["y", line?.y], ["len", line?.length]] as const) {
+        if (value === undefined) element.style.removeProperty(`--leader-${name}`);
+        else element.style.setProperty(`--leader-${name}`, `${value}px`);
+      }
+      if (line) element.style.setProperty("--leader-angle", `${line.angle}rad`);
+      else element.style.removeProperty("--leader-angle");
     }
   }
   const layer = engine.labels.domElement;

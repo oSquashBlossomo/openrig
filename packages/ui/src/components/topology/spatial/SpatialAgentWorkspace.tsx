@@ -87,13 +87,10 @@ export interface SpatialAgentWorkspaceProps {
   layout: "side" | "stacked";
 }
 
-export function SpatialAgentWorkspace(props: SpatialAgentWorkspaceProps) {
-  const { agent, model, status, palette, hostId, isRemote, layout } = props;
-  const tone = hslCss(palette.tones[status.tone]);
-  const pod = agent.podKey ? model.podsByKey.get(agent.podKey) ?? null : null;
-
-  // Current canonical detail for this exact selection: a fresh read on every
-  // selection (not the 30s graph cache), kept current while open.
+/** Current canonical detail for this exact selection: a fresh read on every
+ *  selection (not the 30s graph cache), kept current while open. The read
+ *  SeatLiveTerminal admits from; shared with the phone graph's terminal. */
+export function useSeatDetailQuery(agent: SpatialAgent, hostId: string) {
   const detailKey = useMemo(
     () => ["spatial", "seat-detail", hostId, agent.rigId, agent.logicalId, agent.nodeId] as const,
     [hostId, agent.rigId, agent.logicalId, agent.nodeId],
@@ -109,6 +106,15 @@ export function SpatialAgentWorkspace(props: SpatialAgentWorkspaceProps) {
     retry: false,
     placeholderData: undefined,
   });
+  return { detailKey, detailQuery };
+}
+
+export function SpatialAgentWorkspace(props: SpatialAgentWorkspaceProps) {
+  const { agent, model, status, palette, hostId, isRemote, layout } = props;
+  const tone = hslCss(palette.tones[status.tone]);
+  const pod = agent.podKey ? model.podsByKey.get(agent.podKey) ?? null : null;
+
+  const { detailKey, detailQuery } = useSeatDetailQuery(agent, hostId);
   const detail = detailQuery.data as Record<string, unknown> | undefined;
 
   const [detailsOpen, setDetailsOpen] = useState(layout === "side");
@@ -340,7 +346,7 @@ function transition(m: DockMachine, outcome: AdmissionVerdict | null, explicit: 
   return { ...m, everAdmitted: true, nextId: m.nextId + 1, dock: { kind: "admitted", seat: outcome.seat, id: m.nextId } };
 }
 
-function SeatLiveTerminal({ agent, hostId, isRemote, detailKey, detailQuery, layout }: {
+export function SeatLiveTerminal({ agent, hostId, isRemote, detailKey, detailQuery, layout }: {
   agent: SpatialAgent;
   hostId: string;
   isRemote: boolean;

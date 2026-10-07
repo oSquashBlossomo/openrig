@@ -530,3 +530,32 @@ export function centerPhoneViewport(
   const cy = node.position.y + node.height / 2;
   return { zoom, x: container.width / 2 - cx * zoom, y: container.height / 2 - cy * zoom };
 }
+
+export type PhoneExtent = [[number, number], [number, number]];
+
+/** The pannable area, used as React Flow's translateExtent: d3 keeps the
+ *  graph centred on any axis it fits and bounded on the others. X is the
+ *  graph itself (no margin), so whenever the graph fits the width — including
+ *  the readable fit-width opening zoom — a one-finger drag only scrolls
+ *  vertically; zoomed past the width it pans within the graph. Y keeps a
+ *  small margin past both ends. */
+export function phoneTranslateExtent(bounds: { x: number; y: number; width: number; height: number }, margin = 24): PhoneExtent {
+  return [[bounds.x, bounds.y - margin], [bounds.x + bounds.width, bounds.y + bounds.height + margin]];
+}
+
+/** d3-zoom's default constrain, for programmatic viewports (React Flow's
+ *  setViewport does not apply translateExtent), so the first touch after a
+ *  fit/centre never jumps to where the gesture constraint would put it. */
+export function boundPhoneViewport(vp: PhoneViewport, extent: PhoneExtent, container: { width: number; height: number }): PhoneViewport {
+  const shift = (t: number, size: number, lo: number, hi: number) => {
+    const d0 = -t / vp.zoom - lo;
+    const d1 = (size - t) / vp.zoom - hi;
+    const d = d1 > d0 ? (d0 + d1) / 2 : Math.min(0, d0) || Math.max(0, d1);
+    return t + vp.zoom * d;
+  };
+  return {
+    zoom: vp.zoom,
+    x: shift(vp.x, container.width, extent[0][0], extent[1][0]),
+    y: shift(vp.y, container.height, extent[0][1], extent[1][1]),
+  };
+}

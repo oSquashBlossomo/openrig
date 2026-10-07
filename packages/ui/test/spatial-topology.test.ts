@@ -10,6 +10,7 @@ import {
   deriveSeatStatus,
   fitDistance,
   layoutSpatialModel,
+  SPATIAL_LAYOUT,
   normalizeSpatialQuery,
   parseSpatialRig,
   scopeRigToPod,
@@ -18,6 +19,7 @@ import {
   tallySeatStatuses,
   type SpatialAgent,
 } from "../src/lib/spatial-topology.js";
+import { FIGURE_SIZE } from "../src/components/topology/spatial/spatial-mascots.js";
 import { getTimeInState } from "../src/lib/activity-visuals.js";
 
 const NOW = Date.parse("2026-10-04T12:00:00.000Z");
@@ -404,5 +406,23 @@ describe("camera + scope helpers", () => {
     expect(spatialScopeKey({ kind: "host" })).toBe("host");
     expect(spatialScopeKey({ kind: "rig", rigId: "a/b" })).toBe("rig/a%2Fb");
     expect(spatialScopeKey({ kind: "pod", rigId: "a", podName: "p" })).not.toBe(spatialScopeKey({ kind: "rig", rigId: "a" }));
+  });
+});
+
+describe("layoutSpatialModel — seat spacing", () => {
+  it("leaves breathing room between seats in one pod, without spreading pods apart", () => {
+    const nodes: Array<Record<string, unknown>> = [{ id: "pod-g", type: "podGroup", data: { podNamespace: "gua" } }];
+    for (let i = 0; i < 6; i++) nodes.push({ id: `g${i}`, type: "rigNode", parentId: "pod-g", data: { logicalId: `gua.s${i}`, runtime: "claude-code" } });
+    const layout = layoutSpatialModel(buildSpatialModel("local", [parseSpatialRig("local", { rigId: "gua", rigName: "gua", graph: { nodes, edges: [] } })]));
+    const xs = [...new Set(layout.agents.map((a) => a.position[0]))].sort((a, b) => a - b);
+    const zs = [...new Set(layout.agents.map((a) => a.position[2]))].sort((a, b) => a - b);
+    expect(xs).toHaveLength(3);
+    expect(zs).toHaveLength(2);
+    // Clawd's arm span is the widest figure; neighbours keep >= 1.5 units clear.
+    expect(xs[1]! - xs[0]! - FIGURE_SIZE.clawdWidth).toBeGreaterThanOrEqual(1.5);
+    expect(zs[1]! - zs[0]! - FIGURE_SIZE.clawdWidth).toBeGreaterThanOrEqual(1.5);
+    // Pods stay farther apart than seats within a pod (containment reads).
+    const L = SPATIAL_LAYOUT;
+    expect(L.podPadding * 2 + L.blockGap).toBeGreaterThan(L.agentSpacing - FIGURE_SIZE.clawdWidth);
   });
 });

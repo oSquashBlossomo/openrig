@@ -693,8 +693,8 @@ export interface SpatialLayout {
 }
 
 export const SPATIAL_LAYOUT = {
-  agentSpacing: 4.4,
-  podPadding: 2.2,
+  agentSpacing: 6,
+  podPadding: 1.6,
   podHeader: 1.8,
   podTop: 3.2,
   podThickness: 0.45,
