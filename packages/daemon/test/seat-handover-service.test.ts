@@ -379,12 +379,12 @@ describe("SeatHandoverService", () => {
     expect.soft(deliveries.filter((delivery) => delivery.targetSession === retiredSession)).toEqual([]);
   });
 
-  it("kernel handover recomputes operational authority from the persisted rig", async () => {
+  it("kernel handover preserves inherited permissions", async () => {
     seedSeat({ runtime: "codex", rigName: "kernel" });
     const result = await service.handover({ seatRef: "dev-impl@kernel", reason: "context-wall",
       source: "fresh", operator: "operator@kernel" });
     expect(result.ok).toBe(true);
-    expect(launchHarness.mock.calls[0]![0]).toMatchObject({ kernelAuthority: true, launchPosture: "full_bypass" });
+    expect(launchHarness.mock.calls[0]![0]).toMatchObject({ kernelAuthority: false, launchPosture: "floor" });
   });
 
   it("keeps dry-run side-effect free", async () => {

@@ -23,34 +23,14 @@ export interface ResolvedSeatPermission {
 export class NativePermissionStore {
   constructor(private readonly db: Database.Database) {}
 
-  /** Kernel is the persisted class-of-one rig, never a pane-name or cwd heuristic.
-   * Authored policies and named Codex profiles keep their existing meaning. */
-  private hasKernelDefault(nodeId: string, runtime: string): boolean {
-    if (runtime !== "claude-code" && runtime !== "codex") return false;
-    try {
-      const row = this.db.prepare(`SELECT r.name, n.permission_policy AS member_policy,
-        r.permission_policy AS rig_policy, n.codex_config_profile AS profile
-        FROM nodes n JOIN rigs r ON r.id = n.rig_id WHERE n.id = ?`).get(nodeId) as {
-          name: string; member_policy: string | null; rig_policy: string | null; profile: string | null;
-        } | undefined;
-      return row?.name === "kernel" && row.member_policy == null && row.rig_policy == null
-        && !(runtime === "codex" && row.profile?.trim());
-    } catch {
-      // This optional default must not block otherwise supported launches when
-      // its metadata lookup is unavailable. Keep the existing permission path.
-      return false;
-    }
-  }
-
   /** One decision shared by fresh/continue, legacy restore and same-seat handover. */
   launchOverride(nodeId: string, runtime: string): Pick<NodeBinding, "launchPosture" | "permissionMode" | "kernelAuthority"> {
     const selection = this.read(nodeId);
     if (selection && selection.runtime !== runtime) {
       throw new Error("Seat runtime changed since permission selection; explicitly select again or inherit.");
     }
-    if (!selection && this.hasKernelDefault(nodeId, runtime)) {
-      return { kernelAuthority: true, launchPosture: runtime === "codex" ? "full_bypass" : "floor" };
-    }
+    // A rig name is not an opt-in permission choice. Clear stale internal grants
+    // and preserve native settings/profile inheritance unless explicitly selected.
     return { kernelAuthority: false, ...permissionBindingOverride(selection) };
   }
 
@@ -175,12 +155,6 @@ export class NativePermissionStore {
       };
     }
 
-    // Kernel's operational default also replaces persisted no-policy floor provenance.
-    if (this.hasKernelDefault(nodeId, runtime)) {
-      return { effectiveMode: runtime === "codex" ? "full_bypass" : "acceptEdits", source: "kernel_default",
-        launchPosture: runtime === "codex" ? "full_bypass" : "floor" };
-    }
-
     // Level 3: Rig-level declaration in rig.yaml
     // Applied when the member did not declare its own policy.
     const effectiveRigPosture = rigPosture ?? (
@@ -240,7 +214,6 @@ export class NativePermissionStore {
     return {
       ...binding,
       ...override,
-      ...(override.kernelAuthority ? { permissionMode: undefined } : {}),
       ...(permissionMode ? { permissionMode } : {}),
     };
   }

@@ -114,8 +114,8 @@ built-in (`locked`, `standard`, `open`) to `floor`.
 attachment (`:2006`), then the floor, set on the binding as `launchPosture`
 (`:2158`). `NativePermissionStore.apply()`
 (`native-permission-store.ts:236`) then overlays a seat's explicit
-`rig seat set-permissions` choice, or the kernel operational default described
-below. `bundle-behaviour.ts` is the read-only
+`rig seat set-permissions` choice. Kernel seats use the same inheritance.
+`bundle-behaviour.ts` is the read-only
 preview of the same mapping for an unopened bundle (see
 `packaging-bootstrap-bundles.md`).
 
@@ -145,27 +145,13 @@ It never changes permissions or native settings files. `rig up
 --non-interruptive` and `--no-non-interruptive` save the choice; the setting
 `launch.non_interruptive` supplies the default.
 
-**Kernel operational default.** `NativePermissionStore.launchOverride()`
-(`native-permission-store.ts:46`) gives a Claude Code or Codex seat in the
-persisted rig named `kernel` operational launch arguments when the seat has no
-explicit permission choice, its member and rig declare no permission policy,
-and (for Codex) it has no `-p` profile (`hasKernelDefault`, `:28`). Fresh start,
-continue, restore and handover all take this decision per launch.
-`operationalLaunchArgs()` (`packages/daemon/src/adapters/kernel-authority.ts:19`)
-then replaces the non-interruptive arguments for that seat:
-
-- Claude Code keeps the floor, `--permission-mode acceptEdits`, and gets
-  `--settings '{"permissions":{"allow":[…]}}'` with `KERNEL_CLAUDE_ALLOW`
-  (`:7`): `Skill`, `Read`, `Edit`, `Write`, `Glob`, `Grep`, `Bash(<command>:*)`
-  for 31 operational commands (`rig`, `tmux`, `node`, `npm`, `git`, `ssh` and
-  others), and `Read(~/**)` (`:13`). It is not the bypass flag, and the user's
-  own ask and deny rules still apply.
-- Codex gets the `full_bypass` posture, `-s danger-full-access -a never`, plus
-  the two notice flags above.
-
-It writes no settings file. If the rig lookup fails, the seat keeps its floor.
-`rig seat status` reports the source as "kernel operational default"
-(`kernel_default`, `native-permission-store.ts:180`).
+**Kernel permission inheritance.** `NativePermissionStore.launchOverride()`
+uses explicit per-seat selections and clears stale internal authority markers.
+Fresh start, continue, restore and handover preserve the same authored policies
+and native/profile defaults as other rigs. Naming a rig `kernel` grants no extra
+permissions. Claude's selected native auto default remains authoritative when
+no explicit mode overrides it; Codex retains its named profile or workspace-write
+floor. Explicit non-interruptive mode still applies to full-bypass launches.
 
 ### ClaudeCodeAdapter (`claude-code-adapter.ts:55`)
 

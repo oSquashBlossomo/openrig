@@ -38,27 +38,13 @@ function transport() {
     writeFile: vi.fn(() => { throw new Error("unexpected permission write"); }), mkdirp: vi.fn(), copyFile: vi.fn() };
   return { send, tmux, fsOps };
 }
-function assertGrant(command: string, runtime: string) {
-  if (runtime === "claude-code") {
-    expect(command).toContain("--permission-mode acceptEdits");
-    expect(command).toContain("Bash(rig:*)"); expect(command).toContain("Bash(tmux:*)");
-    expect(command).toContain('"Skill"'); expect(command).not.toContain("--dangerously-skip-permissions");
-    expect(command).not.toContain("skipDangerousModePermissionPrompt");
-    const json = command.match(/'--settings' '([^']+)'/)?.[1];
-    expect(json).toBeDefined();
-    expect(Object.keys(JSON.parse(json!))).toEqual(["permissions"]);
-    expect(Object.keys(JSON.parse(json!).permissions)).toEqual(["allow"]); // no reset of user ask/deny
-    expect(JSON.parse(json!).permissions.allow).toContain("Read(~/**)");
-    expect(JSON.parse(json!).permissions.allow).toEqual(expect.arrayContaining(["Bash(claude auth status:*)", "Bash(codex login status:*)"]));
-  } else {
-    expect(command).toContain("-s danger-full-access -a never");
-    expect(command).toContain("notice.hide_full_access_warning=true");
-    expect(command).toContain("notice.hide_gpt5_1_migration_prompt=true");
-  }
+function assertInherited(command: string, runtime: string) {
+  expect(command).toContain(runtime === "claude-code" ? "--permission-mode acceptEdits" : "-s workspace-write");
+  expect(command).not.toMatch(/--settings|--dangerously-skip-permissions|danger-full-access|-a never|notice\./);
 }
 const modes = ["fresh", "resume", "fork"] as const;
 const variants = ["rig.yaml", "rig-claude-only.yaml", "rig-codex-only.yaml"];
-describe("kernel operational launch default", () => {
+describe("kernel permission inheritance", () => {
   for (const variant of variants) for (const mode of modes) {
     it(`${variant} ${mode}: all shipped agent seats reach the real command builder without shared permission writes`, async () => {
       const spec = parse(readFileSync(join(__dirname, "../specs/rigs/launch/kernel", variant), "utf8"));
@@ -69,9 +55,9 @@ describe("kernel operational launch default", () => {
         const adapter = member.runtime === "claude-code" ? new ClaudeCodeAdapter(t) : new CodexRuntimeAdapter(t);
         await adapter.launchHarness(b, { name: "seat", ...(mode === "resume" ? { resumeToken: "original" } : {}),
           ...(mode === "fork" ? { forkSource: { kind: "native_id" as const, value: "original" } } : {}) });
-        assertGrant(t.send.mock.calls[0]![1], member.runtime);
-        expect(b.kernelAuthority).toBe(true);
-        expect(f.store.resolve(f.node.id, member.runtime).source).toBe("kernel_default");
+        assertInherited(t.send.mock.calls[0]![1], member.runtime);
+        expect(b.kernelAuthority).toBe(false);
+        expect(f.store.resolve(f.node.id, member.runtime).source).toBe("system_default");
         expect(t.fsOps.writeFile).not.toHaveBeenCalled();
       }
     });
@@ -97,19 +83,7 @@ describe("kernel operational launch default", () => {
     f.db.prepare("UPDATE nodes SET permission_policy='builtin:locked' WHERE id=?").run(f.node.id);
     expect(f.store.apply(f.binding, runtime).kernelAuthority).toBe(false);
     f.db.prepare("UPDATE nodes SET permission_policy=NULL WHERE id=?").run(f.node.id);
-    expect(f.store.apply(f.binding, runtime).kernelAuthority).toBe(true);
-  });
-  it.each(["claude-code", "codex"])("%s unavailable kernel lookup keeps the floor without a kernel grant", runtime => {
-    const f = fixture(runtime);
-    const prepare = f.db.prepare.bind(f.db);
-    const lookup = vi.spyOn(f.db, "prepare").mockImplementation((sql: string) => {
-      if (sql.includes("SELECT r.name")) throw new Error("kernel metadata unavailable");
-      return prepare(sql);
-    });
-    try {
-      expect(f.store.apply(f.binding, runtime)).toMatchObject({ kernelAuthority: false, launchPosture: "floor" });
-      expect(f.store.resolve(f.node.id, runtime)).toMatchObject({ source: "system_default", launchPosture: "floor" });
-    } finally { lookup.mockRestore(); }
+    expect(f.store.apply(f.binding, runtime).kernelAuthority).toBe(false);
   });
   it("named Codex profiles remain selected and terminal/Pi never receive a kernel native grant", () => {
     const f = fixture("codex");
@@ -118,7 +92,7 @@ describe("kernel operational launch default", () => {
     for (const runtime of ["terminal", "pi"]) expect(f.store.apply(f.binding, runtime).kernelAuthority).toBe(false);
   });
   for (const runtime of ["claude-code", "codex"]) for (const mode of modes) {
-    it(`${runtime} startup recomputes the kernel default on ${mode}`, async () => {
+    it(`${runtime} startup preserves permission inheritance on ${mode}`, async () => {
       const f = fixture(runtime);
       const launchHarness = vi.fn(async () => ({ ok: false as const, error: "inert boundary" }));
       const adapter = { runtime, project: async () => ({ projected: [], skipped: [], failed: [] }),
@@ -129,8 +103,8 @@ describe("kernel operational launch default", () => {
         resolvedStartupFiles: [], startupActions: [], isRestore: mode === "resume",
         ...(mode === "resume" ? { resumeToken: "retained", resumeType: runtime === "codex" ? "codex_id" : "claude_id" } : {}),
         ...(mode === "fork" ? { forkSource: { kind: "native_id" as const, value: "parent" } } : {}) });
-      expect(launchHarness).toHaveBeenCalledWith(expect.objectContaining({ kernelAuthority: true,
-        launchPosture: runtime === "codex" ? "full_bypass" : "floor" }), expect.anything());
+      expect(launchHarness).toHaveBeenCalledWith(expect.objectContaining({ kernelAuthority: false,
+        launchPosture: "floor" }), expect.anything());
     });
   }
   it.each(["codex", "claude-code"])("legacy restore threads %s kernel choice into the real resume adapter", async runtime => {
@@ -140,7 +114,7 @@ describe("kernel operational launch default", () => {
     const ctx = { db: f.db, rigRepo: f.rigRepo, sessionRegistry: f.registry, appliedLaunchStore: new AppliedLaunchObservationStore(f.db),
       claudeResume: { canResume: () => runtime === "claude-code", resume }, codexResume: { canResume: () => runtime === "codex", resume } };
     await (RestoreOrchestrator.prototype as any).attemptResume.call(ctx, f.node.id, "seat", runtime === "codex" ? "codex_id" : "claude_id", "original", "/inert", null, "model", "floor");
-    assertGrant(t.send.mock.calls[0]![1], runtime);
+    assertInherited(t.send.mock.calls[0]![1], runtime);
   });
   it.each(["--settings", "--settings --unknown"])("strict identity rejects malformed settings value: %s", async settings => {
     const row = { pid: 10, ppid: 1, pgid: 10, tpgid: 10, executableName: "claude", startedAt: "start",

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +6,10 @@ import { claudePostureFlag, codexPostureArg } from "../src/adapters/yolo-mode.js
 import { ClaudeCodeAdapter, type ClaudeAdapterFsOps } from "../src/adapters/claude-code-adapter.js";
 import { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
+import { createFullTestDb } from "./helpers/test-app.js";
+import { RigRepository } from "../src/domain/rig-repository.js";
+import { NativePermissionStore } from "../src/domain/native-permission-store.js";
+import type { NodeBinding } from "../src/domain/runtime-adapter.js";
 
 let dir: string;
 beforeEach(() => {
@@ -17,6 +21,21 @@ afterEach(() => { vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true
 const settings = (defaultMode: string) => writeFileSync(join(dir, "settings.json"), JSON.stringify({ permissions: { defaultMode, deny: ["Read(.env)"] } }));
 
 describe("Claude native auto default", () => {
+  it("kernel inherits the native auto default without adding operational permissions", async () => {
+    settings("auto");
+    const before = readFileSync(join(dir, "settings.json"), "utf8");
+    const db = createFullTestDb();
+    try {
+      const repo = new RigRepository(db), rig = repo.createRig("kernel");
+      const node = repo.addNode(rig.id, "advisor", { runtime: "claude-code", cwd: dir });
+      const binding = new NativePermissionStore(db).apply({ nodeId: node.id, cwd: dir,
+        tmuxSession: "advisor@kernel", launchPosture: "floor" } as NodeBinding, "claude-code");
+      const sendText = vi.fn(async () => ({ ok: false as const, message: "inert launch boundary" }));
+      await new ClaudeCodeAdapter({ tmux: { sendText } as unknown as TmuxAdapter }).launchHarness(binding, { name: "advisor@kernel" });
+      expect(sendText.mock.calls[0]![1]).not.toMatch(/--permission-mode|--dangerously-skip-permissions|--settings/);
+      expect(readFileSync(join(dir, "settings.json"), "utf8")).toBe(before);
+    } finally { db.close(); }
+  });
   it("omits the mode override so native project and managed precedence remain authoritative", () => {
     settings("auto");
     expect(claudePostureFlag(process.env, "floor")).toBe("");
