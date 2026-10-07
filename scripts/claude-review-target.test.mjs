@@ -13,6 +13,32 @@ const targetStep = workflow.jobs["claude-review"].steps.find(step => step.id ===
 const repository = "oSquashBlossomo/openrig";
 const baseSha = "a".repeat(40);
 
+// Evaluate the maintained workflow's small expression subset, not a second
+// event predicate. Missing context properties resolve to an empty string in
+// Actions; actionlint separately validates the actual expression syntax/types.
+function evaluate(expression, context) {
+  const source = expression.replace(/\b(?:github|inputs|vars)(?:\.[a-zA-Z_][a-zA-Z_0-9]*)+/g,
+    path => `lookup(${JSON.stringify(path)})`);
+  const lookup = path => path.split(".").reduce((value, key) => value?.[key], context) ?? "";
+  return Function("lookup", "contains", "fromJSON", "format", `return (${source});`)(
+    lookup, (values, value) => values.includes(value), JSON.parse,
+    (template, ...values) => template.replace(/\{(\d+)\}/g, (_, index) => String(values[index])),
+  );
+}
+
+function reviewEvent(action = "synchronize", changes, runId = "100") {
+  return {
+    github: { repository, event_name: "pull_request_target", run_id: runId,
+      event: { action, changes, pull_request: { ...trustedTarget(), number: 17 } } },
+    inputs: {}, vars: { CLAUDE_REVIEW_ENABLED: "true" },
+  };
+}
+
+function concurrencyGroup(context) {
+  return workflow.concurrency.group.replace(/\$\{\{([\s\S]*?)\}\}/g,
+    (_, expression) => String(evaluate(expression, context)));
+}
+
 function trustedTarget() {
   return {
     head: { repo: { full_name: repository } },
@@ -70,6 +96,53 @@ test("automatic secret reviews use protected base workflow code and the restrict
   assert.deepEqual(workflow.on.pull_request_target?.branches, ["main"]);
   assert.ok(workflow.on.pull_request_target.types.includes("edited"));
   assert.equal(workflow.jobs["claude-review"].environment, "claude-review");
+});
+
+for (const [name, changes] of [
+  ["body", { body: { from: "Previous body" } }],
+  ["title", { title: { from: "Previous title" } }],
+  ["body and title", { body: { from: "Previous body" }, title: { from: "Previous title" } }],
+  ["missing changes", undefined],
+]) {
+  test(`skipped ${name} edits cannot evict a running or pending review`, () => {
+    const active = reviewEvent();
+    const edit = reviewEvent("edited", changes, "101");
+    assert.equal(Boolean(evaluate(workflow.jobs["claude-review"].if, edit)), false);
+    // Distinct concurrency groups preserve both running and pending reviews;
+    // merely disabling cancel-in-progress would still replace pending work.
+    assert.notEqual(concurrencyGroup(edit), concurrencyGroup(active));
+    edit.github.run_id = "102";
+    assert.notEqual(concurrencyGroup(edit), concurrencyGroup(reviewEvent("edited", changes, "101")));
+  });
+}
+
+test("eligible automatic and manual reviews still supersede the same PR group", () => {
+  const synchronize = reviewEvent();
+  const retarget = reviewEvent("edited", { base: { ref: { from: "parent-branch" } } });
+  const manual = reviewEvent();
+  manual.github.event_name = "workflow_dispatch";
+  manual.github.event = {};
+  manual.inputs.pull_request_number = 17;
+  for (const event of [synchronize, retarget, manual]) {
+    assert.equal(Boolean(evaluate(workflow.jobs["claude-review"].if, event)), true);
+    assert.equal(concurrencyGroup(event), "claude-review-17");
+  }
+  assert.equal(workflow.concurrency["cancel-in-progress"], true);
+  synchronize.github.event.pull_request.number = 18;
+  assert.equal(concurrencyGroup(synchronize), "claude-review-18");
+});
+
+test("event eligibility retains enablement, draft, repository and author guards", () => {
+  for (const mutate of [
+    event => { event.vars.CLAUDE_REVIEW_ENABLED = "false"; },
+    event => { event.github.event.pull_request.draft = true; },
+    event => { event.github.event.pull_request.head.repo.full_name = "other/openrig"; },
+    event => { event.github.event.pull_request.author_association = "NONE"; },
+  ]) {
+    const event = reviewEvent();
+    mutate(event);
+    assert.equal(Boolean(evaluate(workflow.jobs["claude-review"].if, event)), false);
+  }
 });
 
 for (const [name, mutate] of [
