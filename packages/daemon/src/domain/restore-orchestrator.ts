@@ -1483,20 +1483,23 @@ export class RestoreOrchestrator {
     const node = this.db.prepare("SELECT rig_id FROM nodes WHERE id = ?").get(nodeId) as { rig_id: string } | undefined;
     const nonInterruptive = node ? this.rigRepo.getRigNonInterruptive(node.rig_id) : false;
     let kernelAuthority = false;
+    let claudePermissionFloor = false;
     let permissionMode: string | undefined;
     try {
       const runtime = this.claudeResume.canResume(resumeType, resumeToken) ? "claude-code"
         : this.codexResume.canResume(resumeType, resumeToken) ? "codex" : "pi";
-      const override = new NativePermissionStore(this.db).launchOverride(nodeId, runtime);
+      const override = new NativePermissionStore(this.db).launchOverride(nodeId, runtime, resolvedPosture);
       kernelAuthority = override.kernelAuthority === true;
+      claudePermissionFloor = override.claudePermissionFloor === true;
       resolvedPosture = override.launchPosture ?? resolvedPosture;
       permissionMode = override.permissionMode ?? (resolvedPosture === "auto" && runtime === "claude-code" ? "auto" : undefined);
     } catch (error) { return { kind: "failed", message: `Permission selection: ${(error as Error).message}` }; }
     const launchTail: [effort?: string | null, nonInterruptive?: boolean, kernelAuthority?: boolean] = kernelAuthority
       ? [effort, nonInterruptive, true] : nonInterruptive ? [effort, true] : effort !== undefined ? [effort] : [];
-    // Advisor rides last, so it fills the whole tail; without one the call stays as before.
-    const claudeTail: [effort?: string | null, nonInterruptive?: boolean, kernelAuthority?: boolean, advisorModel?: string | null] = advisorModel != null
-      ? [effort, nonInterruptive, kernelAuthority, advisorModel] : launchTail;
+    // Preserve advisor's positional slot; append the independent static-floor marker.
+    const claudeTail: [effort?: string | null, nonInterruptive?: boolean, kernelAuthority?: boolean, advisorModel?: string | null, claudePermissionFloor?: boolean] = claudePermissionFloor
+      ? [effort, nonInterruptive, kernelAuthority, advisorModel, true]
+      : advisorModel != null ? [effort, nonInterruptive, kernelAuthority, advisorModel] : launchTail;
     if (this.claudeResume.canResume(resumeType, resumeToken)) {
       const result = await this.claudeResume.resume(sessionName, resumeType, resumeToken, cwd, resolvedPosture, model, permissionMode, nodeId, ...claudeTail);
       if (result.ok) {

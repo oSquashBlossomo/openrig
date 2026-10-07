@@ -686,6 +686,11 @@ description: Custom member policy
           "model",
           undefined,
           node.id,
+          undefined,
+          false,
+          false,
+          undefined, // Advisor keeps its existing positional slot.
+          true, // Static authored floor; the selected native mode remains undefined.
         );
       } finally {
         rmSync(dir, { recursive: true, force: true });

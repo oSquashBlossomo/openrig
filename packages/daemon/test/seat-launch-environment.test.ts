@@ -15,6 +15,10 @@ import { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { shellQuote } from "../src/adapters/shell-quote.js";
 import type { NodeBinding } from "../src/domain/runtime-adapter.js";
+import { createFullTestDb } from "./helpers/test-app.js";
+import { RigRepository } from "../src/domain/rig-repository.js";
+import { NativePermissionStore } from "../src/domain/native-permission-store.js";
+import { SessionRegistry } from "../src/domain/session-registry.js";
 
 // Only private fake executables, a loopback fixture and memory SQLite. No daemon,
 // provider, native account, tmux server, startup/config bootstrap or global homes.
@@ -64,7 +68,7 @@ function fixture() {
     expect(command).not.toContain(env.ANTHROPIC_API_KEY);
     const { stdout } = await exec("/bin/bash", ["--noprofile", "--rcfile", rc, "-ic", command], { env, cwd: binding.cwd, timeout: 5000 });
     const observed = JSON.parse(stdout);
-    expect(observed).toMatchObject({ body: { node: "node-current" }, home: env.OPENRIG_HOME, node: "node-current" });
+    expect(observed).toMatchObject({ body: { node: "node-current" }, home: env.OPENRIG_HOME, node: identity.OPENRIG_NODE_ID });
     if (!managed) expect(observed).toMatchObject({ generation: "successor-generation", HOME: "/user/home", CODEX_HOME: "/user/codex", CLAUDE_CONFIG_DIR: "/user/claude", USER_VALUE: "keep" });
     if (!managed) {
       const [owned, ...rest] = observed.PATH.split(":");
@@ -73,10 +77,50 @@ function fixture() {
     }
     return observed;
   }
-  return { root, bin, env, identity, tmux, launch, binding, fsOps, commands, serve, execute };
+  return { root, bin, env, identity, tmux, launch, binding, fsOps, commands, serve, execute, rc };
 }
 
 describe.skipIf(process.platform === "win32")("seat launch environment after shell rc", () => {
+  it.each(["authored", "stored", "named"].flatMap(choice => ["fresh", "resume", "fork", "legacy restore"].map(kind => ({ choice, kind }))))(
+    "$choice Claude selection preserves its intended launch environment on $kind", async ({ choice, kind }) => {
+      const f = fixture(); await f.serve();
+      rmSync(path.join(f.bin, "claude")); // The working native provider exists only as a pane-rc function.
+      writeFileSync(f.rc, `\nclaude() { [ "$1" = --permission-mode ] && [ "$2" = acceptEdits ] || return 97; rig whoami; user-tool >/dev/null; }\n`, { flag: "a" });
+      const db = createFullTestDb(); cleanup.push(() => db.close());
+      const repo = new RigRepository(db), rig = repo.createRig("floor-environment");
+      const node = repo.addNode(rig.id, "worker", { runtime: "claude-code", cwd: f.binding.cwd });
+      f.binding.nodeId = node.id; f.identity.OPENRIG_NODE_ID = node.id;
+      const registry = new SessionRegistry(db); registry.registerSession(node.id, "seat@rig");
+      registry.updateBinding(node.id, { tmuxSession: "seat@rig", tmuxPane: "%1" });
+      const store = new NativePermissionStore(db);
+      if (choice === "stored") store.write(node.id, { runtime: "claude-code", mode: "floor" }, "operator", "floor");
+      else repo.setNodePolicyProvenance(node.id, { origin: "builtin", launchPosture: "floor", resolvedTarget: null, declaringDir: null });
+      if (choice === "named") store.write(node.id, { runtime: "claude-code", mode: "auto" }, "operator", "explicit named mode over authored floor");
+      const selected = store.apply({ ...f.binding, launchPosture: "floor" }, "claude-code");
+      const managed = new ClaudeManagedLaunch(db, f.env, {});
+      let result: { ok: boolean; error?: string; message?: string };
+      if (kind === "legacy restore") {
+        const adapter = new ClaudeResumeAdapter(f.tmux, { seatLaunchEnvironment: f.launch, claudeManagedLaunch: managed });
+        vi.spyOn(adapter as any, "verifyResume").mockResolvedValue({ ok: true });
+        result = await adapter.resume("seat@rig", "claude_id", "old-id", f.binding.cwd,
+          selected.launchPosture, null, selected.permissionMode, node.id, undefined, undefined, undefined, undefined, selected.claudePermissionFloor);
+      } else {
+        const adapter = new ClaudeCodeAdapter({ tmux: f.tmux, fsOps: f.fsOps, seatLaunchEnvironment: f.launch, claudeManagedLaunch: managed, sleep: async () => {} });
+        vi.spyOn(adapter as any, "verifyResumeLaunch").mockResolvedValue({ ok: true });
+        vi.spyOn(adapter as any, "pollForResumeToken").mockResolvedValue("new-native-id");
+        result = await adapter.launchHarness(selected, { name: "seat", ...(kind === "resume" ? { resumeToken: "old-id" } : kind === "fork" ? { forkSource: { kind: "native_id" as const, value: "parent-id" } } : {}) });
+      }
+      if (choice === "named") {
+        expect(result.ok).toBe(false);
+        expect(result.error ?? result.message).toMatch(/executable is unavailable on the intended PATH/);
+        expect(f.commands).toEqual([]);
+        return;
+      }
+      expect(result.ok).toBe(true);
+      expect(f.commands).toHaveLength(1);
+      expect(f.commands[0]).not.toContain("env -i");
+      await f.execute(f.commands[0]!);
+    });
   it.each(["fresh", "resume", "fork"] as const)("classic Claude %s reaches its daemon without replacing user settings", async kind => {
     const f = fixture(); await f.serve();
     const adapter = new ClaudeCodeAdapter({ tmux: f.tmux, fsOps: f.fsOps, seatLaunchEnvironment: f.launch, sleep: async () => {} });

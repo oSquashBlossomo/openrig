@@ -18,6 +18,8 @@ export interface NodeBinding extends Binding {
   launchPosture?: "floor" | "full_bypass" | "auto";
   /** Explicit Claude native mode; checked against the bound managed executable. */
   permissionMode?: string;
+  /** Static authored floor; keeps classic Claude executable/environment selection. */
+  claudePermissionFloor?: boolean;
   /** Persisted rig opt-in to per-launch warning acceptance, only at full_bypass. */
   nonInterruptive?: boolean;
   /** Launch-only operational default, derived from the persisted kernel rig and explicit selections. */
