@@ -28,9 +28,9 @@ import { parse as parseYaml } from "yaml";
 import { assertSafeInstallRef, assertTreeHasNoSymlinks, assertDestinationNamespaceContained, validateContextPackManifestForInstall } from "../lib/context-install.js";
 import { addGitContext, inspectGitContext, updateGitContext } from "../lib/context-git.js";
 import { ConfigStore } from "../config-store.js";
-import { DaemonClient } from "../client.js";
+import { DaemonClient, formatDaemonHostForUrl } from "../client.js";
 import { enumArg } from "../cli-error.js";
-import { getDaemonStatus, getDaemonUrl , statusGuardMessage} from "../daemon-lifecycle.js";
+import { getDaemonStatus, getDaemonUrl, startDaemon, statusGuardMessage} from "../daemon-lifecycle.js";
 import { resolveWorkPosition, type WorkInstallPlan } from "../lib/work-install.js";
 import {
   reconcileSkillLoadout,
@@ -39,6 +39,8 @@ import {
   type SkillLoadout,
 } from "@openrig/daemon/skill-loadout";
 import { realDeps } from "./daemon.js";
+import { prepareDaemonAutoStart } from "../daemon-auto-start.js";
+import { readOpenRigEnv } from "../openrig-compat.js";
 import type { StatusDeps } from "./status.js";
 
 const contextRuntimeArg = enumArg(["claude-code", "claude", "codex"]);
@@ -67,6 +69,18 @@ interface ContextPackEntryWire {
   }>;
 }
 
+/** Exact retry commands for a failed project selection, one per candidate id. */
+function projectRetryCommands(
+  code: string,
+  candidates: string[] | undefined,
+  opts: { mission?: string; slice?: string },
+): string[] | undefined {
+  if (!candidates || (code !== "project_required" && code !== "project_not_found")) return undefined;
+  const word = (value: string) => /^[A-Za-z0-9._\/-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+  const narrowing = `${opts.mission !== undefined ? ` --mission ${word(opts.mission)}` : ""}${opts.slice !== undefined ? ` --slice ${word(opts.slice)}` : ""}`;
+  return candidates.map((id) => `rig context work-install --project ${word(id)}${narrowing}`);
+}
+
 function selectedIds(ids: string[], none: string): string {
   return ids.length > 0 ? ids.join(", ") : none;
 }
@@ -76,12 +90,12 @@ function printWorkInstallSelectors(result: WorkInstallPlan, topologySkills: stri
   const identity = world.id ? ` ${world.id}@${world.version}` : "";
   const path = world.manifestPath ? ` ${world.manifestPath}` : "";
   console.log(`system  ${world.state} [${world.source}]${identity}${path}`);
-  for (const selection of world.context) {
-    const profiles = selection.profiles
-      ? ` (${Object.entries(selection.profiles).map(([runtime, profile]) => `${runtime}=${profile}`).join(", ")})`
-      : "";
-    console.log(`context system ${selection.ref}${profiles}`);
-  }
+  const profiles = (selection: { profiles?: Record<string, string | undefined> }) => selection.profiles
+    ? ` (${Object.entries(selection.profiles).map(([runtime, profile]) => `${runtime}=${profile}`).join(", ")})`
+    : "";
+  for (const selection of world.context) console.log(`context system ${selection.ref}${profiles(selection)}`);
+  for (const selection of result.worlds ?? []) console.log(`context world ${selection.ref}${profiles(selection)}`);
+  if ((result.worlds ?? []).length > 0) console.log("worlds  read each with: rig context get <ref>");
   console.log(`skills  system=${selectedIds(world.skills, "(none)")}`);
   console.log(`skills  topology=${selectedIds(topologySkills, "(none)")}`);
   console.log(`skills  project=${selectedIds(result.skills, "(none)")}`);
@@ -224,7 +238,7 @@ async function resolvePack(client: DaemonClient, nameOrRef: string): Promise<Con
   return matches[0]!;
 }
 
-export function contextCommand(depsOverride?: StatusDeps): Command {
+export function contextCommand(depsOverride?: StatusDeps & { preflightExec?: (cmd: string) => Promise<string> }): Command {
   const cmd = new Command("context")
     .description("Browse, preview, compose, and manage operator-authored context packs")
     .addHelpText("after", `
@@ -237,8 +251,8 @@ Examples:
   rig context sync
   rig context profile world-public --situation fresh --runtime claude-code
   rig context work-install --runtime claude-code
-  rig context trace --rig product-team --seat orch1-lead --name LEARNED.md
-  rig context trace --rig product-team --pod delivery --seat dev1-qa --name LEARNED.md
+  rig context trace --rig factory --seat orch-lead --name LEARNED.md
+  rig context trace --rig factory --pod dev --seat dev-qa --name LEARNED.md
 `);
 
   const getDeps = (): StatusDeps => depsOverride ?? {
@@ -274,13 +288,24 @@ Examples:
         contextRoot,
         systemWorldSelection: String(systemWorldSetting.value),
         systemWorldSource: systemWorldSetting.source,
+        cwd: resolve(opts.cwd ?? process.cwd()),
+        ...(process.env["OPENRIG_SESSION_NAME"] ? { sessionName: process.env["OPENRIG_SESSION_NAME"] } : {}),
         ...(opts.project !== undefined ? { project: opts.project } : {}),
         ...(opts.mission !== undefined ? { mission: opts.mission } : {}),
         ...(opts.slice !== undefined ? { slice: opts.slice } : {}),
       });
       if ("error" in result) {
-        if (opts.json) console.log(JSON.stringify({ ok: false, ...result }));
-        else console.error(`${result.error.code}: ${result.error.message}`);
+        const commands = projectRetryCommands(result.error.code, result.error.candidates, opts);
+        if (opts.json) {
+          console.log(JSON.stringify({ ok: false, error: { ...result.error, ...(commands ? { commands } : {}) } }));
+        } else {
+          console.error(`${result.error.code}: ${result.error.message}`);
+          const choices = commands ?? result.error.candidates ?? [];
+          if (choices.length > 0) {
+            console.error(commands ? "Run one of:" : "Candidates:");
+            for (const choice of choices) console.error(`  ${choice}`);
+          }
+        }
         process.exitCode = 1;
         return;
       }
@@ -344,7 +369,13 @@ Examples:
         for (const warning of result.warnings) console.error(`Warning: ${warning}`);
         return;
       }
-      console.log(`project ${result.position.projectId ?? "(unmanifested)"}: ${result.position.projectRoot}`);
+      const selectedByLabels: Record<string, string> = {
+        rig: " (selected by this rig's catalog entry)",
+        cwd: " (selected by the working directory)",
+        unclaimed: " (the only project no rig claims)",
+      };
+      const selectedBy = selectedByLabels[result.position.selectedBy] ?? "";
+      console.log(`project ${result.position.projectId ?? "(unmanifested)"}: ${result.position.projectRoot}${selectedBy}`);
       printWorkInstallSelectors(result, (opts.topology ?? "").split(",").map((id) => id.trim()).filter(Boolean));
       for (const planned of result.pieces) {
         console.log(`${planned.altitude.padEnd(7)} ${planned.address} [${planned.source}] ${planned.exists ? planned.path : `(absent: ${planned.path})`}`);
@@ -360,9 +391,27 @@ Examples:
       for (const warning of result.warnings) console.error(`Warning: ${warning}`);
     });
 
-  async function getClient(): Promise<DaemonClient> {
+  async function getClient(autoStartLocal = false): Promise<DaemonClient> {
     const deps = getDeps();
-    const status = await getDaemonStatus(deps.lifecycleDeps);
+    let status = await getDaemonStatus(deps.lifecycleDeps);
+    if (autoStartLocal && (status.state === "stopped" || status.state === "stale")
+      && !readOpenRigEnv("OPENRIG_URL", "RIGGED_URL")) {
+      // Startup uses current config. A retained endpoint must not mask an
+      // explicitly selected host when deciding whether startup is local.
+      const selection = new ConfigStore().resolveWithSource("daemon.host");
+      const host = selection.source === "default"
+        ? new URL(new DaemonClient().baseUrl).hostname
+        : new URL(`http://${formatDaemonHostForUrl(String(selection.value))}`).hostname;
+      if (["127.0.0.1", "localhost", "[::1]"].includes(host)) {
+        const prepared = await prepareDaemonAutoStart(deps.lifecycleDeps, depsOverride?.preflightExec);
+        if (!prepared.preflight.ready) {
+          throw new Error(prepared.preflight.checks.filter((check) => !check.ok)
+            .map((check) => `${check.name}: ${check.error}${check.fix ? ` Fix: ${check.fix}` : ""}`).join("\n"));
+        }
+        await startDaemon(prepared.options, deps.lifecycleDeps);
+        status = await getDaemonStatus(deps.lifecycleDeps);
+      }
+    }
     if (status.state !== "running" || status.healthy === false) {
       // B8-1b: epistemic-matched language via the one helper (down ≠ busy).
       const gm = statusGuardMessage(status); throw new Error(`${gm.fact} ${gm.action}`);
@@ -805,7 +854,7 @@ Examples:
         let gitSelection: ReturnType<typeof addGitContext>["selected"] | undefined;
         if ((opts.pack || opts.checkout) && !opts.git) throw new Error("--pack and --checkout require --git.");
         if (opts.git) {
-          const gitClient = await getClient();
+          const gitClient = await getClient(true);
           assertLocalGitClient(gitClient);
           ({ installedAt: targetDir, selected: gitSelection } = addGitContext(source, opts, targetRoot));
         } else if (isHttpUrl(source)) {
@@ -849,7 +898,7 @@ Examples:
           }
         }
         // Sync the daemon library so the new pack appears immediately.
-        const client = await getClient();
+        const client = await getClient(true);
         const syncRes = await client.post<{ count: number; errors?: Array<{ source: string; error: string }>; entries: ContextPackEntryWire[] }>("/api/context-packs/library/sync");
         if (syncRes.status !== 200) {
           // Install succeeded; sync failed → still surface install path.

@@ -41,6 +41,24 @@ private test daemon, or use the daemon-free twin described in
 6. Record release or upgrade evidence separately. Production rollout needs its
    own selected revision, backup, rehearsal, rollback plan, and authorization.
 
+## Stacked PRs
+
+When a change depends on another unmerged PR, branch from that PR's branch and
+open the new PR with the parent branch as its base, not `main`. Name the parent in
+the description (for example, "Stacked on #16") and keep `Closes #N` for its own
+issue. Keep each stacked PR a draft until its parent merges.
+
+`Tests` and `Portability report` run on PRs against any base branch, so a stacked
+PR gets checks on every push without a manual dispatch. Those checks test the PR
+merged into its parent branch, not into `main`. The Claude review runs only on
+PRs based on `main`, so a stacked PR gets its Claude review once it targets
+`main` and is ready.
+
+After the parent merges, retarget the stacked PR to `main` if GitHub has not done
+so, then merge `main` into its branch and push. That push re-runs CI against
+`main` and drops the parent's commits from the diff, which squash merging would
+otherwise leave behind. Mark it ready only after those checks pass.
+
 ## Local source setup
 
 Prerequisites: Node 24, npm, Git, and tmux. Use the committed npm lockfile.
@@ -93,13 +111,36 @@ validated `main` base revision and reads the diff via GitHub; PR code is not
 executed. The environment's branch restriction also blocks feature-branch
 workflow definitions from receiving the Claude secret. External
 contributions can receive Codex review and an independent local Claude review.
-Claude runs have a timeout and turn limit. Subscription usage still applies.
+Claude runs have a 20-minute timeout and `--max-turns 60`. Subscription usage
+still applies. The pinned action checks the SDK's `num_turns`, which counts the
+prompt plus every tool result, against that limit after the run
+([claude-code-action#1795](https://github.com/anthropics/claude-code-action/issues/1795)).
+Parallel calls therefore do not save budget, and a denied call still counts.
+At 20, most reviews of 25-40 file PRs ended red, sometimes after the review had
+already been posted ([#21](https://github.com/oSquashBlossomo/openrig/issues/21)).
+The prompt lists the tools available, reads the PR, diff and conversation in
+the first turn, reads extra files only where the diff lacks context, posts one
+comment by its 50th tool call, and then stops. A review that still exceeds the
+limit fails the job; check whether its comment was posted before treating the
+review as missing.
 The workflow uses the temporary repository GitHub token with read-only code
 access and permission to post PR comments. This avoids the Claude app's
 `pull_request_target` OIDC exchange issue. Comments are posted by
 `github-actions[bot]` and identify themselves as Claude reviews. The reviewer
 uses the GitHub connector's structured tools; built-in shell/file tools are
-disabled. Merge workflow updates into main before testing the automatic path.
+disabled, because the runner holds the Claude token. Its GitHub tools are
+read-only apart from posting the comment. It reads the PR conversation, review
+threads and reviews so it does not repeat findings that were already resolved,
+and treats all of this as untrusted evidence. It skips a finding only when the
+current head fixed it or an owner, member or collaborator disproved it. A
+disproof from the PR author counts only after the reviewer checks its evidence in
+the code; otherwise the finding stays, marked as disputed. Every skipped finding
+is listed, so a wrongly dropped one stays visible. Anyone who
+can comment could still try to steer it; the worst outcome is a misleading
+advisory comment. GitHub code search does not index this fork (a fork needs more stars
+than its parent), so the reviewer traces callers with `get_file_contents` and
+labels what it cannot confirm. Merge workflow updates into main before testing
+the automatic path.
 
 For a manual Claude review after activation, use the CLI:
 

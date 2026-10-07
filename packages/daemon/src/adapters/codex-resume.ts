@@ -1,3 +1,4 @@
+import { operationalLaunchArg } from "./kernel-authority.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { TmuxAdapter } from "./tmux.js";
 import type { SeatLaunchEnvironment } from "../domain/seat-launch-environment.js";
@@ -51,13 +52,15 @@ export class CodexResumeAdapter {
     cwd: string,
     codexConfigProfile?: string | null,
     // OPR.0.4.8.3 Seam B: persisted resolved posture threaded from restore.
-    resolvedPosture?: "floor" | "full_bypass",
+    resolvedPosture?: "floor" | "full_bypass" | "auto",
     // 0.5.2-07: the seat's SPEC-pinned model. TRAILING param so existing positional callers that pass
     // resolvedPosture as the 6th arg stay correct; threaded so the legacy (non-pod-aware) restore boots
     // the resumed seat on its spec model, not the runtime default; absent → command byte-identical.
     model?: string | null,
     // #75: optional reasoning effort for the seat.
     effort?: string | null,
+    nonInterruptive?: boolean,
+    kernelAuthority?: boolean,
   ): Promise<ResumeResult> {
     if (!this.canResume(resumeType, resumeToken)) {
       return { ok: false, code: "no_resume", message: "Codex resume not available" };
@@ -90,8 +93,9 @@ export class CodexResumeAdapter {
     }
 
     const profileArg = codexConfigProfile ? ` -p ${shellQuote(codexConfigProfile)}` : "";
-    const postureArg = codexPostureArg(profileArg, process.env, resolvedPosture);
-    const appliedLaunch = observeCodexSandbox(postureArg);
+    const posture = codexPostureArg(profileArg, process.env, resolvedPosture);
+    const appliedLaunch = observeCodexSandbox(posture);
+    const postureArg = posture + operationalLaunchArg("codex", { kernelAuthority, nonInterruptive, launchPosture: resolvedPosture });
     const networkArg = await codexNetworkDefaultArg(this.options.readNetworkDefault, appliedLaunch, cwd, tmuxSessionName);
     const cmd = buildCodexResumeCore(
       resumeToken ?? "",

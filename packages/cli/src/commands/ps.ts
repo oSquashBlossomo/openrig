@@ -198,6 +198,7 @@ const ALLOWED_NODE_FIELDS = new Set([
   "canonicalSessionName",
   "nodeKind",
   "runtime",
+  "model",
   "sessionStatus",
   "startupStatus",
   "restoreOutcome",
@@ -219,6 +220,7 @@ const ALLOWED_NODE_FIELDS = new Set([
 
 interface PsCliOptions {
   json?: boolean;
+  cleanup?: boolean;
   resources?: boolean;
   nodes?: boolean;
   full?: boolean;
@@ -808,7 +810,7 @@ contextUsage.percent, contextUsage.state. Other keys are rejected.
 activeCount, hasWorkCount, attentionCount, status, lifecycleState, uptime,
 latestSnapshot.
 --fields accepts (node-level, with --nodes): rigId, rigName, logicalId, podId,
-podNamespace, canonicalSessionName, nodeKind, runtime, sessionStatus,
+podNamespace, hostSelfId, canonicalSessionName, nodeKind, runtime, model, sessionStatus,
 startupStatus, restoreOutcome, lifecycleState, tmuxAttachCommand,
 resumeCommand, latestError, terminalActive, hasAssignedWork,
 assignedWorkCount, pendingWorkCount, inProgressWorkCount, blockedWorkCount,
@@ -825,6 +827,7 @@ Exit codes:
 
   cmd
     .option("--json", "JSON output for agents")
+    .option("--no-cleanup", "Preserve stale daemon state files during observation")
     .option("--resources", "Show this host’s load and transcript capture cost (also supports --host)")
     .option("--nodes", "Show per-node detail (current rig; -A for all rigs)")
     .option("--full", "Show all rig rows without cell truncation, or all node-list fields with --nodes (recoveryGuidance/currentUsage live on node detail)")
@@ -916,7 +919,7 @@ Exit codes:
         return;
       }
 
-      const status = await getDaemonStatus(deps.lifecycleDeps);
+      const status = await getDaemonStatus(deps.lifecycleDeps, { cleanupStaleState: opts.cleanup });
       if (!daemonStatusGuard(status)) return;
 
       const client = deps.clientFactory(getDaemonUrl(status));
@@ -1243,6 +1246,12 @@ async function handleNodes(
       ));
     }
   }
+  // Keep an actionable startup continuation outside the table's clipped cells.
+  for (const n of humanList as NodeEntry[]) {
+    if (n.startupStatus === "attention_required" && n.latestError?.includes("rig seat continue ")) {
+      console.log(`Startup details (${n.canonicalSessionName ?? n.logicalId}): ${n.latestError}`);
+    }
+  }
   if (humanTruncated) {
     const remaining = filtered.length - HUMAN_NODE_BUDGET;
     console.log(`... and ${remaining} more node${remaining === 1 ? "" : "s"} (truncated at ${HUMAN_NODE_BUDGET}).`);
@@ -1397,6 +1406,7 @@ async function runCrossHostPs(
 
   // SSH path — reconstruct argv
   const argv: string[] = ["rig", "ps"];
+  if (opts.cleanup === false) argv.push("--no-cleanup");
   if (opts.resources) argv.push("--resources");
   if (opts.nodes) argv.push("--nodes");
   if (opts.full) argv.push("--full");

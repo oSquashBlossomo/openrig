@@ -1,7 +1,8 @@
+import { operationalLaunchArgs } from "./kernel-authority.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { TmuxAdapter } from "./tmux.js";
 import type { SeatLaunchEnvironment } from "../domain/seat-launch-environment.js";
-import { claudeAdvisorArgs } from "../domain/claude-advisor.js";
+import { claudeLaunchSettingsArgs } from "../domain/claude-advisor.js";
 import { shellQuote } from "./shell-quote.js";
 import { claudePostureFlag, claudeClassicRendererEnvPrefix } from "./yolo-mode.js";
 import { assessNativeResumeProbe } from "../domain/native-resume-probe.js";
@@ -52,7 +53,7 @@ export class ClaudeResumeAdapter {
     cwd: string,
     // OPR.0.4.8.3 Seam B: the seat's PERSISTED resolved posture (restore re-derivation);
     // absent = the env decision (0.4.8.2), unchanged.
-    resolvedPosture?: "floor" | "full_bypass",
+    resolvedPosture?: "floor" | "full_bypass" | "auto",
     // 0.5.2-07: the seat's SPEC-pinned model. TRAILING param so existing positional callers that pass
     // resolvedPosture as the 5th arg stay correct; threaded so the legacy (non-pod-aware) restore boots
     // the resumed seat on its spec model, not the runtime default; absent → command byte-identical.
@@ -60,6 +61,9 @@ export class ClaudeResumeAdapter {
     selectedPermissionMode?: string,
     nodeId?: string,
     effort?: string | null,
+    nonInterruptive?: boolean,
+    kernelAuthority?: boolean,
+    // Trailing: positional callers that stop earlier keep their meaning.
     advisorModel?: string | null,
   ): Promise<ResumeResult> {
     if (!this.canResume(resumeType, resumeToken)) {
@@ -71,8 +75,6 @@ export class ClaudeResumeAdapter {
     // 0.5.2-07: --model matches the fresh-launch adapter (claude-code-adapter), emitted after posture.
     const modelArg = model ? ` --model ${shellQuote(model)}` : "";
     const effortArg = effort ? ` --effort ${shellQuote(effort)}` : "";
-    const advisorArgs = claudeAdvisorArgs(advisorModel);
-    const advisorArg = advisorArgs.length ? ` --settings ${shellQuote(advisorArgs[1]!)}` : "";
     let managed: Awaited<ReturnType<ClaudeManagedLaunch["prepare"]>> | undefined;
     if (selectedPermissionMode !== undefined) {
       try {
@@ -80,9 +82,14 @@ export class ClaudeResumeAdapter {
         managed = await this.options.claudeManagedLaunch!.prepare({ nodeId: nodeId!, cwd, session: tmuxSessionName }, selectedPermissionMode);
       } catch (error) { return { ok: false, code: "permission_selection_refused", message: (error as Error).message }; }
     }
-    const permissionMode = claudePostureFlag(process.env, resolvedPosture, selectedPermissionMode);
-    const appliedLaunch = observeClaudePermission(permissionMode);
-    const cmd = managed ? managed.command(["--permission-mode", selectedPermissionMode!, ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []), ...advisorArgs, "--resume", resumeToken!])
+    const choice = { kernelAuthority, nonInterruptive, launchPosture: resolvedPosture, permissionMode: selectedPermissionMode };
+    const launchSettings = claudeLaunchSettingsArgs(operationalLaunchArgs("claude-code", choice), advisorModel);
+    const advisorArgs = launchSettings.advisor;
+    const advisorArg = advisorArgs.length ? ` --settings ${shellQuote(advisorArgs[1]!)}` : "";
+    const posture = claudePostureFlag(process.env, resolvedPosture, selectedPermissionMode);
+    const appliedLaunch = observeClaudePermission(posture);
+    const permissionMode = posture + launchSettings.operational.map(arg => ` ${shellQuote(arg)}`).join("");
+    const cmd = managed ? managed.command(["--permission-mode", selectedPermissionMode!, ...launchSettings.operational, ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []), ...advisorArgs, "--resume", resumeToken!])
       : `${claudeClassicRendererEnvPrefix(process.env)}claude ${permissionMode}${modelArg}${effortArg}${advisorArg} --resume ${shellQuote(resumeToken!)}`;
 
     const textResult = managed ? await this.tmux.sendShellCommand(tmuxSessionName, cmd, managed.assertCurrent)

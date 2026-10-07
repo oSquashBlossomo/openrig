@@ -41,7 +41,7 @@ import { codexDaemonSupportProbe } from "./domain/codex-daemon-support.js";
 import { codexNetworkDefaultReader } from "./domain/codex-network-default.js";
 import { PiResumeAdapter } from "./adapters/pi-resume.js";
 import { OmpResumeAdapter } from "./adapters/omp-resume.js";
-import { OMP_PROVIDER_ENV_VARS } from "./adapters/pi-runner-protocol.js";
+import { OMP_PROVIDER_ENV_VARS, OMP_PROVIDER_EXTRA_ENV_VARS } from "./adapters/pi-runner-protocol.js";
 import { RigSpecExporter } from "./domain/rigspec-exporter.js";
 import { PodRepository } from "./domain/pod-repository.js";
 import { RigSpecPreflight } from "./domain/rigspec-preflight.js";
@@ -58,6 +58,7 @@ import { ExternalInstallPlanner } from "./domain/external-install-planner.js";
 import { ExternalInstallExecutor } from "./domain/external-install-executor.js";
 import { PackageInstallService } from "./domain/package-install-service.js";
 import { BootstrapOrchestrator } from "./domain/bootstrap-orchestrator.js";
+import { routeBundleContents } from "./domain/bundle-content-routing.js";
 import { TmuxDiscoveryScanner } from "./domain/tmux-discovery-scanner.js";
 import { SessionFingerprinter } from "./domain/session-fingerprinter.js";
 import { SessionEnricher } from "./domain/session-enricher.js";
@@ -95,6 +96,7 @@ import { ChatRepository } from "./domain/chat-repository.js";
 import { StreamStore } from "./domain/stream-store.js";
 import { SlowOpRecorder, type SlowOperationInstrumentation } from "./domain/slow-op-recorder.js";
 import { configureSyncSiteRecorder } from "./domain/sync-site-wrap.js";
+import { RequestPhaseObserver } from "./domain/request-phase-observer.js";
 import { QueueRepository, isBlockerLive } from "./domain/queue-repository.js";
 import { createWorkflowFrontierPredicate } from "./domain/workflow-frontier-guard.js";
 import { InboxHandler } from "./domain/inbox-handler.js";
@@ -150,7 +152,7 @@ import nodePath from "node:path";
 // status + error_message columns to workflow_specs so the scanner
 // can record diagnostic rows. SC-29 #10 declared verbatim in commit body.
 import { RigModeStore } from "./domain/rig-mode/rig-mode-store.js";
-import { OperatingPostureService } from "./domain/rig-mode/operating-posture.js";
+import { OperatingPostureService, configuredCatalogPath } from "./domain/rig-mode/operating-posture.js";
 import { MissionControlActionLog } from "./domain/mission-control/mission-control-action-log.js";
 import { MissionControlWriteContract } from "./domain/mission-control/mission-control-write-contract.js";
 import { MissionControlReadLayer } from "./domain/mission-control/mission-control-read-layer.js";
@@ -248,8 +250,15 @@ const KNOWN_PROVIDER_AUTH_ENV = new Set([
 // every other runtime keeps KNOWN_PROVIDER_AUTH_ENV above. Double opt-in is
 // unchanged: the operator names each var, and the runner forwards only the
 // declared provider's var.
+// A provider whose key is scoped to one endpoint (a self-hosted LiteLLM proxy)
+// contributes its base-URL variable too: admitting the key alone would hand the
+// seat an unusable credential, so the pair travels together — the same pairing
+// KNOWN_PROVIDER_AUTH_ENV makes for ANTHROPIC_BASE_URL / OPENAI_BASE_URL.
 const OMP_PROVIDER_AUTH_ENV: Record<string, true> = Object.fromEntries(
-  Object.values(OMP_PROVIDER_ENV_VARS).map((name) => [name, true as const]),
+  [
+    ...Object.values(OMP_PROVIDER_ENV_VARS),
+    ...Object.values(OMP_PROVIDER_EXTRA_ENV_VARS).flat(),
+  ].map((name) => [name, true as const]),
 );
 
 export function collectAllowlistedProviderAuthEnv(
@@ -616,6 +625,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     tmuxAdapter,
     { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }) },
     { stateRoot: piStateRoot, runnerEntryPath: piRunnerEntryPath },
+    { seatLaunchEnvironment },
   );
   const ompResume = new OmpResumeAdapter(
     tmuxAdapter,
@@ -763,7 +773,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const codexAdapter = new CodexRuntimeAdapter({ tmux: tmuxAdapter, seatLaunchEnvironment, fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }), listFiles: (dir: string) => { const r: string[] = []; function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; }, statMode: (p: string) => fs.statSync(p).mode, chmod: (p: string, m: number) => fs.chmodSync(p, m), homedir: daemonHome }, codexHome: configuredCodexHome, launchPath: process.env.PATH, detectDaemonSupport: codexDaemonSupportProbe(process.env.PATH, undefined, configuredCodexHome), readNetworkDefault: readCodexNetworkDefault, activityRelayPath: nodePath.resolve(import.meta.dirname, "../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs") });
   // OPR.0.4.6.PI1 — the RPC-first Pi adapter (runner-in-a-pane). Same fsOps
   // shape as the Codex adapter; seat isolation roots under piStateRoot.
-  const piAdapter = new PiRuntimeAdapter({ tmux: tmuxAdapter, fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }), listFiles: (dir: string) => { const r: string[] = []; function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; } }, stateRoot: piStateRoot, runnerEntryPath: piRunnerEntryPath });
+  const piAdapter = new PiRuntimeAdapter({ tmux: tmuxAdapter, seatLaunchEnvironment, fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }), listFiles: (dir: string) => { const r: string[] = []; function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; }, statMode: (p: string) => fs.statSync(p).mode, chmod: (p: string, m: number) => fs.chmodSync(p, m) }, stateRoot: piStateRoot, runnerEntryPath: piRunnerEntryPath });
   const ompAdapter = new OmpRuntimeAdapter({ tmux: tmuxAdapter, fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }), listFiles: (dir: string) => { const r: string[] = []; function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; } }, stateRoot: ompStateRoot, runnerEntryPath: piRunnerEntryPath });
   // OPR.0.5.1.1 — the stub runtime adapter (Pi-shaped node-script runner in a pane).
   // Same fsOps shape as Pi; the compiled runner entry lives in the daemon dist.
@@ -885,7 +895,9 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       const settingsStore = new ContextPackSettingsStore();
       const cfg = settingsStore.resolveConfig();
       const workspacePacksRoot = nodePath.join(cfg.workspaceRoot, ".openrig", "context-packs");
-      if (workspacePacksRoot !== userPacksRoot && workspacePacksRoot !== systemPacksRoot && fs.existsSync(workspacePacksRoot)) {
+      // Registered even before it exists: scan() skips a missing root, so a
+      // folder created after startup is found by the next sync, not a restart.
+      if (workspacePacksRoot !== userPacksRoot && workspacePacksRoot !== systemPacksRoot) {
         roots.push({ path: workspacePacksRoot, sourceType: "workspace" });
       }
     } catch { /* settings unavailable; fall through with user-file root only */ }
@@ -982,6 +994,11 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     packageInstallService, rigInstantiator, fsOps: resolverFsOps,
     bundleSourceResolver, podInstantiator, podBundleSourceResolver,
     serviceOrchestrator, rigRepo,
+    // A bundle's packs land in context.root before its seats launch; rescan
+    // so the live library serves them on the first turn.
+    routeBundleContents: (bundlePath) => routeBundleContents(bundlePath, {
+      onContextPacksRouted: () => contextPackLibrary.scan(),
+    }),
   });
 
   // V0.3.1 slice 05 kernel-rig-as-default — auto-boot the kernel rig
@@ -1069,7 +1086,9 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const healthPolicy = new HealthPolicyStore(OPENRIG_HOME, () => healthSettingsStore.resolveContextPressurePolicy());
   const healthCheckpoints = new HealthCheckpointSource(OPENRIG_HOME, queueRepoInstance, healthPolicy, undefined, healthSettingsStore.resolveOne("workspace.root").value as string);
   const rigModeStore = new RigModeStore(db);
-  const operatingPosture = new OperatingPostureService(db, rigModeStore, () => healthSettingsStore.resolveOne("workspace.root").value as string);
+  const operatingPosture = new OperatingPostureService(db, rigModeStore,
+    () => healthSettingsStore.resolveOne("workspace.root").value as string,
+    configuredCatalogPath(healthSettingsStore));
   const passiveCeremony = new PassiveCeremonySource(healthSettingsStore.resolveOne("workspace.root").value as string, queueRepoInstance, healthPolicy, undefined, healthCheckpoints, { reader: operatingPosture, instanceId: OPENRIG_HOME });
   const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
   const healthDiagnosis = new HealthDiagnosisService({ queue: queueRepoInstance, projection: healthProjection, policy: healthPolicy,
@@ -1837,6 +1856,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         return r.ok ? r.host : null;
       },
       hasSession: (session) => tmuxAdapter.hasSession(session),
+      // #707: local tiles run the tmux the daemon resolves, not whatever the provider's PATH finds.
+      resolveLocalTmux: async () => (await probeRegistry.probeCli("tmux")).detectedPath,
     });
   }
 
@@ -2407,7 +2428,9 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // (loop lag / last-tick age) and the expensive topology routes are timed.
   const { EventLoopMonitor } = await import("./domain/event-loop-monitor.js");
   const { RouteTimingRecorder } = await import("./domain/route-timing-recorder.js");
-  const eventLoopMonitor = new EventLoopMonitor();
+  const requestPhaseObserver = slowOpRecorder?.recordDiagnostic ? new RequestPhaseObserver(slowOpRecorder) : undefined;
+  deps.requestPhaseObserver = requestPhaseObserver;
+  const eventLoopMonitor = new EventLoopMonitor({ onTick: (at, previous) => requestPhaseObserver?.tick(at, previous) });
   const routeTimingRecorder = new RouteTimingRecorder();
   deps.eventLoopMonitor = eventLoopMonitor;
   deps.routeTimingRecorder = routeTimingRecorder;

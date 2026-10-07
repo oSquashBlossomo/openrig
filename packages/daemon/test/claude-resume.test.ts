@@ -110,8 +110,20 @@ describe("ClaudeResumeAdapter", () => {
       const adapter = new ClaudeResumeAdapter(mockTmux({ sendText }));
       await adapter.resume("control@rig", "claude_id", "native-token", "/repo", "floor", "claude-opus-5-5", undefined, "node", "xhigh");
       const control = sendText.mock.calls[0]![1];
-      await adapter.resume("lead@rig", "claude_id", "native-token", "/repo", "floor", "claude-opus-5-5", undefined, "node", "xhigh", advisor);
+      await adapter.resume("lead@rig", "claude_id", "native-token", "/repo", "floor", "claude-opus-5-5", undefined, "node", "xhigh", undefined, undefined, advisor);
       expect(sendText.mock.calls[1]![1]).toBe(control.replace(" --resume", ` --settings '${JSON.stringify({ advisorModel: advisor === "off" ? "" : advisor })}' --resume`));
+    });
+
+    it("an advisor joins kernel-authority settings in one --settings value instead of shadowing them", async () => {
+      const sendText = vi.fn(async () => ({ ok: true as const }));
+      const adapter = new ClaudeResumeAdapter(mockTmux({ sendText }));
+      await adapter.resume("lead@kernel", "claude_id", "native-token", "/repo", "floor", undefined, undefined, "node", undefined, undefined, true, "claude-fable-5-1");
+      const command = sendText.mock.calls[0]![1] as string;
+      expect(command.match(/--settings/g)).toHaveLength(1);
+      const settings = JSON.parse(command.match(/'--settings' '([^']+)'/)![1]!);
+      expect(settings.advisorModel).toBe("claude-fable-5-1");
+      expect(settings.permissions.allow).toContain("Bash(rig:*)");
+      expect(command).toContain("--resume 'native-token'");
     });
 
     it("returns { ok: true } on success", async () => {

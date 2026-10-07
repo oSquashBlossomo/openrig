@@ -62,9 +62,8 @@ const PROMPT_DRAFT_PATTERNS = [
   /^[❯›»]\s+\S/,
 ];
 
-// Status-bar patterns that ONLY appear when the harness is at its idle
-// prompt. These are more reliable than the prompt char alone because they
-// are never rendered during active tool execution.
+// Footer hints, not proof of inactivity: Claude also renders its mode bar
+// during a turn. Current live-status evidence must take precedence below.
 const IDLE_STATUS_BAR_PATTERNS = [
   /gpt-\d[\d.]* .+ · Context \[/,  // Codex model/context footer
   /⏵⏵ accept edits/,              // Claude Code edit-accept bar
@@ -95,6 +94,7 @@ const PERMISSION_PROMPT_PATTERNS = [
 // after hitting this. Erring toward "prompt detected" is the SAFE direction for this guard: a false
 // refusal is overridable; a false-idle lets a message land on a prompt. (EXA: ntm e28763e; AgentDeck.)
 const PROMPT_SCAN_LINES = 12;
+const CLAUDE_QUESTION_FOOTER = "Enter to select · ↑/↓ to navigate · Esc to cancel";
 
 export interface PaneActivityClassification {
   state: "agent_active" | "agent_idle" | "attention" | "unknown";
@@ -120,6 +120,80 @@ function findPatternEvidence(lines: string[], patterns: RegExp[]): string | null
     if (patterns.some((pattern) => pattern.test(line))) return truncateEvidence(line);
   }
   return null;
+}
+
+function findCurrentClaudeQuestion(paneContent: string): string | null {
+  // Claude 2.1.289 can wrap a current choice beyond the general prompt window.
+  // Anchor at its terminal footer, then follow only the adjoining choice block.
+  // Preserve columns so indented draft/quoted text does not gain new authority.
+  const lines = paneContent.split("\n").map(line => line.trimEnd()).filter(line => line.length > 0);
+  if (lines.at(-1) !== CLAUDE_QUESTION_FOOTER) return null;
+  for (let i = lines.length - 2; i >= 0; i--) {
+    const line = lines[i]!;
+    if (/^❯ \d+\.\s+\S/.test(line)) return truncateEvidence(line);
+    if (!/^(?: {2}\d+\.\s+\S| {5}\S|─{3,}$)/.test(line)) break;
+  }
+  return null;
+}
+
+// Claude can leave these noninteractive warnings BELOW the input box and mode bar.
+// Recognize the complete input block, never a warning or historical prompt alone.
+const CLAUDE_STATUS_WARNINGS = [
+  /^✘ Auto-update failed: no write permission to npm prefix · Run claude doctor$/,
+  /^tmux focus-events off · add 'set -g focus-events on' to ~\/\.tmux\.conf and re…$/,
+  /^You've used (?:\d|[1-9]\d)% of your weekly limit · resets \d{1,2}(?::\d{2})?(?:am|pm) \(UTC\)$/,
+];
+// Claude's permission-mode footers: default, accept edits, bypass, auto and plan, optionally after a
+// vim-mode marker such as "-- INSERT --" (#808). A suffix such as "· 1 shell" can follow the mode.
+const CLAUDE_MODE_FOOTER = /^(?:-- [A-Z]+ -- )?(?:⏵⏵ (?:accept edits|bypass permissions|auto mode) on\b|⏸ plan mode on\b|\? for shortcuts\b)/;
+// Current Claude status rows need not end in "thinking)" or show "esc to interrupt".
+// Completed summaries such as "✻ Crunched for 2s" lack the live ellipsis/timer shape.
+// While a hook runs, the timer follows its label: "(running PostToolUse hook · 3m 12s · …)".
+const CLAUDE_LIVE_STATUS_PATTERN = /^[✶✢✳✻✽·*]\s+\S[^(]*(?:…|\.{3})\s+\((?:running [^()·]+ hook · )?(?:\d+h\s+)?(?:\d+m\s+)?\d+s\b/;
+
+function findClaudeComposer(paneContent: string) {
+  // Preserve columns: a multiline draft may contain indented border/prompt text.
+  // This classifier scans at most 20 physical lines; captures can be taller.
+  // Exhausting the scan without reaching the status head is unknown, not idle.
+  const lines = paneContent.split("\n").slice(-20)
+    .map((line) => line.trimEnd()).filter((line) => line.trim().length > 0);
+  let bar = lines.length - 1;
+  while (bar >= 0 && CLAUDE_STATUS_WARNINGS.some((pattern) => pattern.test(lines[bar]!.trim()))) bar--;
+  const supportedWarningFooter = lines[bar]?.trim() === "⏵⏵ accept edits on (shift+tab to cycle) · ← for agents";
+  const modeFooter = CLAUDE_MODE_FOOTER.test(lines[bar]?.trim() ?? "");
+  let indent = /^([ \t]*)─{3,}$/.exec(lines[bar - 1] ?? "")?.[1];
+  const framed = indent !== undefined;
+  let prompt = lines[bar - 2] ?? "";
+  let statusStart = bar - 4;
+  if (indent === undefined) {
+    // The unframed Claude prompt has the same current status/task block.
+    // Keep Codex footers and a bare prompt with no visible block on their old path.
+    if (bar < 2 || !/^(?:⏵⏵ (?:accept edits|bypass permissions) on\b|⏸ plan mode on\b|\? for shortcuts$)/.test(lines[bar]!.trim())) return null;
+    prompt = lines[bar - 1] ?? "";
+    indent = /^([ \t]*)❯\s*$/.exec(prompt)?.[1];
+    if (indent === undefined) return null;
+    statusStart = bar - 2;
+  } else {
+    const upper = lines[bar - 3] ?? "";
+    if (!upper.startsWith(indent) || !/^─{3,}(?: .+ ─+)?$/.test(upper.slice(indent.length)) ||
+        !prompt.startsWith(`${indent}❯`) || !/^❯(?:\s|$)/.test(prompt.slice(indent.length))) return null;
+  }
+
+  let liveStatus: string | null = null;
+  let headSeen = false;
+  for (let i = statusStart; i >= 0; i--) {
+    if (!lines[i]!.startsWith(indent)) break;
+    const line = lines[i]!.slice(indent.length);
+    if ([CLAUDE_LIVE_STATUS_PATTERN, ...MID_WORK_PATTERNS].some((pattern) => pattern.test(line))) {
+      liveStatus = truncateEvidence(line);
+      headSeen = true;
+      break;
+    }
+    // Indented task rows can follow the live status. A newer unindented output
+    // or completed status ends this block; do not revive an older work row.
+    if (!/^\s/.test(line)) { headSeen = true; break; }
+  }
+  return { text: prompt.slice(indent.length), bar: lines[bar]!.trim(), framed, hasWarnings: bar < lines.length - 1, supportedWarningFooter, modeFooter, headSeen, liveStatus };
 }
 
 function findPromptDraftBeforeFooter(paneContent: string): string | null {
@@ -152,7 +226,6 @@ export function classifyPaneActivity(paneContent: string): PaneActivityClassific
   }
 
   const recentLines = lastNonBlank.slice(-8);
-  const recentWindow = recentLines.join("\n");
   // Wider window for prompt SIGNATURES so a tall footer can't push a real prompt out of view (see
   // PROMPT_SCAN_LINES). The generic activity checks below keep the tighter 8-line window.
   const promptScanLines = lastNonBlank.slice(-PROMPT_SCAN_LINES);
@@ -164,7 +237,17 @@ export function classifyPaneActivity(paneContent: string): PaneActivityClassific
   const idleStatusBarLine = IDLE_STATUS_BAR_PATTERNS.some((pattern) => pattern.test(lastLine))
     ? lastLine
     : null;
-  const selectionPromptEvidence = findPatternEvidence(promptScanLines, [/^[❯›»]\s*\d+\.\s/m]);
+  const claudeComposer = findClaudeComposer(paneContent);
+  const oldQuestionEnd = promptScanLines.lastIndexOf(CLAUDE_QUESTION_FOOTER);
+  // A complete later empty composer with a recognized Claude bar makes the preceding question history.
+  // Keep draft handling and selectors without this dialog boundary unchanged.
+  const selectionLines = claudeComposer?.framed &&
+      /^(?:⏵⏵ (?:accept edits|bypass permissions|auto mode) on\b|⏸ plan mode on\b|\? for shortcuts$)/.test(claudeComposer.bar) &&
+      IDLE_PROMPT_PATTERNS.some(pattern => pattern.test(claudeComposer.text)) &&
+      oldQuestionEnd >= 0 && oldQuestionEnd < promptScanLines.length - 1
+    ? promptScanLines.slice(oldQuestionEnd + 1) : promptScanLines;
+  const selectionPromptEvidence = findCurrentClaudeQuestion(paneContent) ??
+    findPatternEvidence(selectionLines, [/^[❯›»]\s*\d+\.\s/m]);
   if (selectionPromptEvidence) {
     return {
       state: "attention",
@@ -185,6 +268,24 @@ export function classifyPaneActivity(paneContent: string): PaneActivityClassific
     };
   }
 
+  if (claudeComposer?.hasWarnings && claudeComposer.supportedWarningFooter && PROMPT_DRAFT_PATTERNS.some((pattern) => pattern.test(claudeComposer.text))) {
+    return { state: "attention", reason: "prompt_draft", evidence: truncateEvidence(claudeComposer.text) };
+  }
+  if (claudeComposer?.liveStatus) {
+    return { state: "agent_active", reason: "mid_work_pattern", evidence: claudeComposer.liveStatus };
+  }
+  // Unframed status evidence can veto idle, but warnings require a complete input frame to prove it.
+  if (claudeComposer && (!claudeComposer.headSeen || (claudeComposer.hasWarnings && !claudeComposer.framed))) {
+    return { state: "unknown", reason: "no_activity_signal", evidence: truncateEvidence(lastLine) };
+  }
+  // Below warning rows, any Claude mode footer completes the frame for an EMPTY composer (#808).
+  // Drafts keep the narrower check above: attention is needs_input, a send refusal for other modes.
+  if (claudeComposer && (!claudeComposer.hasWarnings || claudeComposer.modeFooter) &&
+      IDLE_PROMPT_PATTERNS.some((pattern) => pattern.test(claudeComposer.text))) {
+    return { state: "agent_idle", reason: idleStatusBarLine ? "idle_status_bar" : "idle_prompt",
+      evidence: truncateEvidence(idleStatusBarLine ?? claudeComposer.text) };
+  }
+
   const promptDraftEvidence = findPromptDraftBeforeFooter(paneContent);
   if (promptDraftEvidence) {
     return {
@@ -194,7 +295,8 @@ export function classifyPaneActivity(paneContent: string): PaneActivityClassific
     };
   }
 
-  if (idleStatusBarLine) {
+  const midWorkEvidence = findPatternEvidence(recentLines, [...MID_WORK_PATTERNS, CLAUDE_LIVE_STATUS_PATTERN]);
+  if (idleStatusBarLine && (!idleStatusBarLine.includes("⏵⏵ accept edits") || !midWorkEvidence)) {
     return {
       state: "agent_idle",
       reason: "idle_status_bar",
@@ -216,7 +318,7 @@ export function classifyPaneActivity(paneContent: string): PaneActivityClassific
       evidence: placeholderMidWork,
     };
   }
-  if (idlePromptLine && !MID_WORK_PATTERNS.some((pattern) => pattern.test(recentWindow))) {
+  if (idlePromptLine && !midWorkEvidence) {
     return {
       state: "agent_idle",
       reason: "idle_prompt",
@@ -224,7 +326,6 @@ export function classifyPaneActivity(paneContent: string): PaneActivityClassific
     };
   }
 
-  const midWorkEvidence = findPatternEvidence(recentLines, MID_WORK_PATTERNS);
   if (midWorkEvidence) {
     return {
       state: "agent_active",
@@ -551,6 +652,24 @@ export function hasExpectedStagedText(pane: string | null, expected: string): bo
   return stagedEvidence;
 }
 
+/** An interaction may consume its answer immediately. Only add Enter when the
+ * complete answer is still visible in a bounded current text input, never a
+ * numbered choice or a partial prefix. Unknown rendering is not consumption. */
+function promptAnswerStaged(pane: string | null, answer: string, runtime: string | null): boolean {
+  if (!pane || !answer.trim() || /[\r\n\x1b]/.test(answer)) return false;
+  const lines = pane.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const input = lines[i]!.trimStart();
+    if (!/^[❯›]/.test(input)) continue;
+    if (/^[❯›]\s*\d+[.)]/.test(input)) return false;
+    if (runtime === "codex" ? !input.startsWith("›") : runtime !== "claude-code" || !input.startsWith("❯")) return false;
+    const end = lines.findIndex((line, index) => index > i && (runtime === "codex"
+      ? line.trim() === "" : /^[─═-]{10,}$/.test(line.trim())));
+    return end > i && lines.slice(i, end).join("\n").trimStart().slice(1).trim() === answer.trim();
+  }
+  return false;
+}
+
 export interface SendOpts {
   /** Internal managed lifecycle prerequisite; never accepted from HTTP send options. */
   beforeWrite?: () => void;
@@ -607,6 +726,9 @@ export interface SendResult {
   ok: boolean;
   sessionName: string;
   verified?: boolean;
+  /** Audited prompt answer: consumers must never automatically retry Enter.
+   * Neither value establishes model consumption. Absent for ordinary sends. */
+  promptInteraction?: "enter-sent" | "unverified";
   /**
    * OPR.99.0.6.3 — honest delivery-outcome vocabulary (additive; `verified`
    * keeps its exact semantics for existing parsers). Three distinguishable
@@ -617,6 +739,8 @@ export interface SendResult {
    *   but the post-send capture raced a TUI redraw and could not re-confirm
    *   the snippet. Landed-but-unconfirmable, NOT a failure — confirm with
    *   `rig capture` if it matters. (Was collapsed into `Verified: no`.)
+   *   For a prompt answer, `promptInteraction: "unverified"` means input was
+   *   sent without added Enter; the prompt may already have consumed it.
    * - `failed`: the transport itself failed (paste or Enter did not land) —
    *   set on the send_failed / submit_failed returns for vocabulary symmetry;
    *   their `ok:false` + HTTP mapping is unchanged.
@@ -1291,6 +1415,7 @@ export class SessionTransport {
     // the positive-picker guard (FR-4 — the footgun separation). The advisory is carried on the
     // success result via `warning` so the honest telemetry is surfaced.
     let sendAdvisory: string | undefined;
+    let promptOverride = false;
     if (waitForIdleMs === undefined) {
       const readiness = await this.classifySendReadiness({
         sessionName,
@@ -1331,7 +1456,8 @@ export class SessionTransport {
               error: `Refused: --dangerously-interact requires an auditable override record, which could not be persisted (${audit.reason}). No text was sent.`,
             };
           }
-          // audited → proceed to the send.
+          // Audited answers use unbracketed input; a choice may submit itself.
+          promptOverride = true;
         } else {
           return {
             ok: false,
@@ -1389,11 +1515,15 @@ export class SessionTransport {
     const targetFailure = await checkClaudeTarget();
     if (targetFailure) return observe(targetFailure);
 
-    // 3. Send text (paste)
+    // 3. Deliver ordinary messages as paste, audited prompt answers as key input.
     if (observed) observed.sentHash = hashSentText(text);
     const textResult = await this.runStage(
       "session_transport.send_text",
-      () => { opts?.beforeWrite?.(); return opts?.beforeWrite ? this.tmuxAdapter.sendText(sessionName, text, opts.beforeWrite) : this.tmuxAdapter.sendText(sessionName, text); },
+      () => {
+        opts?.beforeWrite?.();
+        if (promptOverride) return this.tmuxAdapter.sendText(sessionName, text, opts?.beforeWrite, { bracketed: false });
+        return opts?.beforeWrite ? this.tmuxAdapter.sendText(sessionName, text, opts.beforeWrite) : this.tmuxAdapter.sendText(sessionName, text);
+      },
       (result) => result.ok ? "ok" : "failed",
     );
     if (!textResult.ok) {
@@ -1412,6 +1542,17 @@ export class SessionTransport {
 
     if (runtime === "claude-code" && bindingChanged()) return observe(changedRecipient(true));
 
+    if (promptOverride) {
+      const pane = await this.runStage("session_transport.prompt_override_pre_submit_capture",
+        () => this.tmuxAdapter.capturePaneContent(sessionName, 50)).catch(() => null);
+      if (runtime === "claude-code" && bindingChanged()) return observe(changedRecipient(true));
+      if (!promptAnswerStaged(pane, text, runtime)) {
+        return observe({ ok: true, sessionName, sent: true, verified: false, outcome: "rendered-unconfirmed", promptInteraction: "unverified",
+          warning: "prompt-override: answer sent as unbracketed input; submission unverified. No trailing Enter: the complete answer is not visibly staged (it may have been consumed, the prompt changed, or observation is unavailable)." });
+      }
+      sendAdvisory = "prompt-override: answer sent as unbracketed input; Enter submitted the complete still-staged answer.";
+    }
+
     // 5. Submit (Enter)
     const submitResult = await this.runStage(
       "session_transport.submit",
@@ -1428,6 +1569,8 @@ export class SessionTransport {
         ...(waitMode ? { sent: true, ...waitEvidence } : {}),
       });
     }
+
+    const interaction = promptOverride ? { promptInteraction: "enter-sent" as const } : {};
 
     // 6. Verify if requested. At this point text + Enter BOTH succeeded, so the
     // message LANDED; the capture only re-confirms the render. Not re-confirming
@@ -1446,16 +1589,16 @@ export class SessionTransport {
         const preCount = countOccurrences(preVerifyContent ?? "", snippet);
         const postCount = countOccurrences(content ?? "", snippet);
         const verified = postCount > preCount;
-        return observe({ ok: true, sessionName, verified, outcome: verified ? "delivered" : "rendered-unconfirmed", ...(sendAdvisory ? { warning: sendAdvisory } : {}), ...(waitMode ? { sent: true, ...waitEvidence } : {}) });
+        return observe({ ok: true, sessionName, ...interaction, verified, outcome: verified ? "delivered" : "rendered-unconfirmed", ...(sendAdvisory ? { warning: sendAdvisory } : {}), ...(waitMode ? { sent: true, ...waitEvidence } : {}) });
       } catch {
         if (observed && observed.post.state === "not_reached") {
           observed.post = { state: "unavailable", cause: "capture_error", capturedAt: this.now().toISOString(), captureSeq };
         }
-        return observe({ ok: true, sessionName, verified: false, outcome: "rendered-unconfirmed", ...(sendAdvisory ? { warning: sendAdvisory } : {}), ...(waitMode ? { sent: true, ...waitEvidence } : {}) });
+        return observe({ ok: true, sessionName, ...interaction, verified: false, outcome: "rendered-unconfirmed", ...(sendAdvisory ? { warning: sendAdvisory } : {}), ...(waitMode ? { sent: true, ...waitEvidence } : {}) });
       }
     }
 
-    return observe({ ok: true, sessionName, ...(sendAdvisory ? { warning: sendAdvisory } : {}), ...(waitMode ? { sent: true, ...waitEvidence } : {}) });
+    return observe({ ok: true, sessionName, ...interaction, ...(sendAdvisory ? { warning: sendAdvisory } : {}), ...(waitMode ? { sent: true, ...waitEvidence } : {}) });
   }
 
   private runStage<T>(
