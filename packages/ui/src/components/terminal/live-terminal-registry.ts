@@ -23,11 +23,19 @@ export class LiveTerminalRegistry {
   private order: string[] = [];
   /** key -> its revert-to-static callback (run on eviction). */
   private reverts = new Map<string, () => void>();
-  private readonly cap: number;
+  private cap: number;
 
   constructor(cap: number) {
     // A bad/zero cap must never mean "no terminal can ever be live"; floor at 1.
     this.cap = Math.max(1, Math.floor(cap));
+  }
+
+  /** Apply a reconfigured cap in place. Every live terminal stays tracked;
+   *  lowering evicts the oldest (their revert callbacks run) down to the new
+   *  cap, raising reverts nothing. */
+  setCap(cap: number): void {
+    this.cap = Math.max(1, Math.floor(cap));
+    this.evictDownTo(this.cap);
   }
 
   /** Mark `key` live. If it is already live, refresh its recency (it becomes
@@ -40,13 +48,7 @@ export class LiveTerminalRegistry {
       this.reverts.set(key, revertToStatic);
       return;
     }
-    while (this.order.length >= this.cap) {
-      const oldest = this.order.shift();
-      if (oldest === undefined) break;
-      const revert = this.reverts.get(oldest);
-      this.reverts.delete(oldest);
-      revert?.();
-    }
+    this.evictDownTo(this.cap - 1);
     this.order.push(key);
     this.reverts.set(key, revertToStatic);
   }
@@ -66,6 +68,16 @@ export class LiveTerminalRegistry {
 
   get size(): number {
     return this.order.length;
+  }
+
+  private evictDownTo(size: number): void {
+    while (this.order.length > size) {
+      const oldest = this.order.shift();
+      if (oldest === undefined) break;
+      const revert = this.reverts.get(oldest);
+      this.reverts.delete(oldest);
+      revert?.();
+    }
   }
 
   private touch(key: string): void {

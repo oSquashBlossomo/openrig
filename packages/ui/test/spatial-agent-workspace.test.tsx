@@ -311,6 +311,26 @@ describe("shared live-terminal cap and closing", () => {
     expect(fetchMock.mock.calls.length).toBeGreaterThan(reads);
   });
 
+  it("a definitive server close (session ended) frees the slot and offers Retry instead of a dead viewer", async () => {
+    renderWorkspace();
+    await waitFor(() => expect(sockets).toHaveLength(1));
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+    act(() => { sockets[0]!.onclose?.({ code: 1001, reason: "tmux session terminated" }); });
+    await waitFor(() => expect(screen.queryByTestId("spatial-terminal-retry")).toBeTruthy());
+    expect(screen.queryByTestId("spatial-terminal-live")).toBeNull();
+    expect(screen.getByTestId("spatial-terminal-state").textContent).toContain("tmux session terminated");
+    fireEvent.click(screen.getByTestId("probe"));
+    expect(screen.getByTestId("slot-state").textContent).toBe("false");
+    // Nothing reconnects by itself; the operator's Retry re-reads, then attaches.
+    await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+    expect(sockets).toHaveLength(1);
+    const reads = fetchMock.mock.calls.length;
+    fireEvent.click(screen.getByTestId("spatial-terminal-retry"));
+    await waitFor(() => expect(terminalSockets("coord@alpha")).toHaveLength(2));
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(reads);
+    expect(sockets[1]!.sent).toEqual([]);
+  });
+
   it("closing the workspace disconnects the viewer and frees its slot without any write", async () => {
     renderWorkspace();
     await waitFor(() => expect(sockets).toHaveLength(1));

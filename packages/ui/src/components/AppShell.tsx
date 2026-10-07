@@ -679,7 +679,10 @@ function AppShellInner({ children }: AppShellProps) {
                     data-testid="mobile-rail-tray"
                     className={cn(
                       "fixed top-[var(--shell-top)] bottom-[var(--shell-bottom)] left-0 pl-[var(--safe-left)] z-30 bg-background border-r border-outline-variant transition-transform duration-200 ease-tactical lg:hidden",
-                      "w-72 max-w-[85vw] flex flex-col",
+                      // Sized for rail + Explorer; a destination without an
+                      // Explorer shows only the rail, so fit it (no blank panel).
+                      explorerMounted ? "w-72 max-w-[85vw]" : "w-auto",
+                      "flex flex-col",
                       explorerOpen ? "translate-x-0" : "-translate-x-full",
                     )}
                   >

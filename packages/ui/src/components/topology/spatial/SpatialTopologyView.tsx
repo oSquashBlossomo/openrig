@@ -477,7 +477,12 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
       // first match in index order. The camera moves only for this action.
       cancelPendingQuery();
       writtenQueryRef.current = query;
-      const first = matchKeys && matchKeys.size > 0 ? model?.rigs.flatMap((r) => r.agents).find((a) => matchKeys.has(a.key)) : undefined;
+      // Index order is pod by pod, then pod-less seats (SpatialNodeList) —
+      // not the served node order, which interleaves pods after a rig expand.
+      const firstKey = matchKeys && matchKeys.size > 0
+        ? model?.rigs.flatMap((r) => [...r.pods.flatMap((p) => p.agentKeys), ...r.looseAgentKeys]).find((k) => matchKeys.has(k))
+        : undefined;
+      const first = firstKey ? model?.agentsByKey.get(firstKey) : undefined;
       nav.replace({ spatialQuery: query, ...(first ? { selection: { rigId: first.rigId, nodeId: first.nodeId } } : {}) });
       if (first && sceneActive) controllerRef.current?.focus(first.key);
     }
@@ -701,6 +706,26 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
     dockedRef.current = selectedKeyNow !== null;
   }, [selectedKeyNow]);
 
+  // Closing the workspace removes the focused Close button: once the
+  // selection has cleared, hand keyboard focus to the closed seat's index row
+  // (exact key) if focus was lost, without moving the page.
+  const closeFocusKeyRef = useRef<string | null>(null);
+  const closeWorkspace = useCallback(() => {
+    closeFocusKeyRef.current = selectedKeyRef.current;
+    setSelectedKey(null);
+  }, [setSelectedKey]);
+  useEffect(() => {
+    const key = closeFocusKeyRef.current;
+    if (key === null || selectedKeyNow === key) return;
+    closeFocusKeyRef.current = null;
+    if (selectedKeyNow !== null) return; // superseded by another selection
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    Array.from(rootRef.current?.querySelectorAll<HTMLElement>("[data-spatial-agent-row]") ?? [])
+      .find((row) => row.getAttribute("data-spatial-key") === key)
+      ?.focus({ preventScroll: true });
+  }, [selectedKeyNow]);
+
   // Overlays changed size (compact toggles, rotation): labels re-read them.
   useEffect(() => {
     controllerRef.current?.refreshOverlays?.();
@@ -768,11 +793,12 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
         <div className="ml-auto flex w-full min-w-0 flex-wrap items-center gap-2 sm:w-auto">
           <label className="flex h-8 min-w-0 flex-1 items-center gap-2 border border-outline-variant bg-background px-2 focus-within:border-on-surface sm:w-64 sm:flex-none">
             <Search aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-on-surface-variant" />
-            <span className="sr-only">Search seats</span>
             <input
               ref={searchRef}
               data-testid="spatial-search"
               type="search"
+              // Own name: the Clear button inside the label must not join it.
+              aria-label="Search seats"
               value={query}
               onChange={(e) => editQuery(e.target.value)}
               onKeyDown={onSearchKeyDown}
@@ -1011,7 +1037,7 @@ function SpatialTopologyBody({ scope, hostId, nav, loadRenderer }: { scope: Spat
                       canFocus={sceneActive && rendererReady}
                       onFocus={(key) => controllerRef.current?.focus(key)}
                       onSelect={selectFromIndex}
-                      onClose={() => setSelectedKey(null)}
+                      onClose={closeWorkspace}
                       activity={activity}
                       layout={isWideLayout ? "side" : "stacked"}
                     />

@@ -496,6 +496,12 @@ function AdmittedTerminal({ seat, agent, layout, onRevoked }: {
     if (verdict === true) return true;
     return revokeWith({ ok: false, kind: "changed", reason: verdict.refuse });
   }, [seat]);
+  // The server ended this viewer for good (session terminated, broker
+  // failure): free the slot and refuse until the operator retries, instead
+  // of keeping a dead pane that still holds a live-terminal slot.
+  const onClosed = useCallback((reason: string) => {
+    onRevokedRef.current({ ok: false, kind: "closed", reason: `The terminal connection was closed (${reason}). Retry reads the seat again before reattaching.` });
+  }, []);
 
   if (evicted) {
     return (
@@ -525,6 +531,7 @@ function AdmittedTerminal({ seat, agent, layout, onRevoked }: {
         fit="contain"
         autoFocus={false}
         beforeConnect={beforeConnect}
+        onClosed={onClosed}
       />
     </div>
   );

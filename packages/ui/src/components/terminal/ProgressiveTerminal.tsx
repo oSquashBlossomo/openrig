@@ -53,12 +53,21 @@ export function ProgressiveTerminal({
   fit = "width",
   initialText,
 }: ProgressiveTerminalProps) {
-  const [mode, setMode] = useState<"static" | "live">("static");
+  // Live mode belongs to the exact cap key + session it was opened for: a host
+  // that reuses this component for another seat or session starts static
+  // again, so a live socket never carries over to a session the operator did
+  // not make live (or one that holds no cap slot).
+  const identity = `${terminalKey}\u0000${sessionName}`;
+  const [liveIdentity, setLiveIdentity] = useState<string | null>(null);
+  // Leaving the live identity forgets it, so returning to it (A → B → A)
+  // never resurrects a live viewer without a click and a cap slot.
+  if (liveIdentity !== null && liveIdentity !== identity) setLiveIdentity(null);
+  const mode: "static" | "live" = liveIdentity === identity ? "live" : "static";
   const live = useLiveTerminal();
   const modeRef = useRef(mode);
   modeRef.current = mode;
 
-  const goStatic = useCallback(() => setMode("static"), []);
+  const goStatic = useCallback(() => setLiveIdentity(null), []);
 
   // OPR.0.4.0.1: surface the live/static mode to the host so a popover can widen
   // its shell to the full live plate when live and stay compact when static.
@@ -70,8 +79,8 @@ export function ProgressiveTerminal({
     if (modeRef.current === "live") return;
     // requestLive may evict the OLDEST live terminal (reverting it to static).
     live.requestLive(terminalKey, goStatic);
-    setMode("live");
-  }, [live, terminalKey, goStatic]);
+    setLiveIdentity(identity);
+  }, [live, terminalKey, identity, goStatic]);
 
   // Free the registry slot whenever we leave live (unmount or revert-to-static).
   // release() is idempotent, so an eviction (which already removed the key) is safe.

@@ -75,6 +75,8 @@ export function workflowRoutes(): Hono {
         err.code === "instance_not_active" || err.code === "packet_not_on_frontier" ? 409
         : err.code === "frontier_packet_required" || err.code === "frontier_binding_indeterminate" ? 409
         : err.code === "failure_occurrence_required" || err.code === "failure_occurrence_not_unresolved" || err.code === "failure_occurrence_replay_indeterminate" || err.code === "failure_occurrence_replay_conflict" ? 409
+        : err.code === "resume_failure_changed" ? 409
+        : err.code === "resume_selection_invalid" ? 400
         : err.code === "instance_not_abortable" || err.code === "instance_not_resumable" ? 409
         : err.code === "lifecycle_operation_conflict" || err.code === "lifecycle_replay_indeterminate" ? 409
         : err.code === "lifecycle_identity_invalid" || err.code === "lifecycle_not_eligible" || err.code === "lifecycle_receipt_required" ? 400
@@ -395,13 +397,14 @@ export function workflowRoutes(): Hono {
   app.post("/:instance_id/resume", async (c) => {
     const instanceId = c.req.param("instance_id");
     const body = await c.req
-      .json<{ occurrenceId?: string; decision?: string; actorSession?: string }>()
+      .json<{ occurrenceId?: string; expectedFailure?: { version: number; failedPacketId: string; stepId: string }; decision?: string; actorSession?: string }>()
       .catch(() => ({}) as never);
     if (!body.actorSession) return c.json({ error: "actorSession is required" }, 400);
     try {
       const result = await getRuntime(c).resume({
         instanceId,
         occurrenceId: body.occurrenceId,
+        expectedFailure: body.expectedFailure,
         decision: body.decision,
         actorSession: body.actorSession,
       });

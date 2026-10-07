@@ -150,3 +150,36 @@ describe("structured occurrence selection conflicts", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("sequential (non-occurrence) resume contract", () => {
+  const expectedFailure = { version: 3, failedPacketId: "packet/failed-1", stepId: "review" };
+  const seq = { actorSession: "human@host", decision: " exact \n bytes ", expectedFailure };
+  it("sends the exact guard with no occurrence ID and validates the selected step on success", async () => {
+    const fetch = vi.fn(async () => response(success)); vi.stubGlobal("fetch", fetch);
+    await expect(workflow.resumeWorkflowSequential(local, "wf/exact", { ...seq, occurrenceId: "smuggled" } as never)).resolves.toEqual(success);
+    expect(fetch.mock.calls[0][0]).toBe("/api/workflow/wf%2Fexact/resume");
+    expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual(seq);
+  });
+  it.each([
+    ["negative version", { ...expectedFailure, version: -1 }], ["fractional version", { ...expectedFailure, version: 2.5 }],
+    ["text version", { ...expectedFailure, version: "3" }], ["blank packet", { ...expectedFailure, failedPacketId: " " }],
+    ["missing step", { version: 3, failedPacketId: "p" }], ["absent guard", undefined],
+  ])("refuses %s before any request", async (_, guard) => {
+    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    await expect(workflow.resumeWorkflowSequential(local, "wf/exact", { ...seq, expectedFailure: guard } as never)).rejects.toMatchObject({ code: "invalid_request" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("treats a success for a different step as outcome unknown", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => response({ ...success, stepId: "other" })));
+    await expect(workflow.resumeWorkflowSequential(local, "wf/exact", seq)).rejects.toMatchObject({ code: "outcome_unknown", message: expect.stringContaining("recorded failure") });
+  });
+  it.each([["resume_failure_changed", 409], ["resume_selection_invalid", 400]])("classifies %s/HTTP %i as a known pre-commit rejection", async (error, status) => {
+    vi.stubGlobal("fetch", vi.fn(async () => response({ error, message: "refused" }, status)));
+    await expect(workflow.resumeWorkflowSequential(local, "wf/exact", seq)).rejects.toMatchObject({ code: "rejected", status, serverCode: error,
+      attempt: { kind: "resume", payload: { expectedFailure } } });
+  });
+  it("does not accept resume_failure_changed with an undocumented status as a rejection", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => response({ error: "resume_failure_changed" }, 500)));
+    await expect(workflow.resumeWorkflowSequential(local, "wf/exact", seq)).rejects.toMatchObject({ code: "outcome_unknown" });
+  });
+});

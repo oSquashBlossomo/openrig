@@ -4,11 +4,11 @@
 // terminal surfaces (graph + table + topology) and every ProgressiveTerminal
 // shares the one registry. The cap comes from config
 // (ui.terminal.max_live_terminals) with MAX_LIVE_TERMINALS as the default; a cap
-// change rebuilds the registry (rare, config-driven). When no provider is
+// change is applied to the same registry (rare, config-driven). When no provider is
 // present (e.g. an isolated render) a lazily-created module singleton keeps the
 // cap global-by-construction instead of crashing.
 
-import { createContext, useContext, useMemo, useRef, type ReactNode } from "react";
+import { createContext, useContext, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { LiveTerminalRegistry, MAX_LIVE_TERMINALS } from "./live-terminal-registry.js";
 import { useSettings } from "../../hooks/useSettings.js";
 
@@ -48,10 +48,18 @@ interface LiveTerminalProviderProps {
 }
 
 export function LiveTerminalProvider({ cap = MAX_LIVE_TERMINALS, children }: LiveTerminalProviderProps) {
-  // One registry per provider instance; rebuilt only when the cap changes
-  // (config edit). The live set resets on a cap change — acceptable + rare.
-  const value = useMemo(() => toValue(new LiveTerminalRegistry(cap)), [cap]);
-  return <LiveTerminalContext.Provider value={value}>{children}</LiveTerminalContext.Provider>;
+  // One registry for the provider's lifetime. A cap change (config edit) is
+  // applied in place, so live terminals stay counted: rebuilding the registry
+  // would leave them live but untracked and let the cap be exceeded. Lowering
+  // evicts the oldest to static after commit (their reverts set state).
+  const [state] = useState(() => {
+    const registry = new LiveTerminalRegistry(cap);
+    return { registry, value: toValue(registry) };
+  });
+  useLayoutEffect(() => {
+    state.registry.setCap(cap);
+  }, [state, cap]);
+  return <LiveTerminalContext.Provider value={state.value}>{children}</LiveTerminalContext.Provider>;
 }
 
 // Module singleton fallback: keeps the cap global even if a surface renders a

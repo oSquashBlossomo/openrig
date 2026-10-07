@@ -377,10 +377,13 @@ export function Explorer({
         isOverlay
           ? "vellum z-30 shadow-[6px_0_14px_rgba(46,52,46,0.06)]"
           : "z-40 bg-[hsl(var(--background)/0.035)] supports-[backdrop-filter]:bg-[hsl(var(--background)/0.018)] backdrop-blur-[14px] backdrop-saturate-75 shadow-[6px_0_14px_rgba(46,52,46,0.04)]",
-        // Mobile: slide-over from left between the top bar and the bottom nav
-        // (shell offsets in globals.css), clear of a landscape side inset.
-        "fixed top-[var(--shell-top)] bottom-[var(--shell-bottom)] left-0 pl-[var(--safe-left)] transition-transform duration-200 ease-tactical w-72 max-w-[80vw]",
-        open ? "translate-x-0" : "-translate-x-full",
+        // Mobile: slide-over between the top bar and the bottom nav (shell
+        // offsets in globals.css), BESIDE the tray's 48px icon rail (w-12,
+        // after the left safe area) so both stay tappable: rail 3rem +
+        // Explorer 15rem = the tray's w-72. Closed, it travels past the rail
+        // offset too, leaving no strip on screen.
+        "fixed top-[var(--shell-top)] bottom-[var(--shell-bottom)] left-[calc(var(--safe-left)+3rem)] transition-transform duration-200 ease-tactical w-60 max-w-[calc(85vw-3rem)]",
+        open ? "translate-x-0" : "-translate-x-[calc(100%+3rem+var(--safe-left))]",
         // Desktop (>=lg): persistent column at 280px (lg:w-72) per
         // universal-shell.md L34. Positioned absolutely after the 48px
         // rail.

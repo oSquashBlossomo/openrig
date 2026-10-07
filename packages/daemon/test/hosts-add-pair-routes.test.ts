@@ -397,6 +397,10 @@ describe("local pair-client seam — POST /pair + GET /pair/:id (the browser's w
   let targetState: { status: string; token?: string };
   let targetRequests: number;
 
+  function closeTarget() {
+    return new Promise<void>((resolve, reject) => target.close((error) => error ? reject(error) : resolve()));
+  }
+
   beforeEach(async () => {
     home = mkdtempSync(join(tmpdir(), "mh1-pair-client-"));
     savedHome = process.env["OPENRIG_HOME"];
@@ -408,6 +412,9 @@ describe("local pair-client seam — POST /pair + GET /pair/:id (the browser's w
     targetState = { status: "pending" };
     targetRequests = 0;
     target = http.createServer((req, res) => {
+      // A later fixture can receive this same port. Do not leave fetch's
+      // pooled sockets pointing at the previous listener generation.
+      res.setHeader("Connection", "close");
       targetRequests += 1;
       if (req.method === "POST" && req.url === "/api/hosts/pair-request") {
         res.writeHead(200, { "Content-Type": "application/json" });
@@ -423,9 +430,9 @@ describe("local pair-client seam — POST /pair + GET /pair/:id (the browser's w
     await new Promise<void>((resolve) => target.listen(0, resolve));
     targetPort = (target.address() as { port: number }).port;
   });
-  afterEach(() => {
+  afterEach(async () => {
+    await closeTarget();
     db.close();
-    target.close();
     rmSync(home, { recursive: true, force: true });
     if (savedHome === undefined) delete process.env["OPENRIG_HOME"];
     else process.env["OPENRIG_HOME"] = savedHome;
@@ -498,6 +505,26 @@ describe("local pair-client seam — POST /pair + GET /pair/:id (the browser's w
     expect(yaml).toContain("vps-paired");
     expect(yaml).toContain(`bearer_file: ${tokenPath}`);
     expect(yaml).not.toContain("remote-bearer-value");
+  });
+
+  it("keeps a successor target reachable when its fixture reuses the previous listener port", async () => {
+    for (let generation = 0; generation < 3; generation++) {
+      const started = await app.request("/api/hosts/pair", {
+        method: "POST",
+        headers: auth,
+        body: JSON.stringify({ url: `127.0.0.1:${targetPort}`, id: `successor-${generation}` }),
+      });
+      const body = await started.json() as { pairId: string };
+      expect(started.status, JSON.stringify(body)).toBe(200);
+      const polled = await app.request(`/api/hosts/pair/${body.pairId}`, { headers: auth });
+      expect(polled.status).toBe(200);
+      expect(await polled.json()).toMatchObject({ status: "pending" });
+      expect(targetRequests).toBe((generation + 1) * 2);
+      // The OS can assign the same ephemeral port to consecutive test fixtures.
+      // Exercise that boundary directly, retaining fetch's real connection pool.
+      await closeTarget();
+      await new Promise<void>((resolve) => target.listen(targetPort, resolve));
+    }
   });
 
   it("denied walk: NOTHING persists (no token file, no registry entry)", async () => {

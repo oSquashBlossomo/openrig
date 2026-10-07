@@ -193,9 +193,10 @@ async function postWrite(req: FileWriteRequest): Promise<FileWriteResult> {
   return (await res.json()) as FileWriteSuccess;
 }
 
-export function useFilesWrite() {
+export function useFilesWrite(opts: { mutationKey?: readonly unknown[] } = {}) {
   const qc = useQueryClient();
   return useMutation({
+    ...(opts.mutationKey ? { mutationKey: opts.mutationKey } : {}),
     mutationFn: (req: FileWriteRequest) => {
       // Retained editors can outlive a host switch. Read current authority at
       // admission, not a host captured when this hook/component mounted.

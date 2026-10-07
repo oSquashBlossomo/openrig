@@ -8,7 +8,8 @@
 // Keep this read+write surface small. The CLI (`rig config get/set/reset`)
 // is the canonical agent-edit path.
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { useRouter } from "@tanstack/react-router";
 import {
   useSettings,
   useSetSetting,
@@ -171,6 +172,18 @@ export function SettingsTab() {
   const initWorkspace = useInitWorkspace();
   const [initResult, setInitResult] = useState<string | null>(null);
   const [initError, setInitError] = useState<string | null>(null);
+  // The Advisor / Operator rail links here as /settings#agents-{role}-session
+  // when no seat is configured. The router's own hash scroll runs before the
+  // settings read lands, so scroll to the anchor once the rows exist.
+  const router = useRouter({ warn: false });
+  const loaded = !!data;
+  useEffect(() => {
+    if (!loaded) return;
+    const hash = router?.state.location.hash;
+    if (!hash) return;
+    const target = document.getElementById(hash);
+    if (target && typeof target.scrollIntoView === "function") target.scrollIntoView({ block: "start" });
+  }, [loaded, router]);
 
   const onInitWorkspace = async () => {
     setInitError(null);
@@ -261,6 +274,19 @@ export function SettingsTab() {
         </button>
         {initResult && <div data-testid="settings-init-result" className="font-mono text-[9px] text-on-surface-variant">{initResult}</div>}
         {initError && <div data-testid="settings-init-error" className="font-mono text-[9px] text-red-600">{initError}</div>}
+      </Section>
+
+      <Section title="Agents (rail chat seats)">
+        <p className="font-mono text-[9px] text-on-surface-variant">
+          The Advisor and Operator rail icons open these seats. Use the canonical session name{" "}
+          <span className="text-on-surface">member@rig</span>; an empty or non-canonical value opens this section instead.
+        </p>
+        <div id="agents-advisor-session" className="scroll-mt-3">
+          <SettingsRow label="Advisor seat" settingKey="agents.advisor_session" resolved={s["agents.advisor_session"]} testIdPrefix="setting" />
+        </div>
+        <div id="agents-operator-session" className="scroll-mt-3">
+          <SettingsRow label="Operator seat" settingKey="agents.operator_session" resolved={s["agents.operator_session"]} testIdPrefix="setting" />
+        </div>
       </Section>
 
       <Section title="Files (browser allowlist)">

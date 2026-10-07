@@ -93,6 +93,9 @@ export function Dashboard() {
     typeof window === "undefined" ? "localhost" : window.location.hostname || "localhost";
   const station = hostname.toUpperCase();
   const online = !psError && psEntries !== undefined;
+  // usePsEntries does not retry: an error is a settled failed read, which is
+  // neither pending ("CONNECTING") nor healthy ("ONLINE").
+  const stationState = psError ? "STATUS UNAVAILABLE" : online ? "ONLINE" : "CONNECTING";
 
   // Operator identity from the configured operator seat (logicalId@rigId), with
   // an honest "OPERATOR" fallback when unset — the best-available real source.
@@ -123,7 +126,7 @@ export function Dashboard() {
             Welcome back, operator.
           </h1>
           <div className="df-sub">
-            STATION {station} IS <b>[ {online ? "ONLINE" : "CONNECTING"} ]</b>
+            STATION {station} IS <b>[ {stationState} ]</b>
           </div>
 
           <FieldEnvironment
