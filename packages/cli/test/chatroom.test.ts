@@ -22,20 +22,22 @@ function mockLifecycleDeps(): LifecycleDeps {
   };
 }
 
-function captureLogs(fn: () => Promise<void>): Promise<{ logs: string[]; exitCode: number | undefined }> {
-  return new Promise(async (resolve) => {
-    const logs: string[] = [];
-    const origLog = console.log;
-    const origErr = console.error;
-    const origExitCode = process.exitCode;
-    process.exitCode = undefined;
-    console.log = (...args: unknown[]) => logs.push(args.join(" "));
-    console.error = (...args: unknown[]) => logs.push(args.join(" "));
-    try { await fn(); } finally { console.log = origLog; console.error = origErr; }
-    const exitCode = process.exitCode;
+async function captureLogs(fn: () => Promise<void>): Promise<{ logs: string[]; exitCode: number | undefined }> {
+  const logs: string[] = [];
+  const origLog = console.log;
+  const origErr = console.error;
+  const origExitCode = process.exitCode;
+  process.exitCode = undefined;
+  console.log = (...args: unknown[]) => logs.push(args.join(" "));
+  console.error = (...args: unknown[]) => logs.push(args.join(" "));
+  try {
+    await fn();
+    return { logs, exitCode: process.exitCode };
+  } finally {
+    console.log = origLog;
+    console.error = origErr;
     process.exitCode = origExitCode;
-    resolve({ logs, exitCode });
-  });
+  }
 }
 
 function runningDeps(port: number): StatusDeps {
@@ -52,6 +54,27 @@ function runningDeps(port: number): StatusDeps {
     clientFactory: (baseUrl) => new DaemonClient(baseUrl),
   };
 }
+
+describe("chatroom test log capture", () => {
+  it("rejects a failed command and restores console and exit state", async () => {
+    const log = console.log, error = console.error, exitCode = process.exitCode;
+    const failure = new Error("command failed during capture");
+    try {
+      await expect(captureLogs(async () => {
+        console.log("captured diagnostic");
+        process.exitCode = 1;
+        throw failure;
+      })).rejects.toBe(failure);
+      expect(console.log).toBe(log);
+      expect(console.error).toBe(error);
+      expect(process.exitCode).toBe(exitCode);
+    } finally {
+      console.log = log;
+      console.error = error;
+      process.exitCode = exitCode;
+    }
+  }, 1000);
+});
 
 describe("Chatroom CLI", () => {
   let server: http.Server;
@@ -351,6 +374,7 @@ describe("Chatroom CLI", () => {
     ["0.05", -1], ["0.05s", -1],
     ["0.05", 25], ["0.05s", 25],
   ])("chatroom wait preserves the fractional deadline for %s with first wake offset %ims", async (timeout, wakeOffset) => {
+    const origLog = console.log, origErr = console.error, origExitCode = process.exitCode;
     // A timer can wake before the wall-clock deadline: a second poll is then
     // valid. Drive that boundary explicitly instead of assuming one request.
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
@@ -396,6 +420,10 @@ describe("Chatroom CLI", () => {
       get.mockRestore();
       timer.mockRestore();
       vi.useRealTimers();
+      // An assertion may abandon a command still awaiting a fake timer.
+      console.log = origLog;
+      console.error = origErr;
+      process.exitCode = origExitCode;
     }
   });
 
