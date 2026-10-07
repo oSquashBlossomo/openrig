@@ -138,18 +138,66 @@ it.each(["text", "submit"] as const)("finishes a live scroll repaint before %s i
   }
 });
 
-it.each(["frames", "utf8-bytes"] as const)("bounds %s queued behind a live repaint and discards overflowed input", async bound => {
+it("bounds UTF-8 bytes queued behind a live repaint and discards overflowed input", async () => {
   const f = await liveFixture();
   try {
-    const messages = bound === "frames"
-      ? Array.from({ length: 33 }, () => ({ type: "keys", keys: ["Enter"] }))
-      : ["é".repeat(80_000), "é".repeat(60_000)].map(text => ({ type: "text", text }));
+    const messages = ["é".repeat(80_000), "é".repeat(60_000)].map(text => ({ type: "text", text }));
     for (const message of messages) await f.handlers.onMessage(f.frame(message), f.ws);
     expect(f.ws.close).toHaveBeenCalledWith(1009, expect.stringContaining("buffer limit"));
     f.capture.resolve();
     await f.returning;
     expect(f.writes).toEqual([]);
   } finally { await f.cleanup(); }
+});
+
+it.each(["multiline", "key-repeat"] as const)("preserves a live %s burst while the first native write is delayed", async kind => {
+  const f = await liveFixture();
+  f.blockFirstWrite();
+  const first = f.handlers.onMessage(f.frame({ type: "text", text: "first" }), f.ws);
+  const expected = ["first"];
+  try {
+    f.capture.resolve();
+    await vi.waitFor(() => expect(f.writes).toEqual(["first"]));
+    // The mapper sends each CR as a separate Enter frame. Preserve that
+    // established wire contract, including clients loaded before a UI update.
+    for (let line = 0; line < 64; line++) {
+      if (kind === "multiline") {
+        const text = `line ${line}: café 🪻 ' \" ;$()\\`;
+        await f.handlers.onMessage(f.frame({ type: "text", text }), f.ws);
+        expected.push(text);
+      }
+      const key = kind === "multiline" ? "Enter" : "Left";
+      await f.handlers.onMessage(f.frame({ type: "keys", keys: [key] }), f.ws);
+      expected.push(key);
+    }
+    expect(f.ws.close).not.toHaveBeenCalled();
+    f.firstWrite.resolve();
+    await Promise.all([first, f.returning]);
+    expect(f.writes).toEqual(expected);
+  } finally {
+    await f.cleanup();
+    await first;
+  }
+});
+
+it("closes on live byte overflow without replaying pending input after an in-flight write", async () => {
+  const f = await liveFixture();
+  f.blockFirstWrite();
+  const first = f.handlers.onMessage(f.frame({ type: "text", text: "first" }), f.ws);
+  try {
+    f.capture.resolve();
+    await vi.waitFor(() => expect(f.writes).toEqual(["first"]));
+    for (const text of ["é".repeat(80_000), "é".repeat(60_000)])
+      await f.handlers.onMessage(f.frame({ type: "text", text }), f.ws);
+    expect(f.ws.close).toHaveBeenCalledWith(1009, expect.stringContaining("buffer limit"));
+    await f.handlers.onMessage(f.frame({ type: "keys", keys: ["Enter"] }), f.ws);
+    f.firstWrite.resolve();
+    await Promise.all([first, f.returning]);
+    expect(f.writes).toEqual(["first"]);
+  } finally {
+    await f.cleanup();
+    await first;
+  }
 });
 
 it("admits character bursts behind native work without losing Unicode or crossing key and scroll barriers", async () => {

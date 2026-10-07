@@ -9,7 +9,7 @@ import {
   type TerminalSubscriber,
 } from "../terminal/TerminalSessionBroker.js";
 
-const MAX_QUEUED_TERMINAL_FRAMES = 32;
+const MAX_PREATTACH_TERMINAL_FRAMES = 32;
 const MAX_QUEUED_TERMINAL_FRAME_BYTES = 256 * 1024;
 
 function coalescePendingFrames(previous: string, next: string): string | undefined {
@@ -180,15 +180,17 @@ export function registerTerminalWs(
           let data = typeof evt.data === "string" ? evt.data : "";
           if (!data) return;
           let bytes = Buffer.byteLength(data, "utf8");
-          // Coalesce only adjacent compatible frames, before enforcing both
-          // queue bounds. An oversized incoming frame cannot evade the byte cap.
+          // Coalesce only adjacent compatible frames. The frame-count bound
+          // protects pending admission; live multiline/key bursts retain their
+          // exact barriers and are bounded by encoded bytes in every phase.
+          // An oversized incoming frame cannot evade the byte cap.
           const last = queuedFrames.at(-1);
           const combined = bytes <= MAX_QUEUED_TERMINAL_FRAME_BYTES && last !== undefined
             ? coalescePendingFrames(last, data) : undefined;
           const replacedBytes = combined !== undefined ? Buffer.byteLength(last!, "utf8") : 0;
           if (combined !== undefined) { data = combined; bytes = Buffer.byteLength(data, "utf8"); }
           if (
-            queuedFrames.length - Number(combined !== undefined) >= MAX_QUEUED_TERMINAL_FRAMES
+            (!broker && queuedFrames.length - Number(combined !== undefined) >= MAX_PREATTACH_TERMINAL_FRAMES)
             || queuedFrameBytes - replacedBytes + bytes > MAX_QUEUED_TERMINAL_FRAME_BYTES
           ) {
             closed = true;
