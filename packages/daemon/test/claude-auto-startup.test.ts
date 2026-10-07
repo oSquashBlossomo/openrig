@@ -18,9 +18,9 @@ describe("auto-mode startup content requires the launched Claude identity", () =
   const dbs: ReturnType<typeof createFullTestDb>[] = [];
   afterEach(() => { for (const db of dbs.splice(0)) db.close(); });
 
-  it.each(["exact", "exit-zsh", "exit-bash", "missing", "wrong-token", "ambiguous", "background", "replaced-pane", "replaced-process", "unavailable", "plain-shell", "resume-missing", "native", "native-resume", "selected-custom", "selected-changed", "selected-wrong-named", "selected-wrong-conventional", "selected-title"])("startup: %s", async (mode) => {
+  it.each(["exact", "exit-zsh", "exit-bash", "missing", "wrong-token", "ambiguous", "background", "replaced-pane", "replaced-process", "unavailable", "plain-shell", "resume-missing", "native", "native-resume", "native-draft", "native-placeholder", "native-draft-wrong-token", "selected-custom", "selected-changed", "selected-wrong-named", "selected-wrong-conventional", "selected-title"])("startup: %s", async (mode) => {
     const isNative = mode.startsWith("native") || mode.startsWith("selected-");
-    const good = ["exact", "native", "native-resume", "selected-custom", "selected-title"].includes(mode);
+    const good = ["exact", "native", "native-resume", "native-draft", "native-placeholder", "selected-custom", "selected-title"].includes(mode);
     const resumes = mode === "resume-missing" || mode === "native-resume";
     const executable = mode === "selected-title" ? "claude" : ["selected-wrong-named", "selected-wrong-conventional"].includes(mode) ? "/other/claude" : mode.startsWith("selected-") ? "/fixture/custom/2.1.285" : "/fixture/.local/share/claude/versions/2.1.285";
     const db = createFullTestDb(); dbs.push(db);
@@ -35,7 +35,7 @@ describe("auto-mode startup content requires the launched Claude identity", () =
       if (mode === "unavailable") throw new Error("fixture observation unavailable");
       const native = { pid: 102, ppid: 101, pgid: mode === "background" ? 999 : 101, tpgid: 101,
         executableName: ["selected-title", "selected-wrong-named", "selected-wrong-conventional"].includes(mode) ? "claude" : isNative ? "2.1.285" : "claude", startedAt: mode === "replaced-process" && processReads > 1 ? "changed" : startedAt,
-        command: `${isNative ? executable : "/opt/claude.exe"} --permission-mode auto ${resumes ? "--resume" : "--session-id"} ${mode === "wrong-token" ? "other-token" : token} --name ${name}` };
+        command: `${isNative ? executable : "/opt/claude.exe"} --permission-mode auto ${resumes ? "--resume" : "--session-id"} ${mode.endsWith("wrong-token") ? "other-token" : token} --name ${name}` };
       return [
         { pid: 100, ppid: 1, pgid: 100, tpgid: 101, executableName: "bash", command: "-bash", startedAt },
         { pid: 101, ppid: 100, pgid: 101, tpgid: 101, executableName: "sh", command: "/bin/sh fixture-launch.txt", startedAt },
@@ -46,7 +46,7 @@ describe("auto-mode startup content requires the launched Claude identity", () =
     const tmux = {
       hasSession: vi.fn(async () => true),
       getPaneCommand: vi.fn(async () => mode === "exit-zsh" ? "zsh" : mode === "exit-bash" ? "bash" : "sh"),
-      capturePaneContent: vi.fn(async () => mode === "plain-shell" ? "admin@host ~ % " : autoScreen + (mode.startsWith("exit-") ? "Resume this session with:\nclaude --resume old\nadmin@host ~ % " : "")),
+      capturePaneContent: vi.fn(async () => mode === "plain-shell" ? "admin@host ~ % " : autoScreen.replace("❯\u00a0", mode.includes("draft") ? "❯ restored draft" : mode === "native-placeholder" ? "❯ Try editing a file" : "❯\u00a0") + (mode.startsWith("exit-") ? "Resume this session with:\nclaude --resume old\nadmin@host ~ % " : "")),
       getPanePid: vi.fn(async () => 100),
       listPanes: vi.fn(async () => [{ id: mode === "replaced-pane" && processReads > 0 ? "%2" : "%1" }]),
       sendShellCommand: vi.fn(async (_target: string, text: string) => { calls.push({ kind: "launch", text }); return { ok: true as const }; }),
