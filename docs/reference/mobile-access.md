@@ -40,8 +40,9 @@ Source labels and restrictions on remote writes retain their existing meaning.
 
 If the page loads but requests fail, distinguish `untrusted_host`,
 `browser_origin_refused`, authentication failure and disconnected Tailscale.
-The terminal applies its own origin/authentication guard. An HTTPS proxy needs
-the exact HTTPS origin allowance even when the underlying daemon uses HTTP.
+The daemon's shared browser boundary validates the terminal upgrade's host and
+origin; terminal-token authentication also applies when configured. An HTTPS
+proxy needs the exact HTTPS origin allowance even when the daemon uses HTTP.
 
 ## Live terminal controls and recovery
 
