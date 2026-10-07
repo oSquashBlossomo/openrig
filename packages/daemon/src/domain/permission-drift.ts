@@ -69,6 +69,9 @@ export function parseClaudePermissionModes(help: string): string[] | null {
 }
 
 export function observeClaudePermission(flag: string): AppliedLaunchObservation {
+  if (!flag.trim()) {
+    return { runtime: "claude-code", axis: "permission", state: "unknown", value: null, reason: "native_default_deferred" };
+  }
   const selected = /^--permission-mode ([A-Za-z][A-Za-z0-9]*)$/.exec(flag.trim());
   if (selected) {
     return { runtime: "claude-code", axis: "permission", state: "observed", value: selected[1]!,
