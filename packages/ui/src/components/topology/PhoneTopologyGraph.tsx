@@ -5,14 +5,22 @@
 //   - Progressive hierarchy: rig tiles → pods → seat chips, with per-rig and
 //     per-pod collapse so a dense fleet stays legible without hiding any rig
 //     (unreadable, loading and beyond-the-bound rigs keep their own tiles).
-//   - Pan with one finger, pinch to zoom, explicit 44px Fit / − / + controls
+//   - Drag with one finger scrolls the graph vertically (horizontal drift is
+//     locked while the graph fits the width, bounded once zoomed in), pinch
+//     to zoom, explicit 44px Fit / − / + controls
 //     in a reserved header row (and the selection peek in a reserved footer),
 //     never overlaid on the drawable surface where they could cover nodes.
 //     The canvas has a bounded height and wheel/trackpad input is left to the
 //     page, so the page around it always scrolls; native page zoom is
 //     untouched outside the canvas.
-//   - A tap only SELECTS. Opening a rig/pod/seat is always an explicit 44px
-//     action in the details panel, so a pan that ends on a node never drills.
+//   - A seat tap (canvas chip, seat row or the details action) selects the
+//     seat and opens its terminal over the graph: the 3D workspace's guarded
+//     SeatLiveTerminal dock, unchanged (fresh exact-identity read, pinned
+//     pane, fail-closed refresh, reconnect revalidation, shared cap). Opening
+//     sends nothing and launches nothing; a stopped, remote or unverifiable
+//     seat shows that dock's refusal. Only the tap opens it: a URL selection
+//     arriving any other way (Back/Forward, reload, 3D) never does. A rig or
+//     pod tap only selects; opening one is an explicit details action.
 //   - Seat selection is the shared URL selection (selectedRig/selectedNode,
 //     the same exact served node identity the 3D view uses), so it survives
 //     rotation, Back/Forward, a Graph⇄3D switch and the 1024px crossing.
@@ -22,7 +30,7 @@
 // 3D view); this component never writes the host selection or any daemon
 // state, and drills carry the exact source host through topologyTarget.
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -32,7 +40,7 @@ import {
   type NodeTypes,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Crosshair, Maximize, Minus, Plus, X } from "lucide-react";
+import { Crosshair, Maximize, Minus, Plus, SquareTerminal, X } from "lucide-react";
 import { useSpatialTopology } from "../../hooks/useSpatialTopology.js";
 import { useRigSummary } from "../../hooks/useRigSummary.js";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion.js";
@@ -48,11 +56,14 @@ import {
 import {
   centerPhoneViewport,
   defaultPhoneCollapsedPodKeys,
+  boundPhoneViewport,
   defaultPhoneExpandedRigIds,
   emptyTally,
   layoutPhoneGraph,
   phoneGraphColumns,
+  phoneTranslateExtent,
   readablePhoneViewport,
+  type PhoneExtent,
   tallyTones,
   type PhoneEdge,
   type PhoneNode,
@@ -65,7 +76,12 @@ import { getEdgeStyle } from "../../lib/edge-styles.js";
 import { formatRuntimeModel } from "../../lib/runtime-brand.js";
 import { topologySelectionMatches, type TopologyScope } from "../../lib/topology-location.js";
 import { cn } from "../../lib/utils.js";
+import { LOCAL_HOST_ID } from "../../lib/host-param.js";
 import { GraphPartialNotice } from "./GraphPartialNotice.js";
+import { Dialog, DialogClose, DialogContent, DialogTitle } from "../ui/dialog.js";
+import { SeatLiveTerminal, useSeatDetailQuery } from "./spatial/SpatialAgentWorkspace.js";
+// The guarded dock's frame/button styles (class-scoped; no three.js).
+import "./spatial/spatial.css";
 import { useTopologyOverlay } from "./topology-overlay-context.js";
 import {
   TopologyLink,
@@ -249,7 +265,9 @@ function PhoneTopologyGraphBody({ nav }: { nav: TopologyNavigation }) {
     [entries, data.truncatedRigCount, statusByKey, expandedRigIds, collapsedPodKeys, columns, scopeKind, scope.kind],
   );
 
-  // ---- Relationships of the selected seat.
+  const translateExtent = useMemo(() => phoneTranslateExtent(layout.bounds), [layout.bounds]);
+
+  // ---- Relationships of the selected seat (canvas highlight only).
   const relations = useMemo(() => {
     if (!selectedAgent || !model) return { outgoing: [], incoming: [] } as { outgoing: Array<{ kind: string; agent: SpatialAgent }>; incoming: Array<{ kind: string; agent: SpatialAgent }> };
     const outgoing: Array<{ kind: string; agent: SpatialAgent }> = [];
@@ -333,6 +351,18 @@ function PhoneTopologyGraphBody({ nav }: { nav: TopologyNavigation }) {
     : null;
   const appliedFitKey = useRef<string | null>(null);
   const duration = reducedMotion ? 0 : 200;
+  // Expand/collapse changes the extent but keeps the operator's camera: bound
+  // it now rather than letting the next touch jump. Runs before the refit and
+  // centre effects, so their own (bounded) viewport wins in the same commit.
+  const boundedFor = useRef<{ extent: PhoneExtent; fitKey: string | null } | null>(null);
+  useEffect(() => {
+    const prev = boundedFor.current;
+    boundedFor.current = { extent: translateExtent, fitKey };
+    if (!prev || prev.extent === translateExtent || prev.fitKey !== fitKey || size.width <= 0) return;
+    const now = flow.getViewport();
+    const next = boundPhoneViewport(now, translateExtent, size);
+    if (Math.abs(next.x - now.x) > 0.5 || Math.abs(next.y - now.y) > 0.5) void flow.setViewport(next, { duration });
+  }, [translateExtent, fitKey, size, flow, duration]);
   useEffect(() => {
     if (!fitKey || appliedFitKey.current === fitKey) return;
     const first = appliedFitKey.current === null;
@@ -341,8 +371,8 @@ function PhoneTopologyGraphBody({ nav }: { nav: TopologyNavigation }) {
     const next = target
       ? centerPhoneViewport(target, size, 1)
       : readablePhoneViewport(layout.bounds, size);
-    if (next) void flow.setViewport(next, { duration: first ? 0 : duration });
-  }, [fitKey, layout, selectedNodeId, size, flow, duration]);
+    if (next) void flow.setViewport(boundPhoneViewport(next, translateExtent, size), { duration: first ? 0 : duration });
+  }, [fitKey, layout, selectedNodeId, size, flow, duration, translateExtent]);
 
   // Centre requests (neighbor rows, Center button) resolve after the layout
   // has re-expanded whatever held the target.
@@ -355,8 +385,8 @@ function PhoneTopologyGraphBody({ nav }: { nav: TopologyNavigation }) {
     if (!node) return;
     const zoom = Math.max(flow.getZoom(), 1);
     const next = centerPhoneViewport(node, size, zoom);
-    if (next) void flow.setViewport(next, { duration });
-  }, [centerRequest, layout, size, flow, duration]);
+    if (next) void flow.setViewport(boundPhoneViewport(next, translateExtent, size), { duration });
+  }, [centerRequest, layout, size, flow, duration, translateExtent]);
 
   const selectSeat = useCallback((agent: SpatialAgent, opts: { center?: boolean } = {}) => {
     // Make the seat visible first: open its rig and pod if they are collapsed.
@@ -367,6 +397,26 @@ function PhoneTopologyGraphBody({ nav }: { nav: TopologyNavigation }) {
     if (opts.center) setCenterRequest({ nodeKey: agent.key, nonce: Date.now() });
   }, [scope.kind, expandedRigIds, setRigExpanded, collapsedPodKeys, setPodCollapsed, nav]);
 
+  // ---- Seat terminal overlay: opened only by a seat tap, for exactly the
+  // seat that tap selected. Any later change of the URL selection (another
+  // seat, a rig/pod focus, Clear, Back/Forward) closes it, and a selection
+  // that stops resolving closes it for good, so a refreshed graph can never
+  // reopen it on its own.
+  const [terminalFor, setTerminalFor] = useState<{ agentKey: string; selectionKey: string } | null>(null);
+  useEffect(() => {
+    setTerminalFor((t) => (t && t.selectionKey !== urlSelectionKey ? null : t));
+  }, [urlSelectionKey]);
+  useEffect(() => {
+    if (terminalFor && urlSelectionKey === terminalFor.selectionKey && selectionIssue && selectionIssue !== "pending") setTerminalFor(null);
+  }, [terminalFor, urlSelectionKey, selectionIssue]);
+  const terminalAgent = terminalFor && selectedAgent?.key === terminalFor.agentKey ? selectedAgent : null;
+
+  // Every seat entry point (canvas chip, seat row, details action) agrees.
+  const openSeat = useCallback((agent: SpatialAgent) => {
+    selectSeat(agent, { center: true });
+    setTerminalFor({ agentKey: agent.key, selectionKey: `${agent.rigId}\u0000${agent.nodeId}` });
+  }, [selectSeat]);
+
   const selectFocus = useCallback((next: Focus | null) => {
     setFocus(next);
     if (urlSelection) nav.replace({ selection: null });
@@ -376,7 +426,7 @@ function PhoneTopologyGraphBody({ nav }: { nav: TopologyNavigation }) {
     const d = node.data as unknown as PhoneNode["data"];
     if (d.kind === "seat") {
       const agent = model?.agentsByKey.get((d as PhoneSeatNodeData).agentKey);
-      if (agent) selectSeat(agent);
+      if (agent) openSeat(agent);
       return;
     }
     if (d.kind === "pod") {
@@ -389,7 +439,7 @@ function PhoneTopologyGraphBody({ nav }: { nav: TopologyNavigation }) {
       return;
     }
     if (d.kind === "truncated") selectFocus({ kind: "truncated" });
-  }, [model, selectSeat, selectFocus]);
+  }, [model, openSeat, selectFocus]);
 
   const clearSelection = useCallback(() => {
     setFocus(null);
@@ -470,7 +520,7 @@ function PhoneTopologyGraphBody({ nav }: { nav: TopologyNavigation }) {
             className="flex h-11 shrink-0 items-stretch border-b border-outline-variant bg-background/90"
           >
             <span className="flex min-w-0 flex-1 items-center truncate px-3 font-mono text-[10px] text-on-surface-variant">
-              Drag to pan · pinch to zoom
+              Drag to scroll · pinch to zoom
             </span>
             <button type="button" data-testid="phone-graph-fit" aria-label="Fit whole graph" title="Fit whole graph"
               onClick={() => void flow.fitView({ padding: 0.06, duration, minZoom: PHONE_MIN_ZOOM })}
@@ -500,6 +550,10 @@ function PhoneTopologyGraphBody({ nav }: { nav: TopologyNavigation }) {
               elementsSelectable={false}
               panOnDrag
               zoomOnPinch
+              // One-finger drags move vertically: the horizontal extent is the
+              // graph itself, so while it fits the width d3 keeps it centred
+              // (no sideways drift); zoomed in, panning stays inside it.
+              translateExtent={translateExtent}
               zoomOnScroll={false}
               panOnScroll={false}
               zoomOnDoubleClick={false}
@@ -538,7 +592,7 @@ function PhoneTopologyGraphBody({ nav }: { nav: TopologyNavigation }) {
               </div>
             ) : (
               <span className="flex min-w-0 flex-1 items-center truncate px-3 text-[10px] text-on-surface-variant">
-                Tap a rig, pod or seat for details
+                Tap a seat for its terminal · a rig or pod for details
               </span>
             )}
           </div>
@@ -558,12 +612,11 @@ function PhoneTopologyGraphBody({ nav }: { nav: TopologyNavigation }) {
             selectionIssue={selectionIssue}
             selectionRigId={urlSelection?.rigId ?? null}
             statusByKey={statusByKey}
-            relations={relations}
             linkSource={linkSource}
             truncatedRigCount={scope.kind === "host" ? data.truncatedRigCount : 0}
             expandedRigIds={expandedRigIds}
             collapsedPodKeys={collapsedPodKeys}
-            onSelectSeat={(agent) => selectSeat(agent, { center: true })}
+            onOpenSeat={openSeat}
             onSelectRig={(rigId) => { selectFocus({ kind: "rig", rigId }); setCenterRequest({ nodeKey: rigNodeId(layout.nodes, rigId) ?? "", nonce: Date.now() }); }}
             onSelectPod={(podKey) => { selectFocus({ kind: "pod", podKey }); setCenterRequest({ nodeKey: podKey, nonce: Date.now() }); }}
             onToggleRig={toggleRig}
@@ -574,7 +627,95 @@ function PhoneTopologyGraphBody({ nav }: { nav: TopologyNavigation }) {
           />
         </div>
       </div>
+      {terminalAgent ? (
+        <PhoneSeatTerminal
+          agent={terminalAgent}
+          hostId={hostId}
+          tone={(statusByKey.get(terminalAgent.key) ?? deriveSeatStatus(terminalAgent)).tone}
+          seatTarget={terminalAgent.logicalId
+            ? topologyTarget({ scope: { kind: "seat", rigId: terminalAgent.rigId, logicalId: terminalAgent.logicalId }, sourceHost: linkSource })
+            : null}
+          from={nav.scope}
+          onClose={() => setTerminalFor(null)}
+        />
+      ) : null}
     </PhoneGraphShell>
+  );
+}
+
+/** Full-screen terminal for the tapped seat, in the app's Radix dialog: it
+ *  portals above the shell's top bar and bottom nav, makes the page behind it
+ *  inert, traps focus and restores it on close. The dock is the 3D
+ *  workspace's SeatLiveTerminal with its own fresh detail read, keyed by the
+ *  exact host/rig/node so another seat always closes this one first. Closing
+ *  frees the socket and cap slot; the graph, selection and camera stay. */
+function PhoneSeatTerminal({ agent, hostId, tone, seatTarget, from, onClose }: {
+  agent: SpatialAgent;
+  hostId: string;
+  tone: SpatialSeatStatus["tone"];
+  seatTarget: ReturnType<typeof topologyTarget>;
+  from: TopologyScope;
+  onClose: () => void;
+}) {
+  const { detailKey, detailQuery } = useSeatDetailQuery(agent, hostId);
+  const closeRef = useRef<HTMLButtonElement | null>(null);
+  // Radix restores focus only to a DialogTrigger; this dialog has none, so
+  // return focus to whatever opened it (a seat row or the Terminal action).
+  const [opener] = useState(() => (typeof document === "undefined" ? null : document.activeElement));
+  const pod = agent.podNamespace ?? null;
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent
+        hideCloseButton
+        aria-describedby={undefined}
+        data-testid="phone-graph-terminal"
+        data-agent-key={agent.key}
+        // Focus the Close button, not the terminal: no soft keyboard pops up.
+        onOpenAutoFocus={(e) => { e.preventDefault(); closeRef.current?.focus(); }}
+        onCloseAutoFocus={(e) => {
+          if (opener instanceof HTMLElement && opener.isConnected && opener !== document.body) {
+            e.preventDefault();
+            opener.focus();
+          }
+        }}
+        // Escape typed into the terminal belongs to the pane (xterm still
+        // receives it); Escape anywhere else closes.
+        onEscapeKeyDown={(e) => { if (e.target instanceof Element && e.target.closest(".xterm")) e.preventDefault(); }}
+        // The dock's terminal ground normally comes from the 3D atelier theme.
+        style={{ "--spatial-terminal-ground": "24 10% 4.5%" } as CSSProperties}
+        className="inset-0 left-0 top-0 flex h-[100dvh] max-h-none w-full max-w-none translate-x-0 translate-y-0 flex-col gap-0 border-0 !bg-background p-0 pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)] shadow-none [&_.spatial-terminal-frame--stacked]:h-[max(13rem,calc(100dvh-9rem))]"
+      >
+        <header className="sticky top-0 z-10 flex min-h-12 shrink-0 items-center gap-2 border-b border-outline-variant bg-background pl-3">
+          <ToneDot tone={tone} />
+          <div className="min-w-0 flex-1">
+            <DialogTitle className="truncate font-mono text-[12px] font-bold leading-normal tracking-normal text-on-surface">{agent.displayName}</DialogTitle>
+            <div className="truncate font-mono text-[9px] uppercase tracking-[0.12em] text-on-surface-variant">
+              {agent.rigName}{pod ? ` / ${pod}` : ""}
+            </div>
+          </div>
+          {seatTarget ? (
+            <TopologyLink target={seatTarget} from={from} className="inline-flex min-h-11 items-center px-3 font-mono text-[10px] uppercase tracking-[0.06em] text-on-surface hover:bg-surface-low/70" data-testid="phone-graph-terminal-seat">
+              Seat page
+            </TopologyLink>
+          ) : null}
+          <DialogClose ref={closeRef} aria-label="Close terminal" data-testid="phone-graph-terminal-close"
+            className="inline-flex h-12 w-12 shrink-0 items-center justify-center border-l border-outline-variant text-on-surface hover:bg-surface-low/70 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-on-surface">
+            <X className="h-5 w-5" aria-hidden="true" />
+          </DialogClose>
+        </header>
+        <div className="pb-3">
+          <SeatLiveTerminal
+            key={`${hostId}|${agent.rigId}|${agent.nodeId}`}
+            agent={agent}
+            hostId={hostId}
+            isRemote={hostId !== LOCAL_HOST_ID}
+            detailKey={detailKey}
+            detailQuery={detailQuery}
+            layout="stacked"
+          />
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -640,12 +781,11 @@ interface DetailsProps {
   selectionIssue: SelectionIssue | null;
   selectionRigId: string | null;
   statusByKey: ReadonlyMap<string, SpatialSeatStatus>;
-  relations: { outgoing: Array<{ kind: string; agent: SpatialAgent }>; incoming: Array<{ kind: string; agent: SpatialAgent }> };
   linkSource: string | null;
   truncatedRigCount: number;
   expandedRigIds: ReadonlySet<string>;
   collapsedPodKeys: ReadonlySet<string>;
-  onSelectSeat: (agent: SpatialAgent) => void;
+  onOpenSeat: (agent: SpatialAgent) => void;
   onSelectRig: (rigId: string) => void;
   onSelectPod: (podKey: string) => void;
   onToggleRig: (rigId: string) => void;
@@ -711,8 +851,11 @@ function PhoneGraphDetails(props: DetailsProps) {
             {agent.currentQitems.length > 0 ? ` · ${agent.currentQitems.length} in progress` : ""}
           </div>
           <div className="mt-3 flex flex-wrap gap-2 pb-3">
+            <button type="button" onClick={() => props.onOpenSeat(agent)} className={ACTION_PRIMARY} data-testid="phone-graph-open-terminal">
+              <SquareTerminal className="h-4 w-4" aria-hidden="true" /> Terminal
+            </button>
             {seatTarget ? (
-              <TopologyLink target={seatTarget} from={nav.scope} className={ACTION_PRIMARY} data-testid="phone-graph-open-seat">
+              <TopologyLink target={seatTarget} from={nav.scope} className={ACTION_SECONDARY} data-testid="phone-graph-open-seat">
                 Open seat
               </TopologyLink>
             ) : (
@@ -726,25 +869,6 @@ function PhoneGraphDetails(props: DetailsProps) {
             <button type="button" onClick={props.onClear} className={ACTION_SECONDARY}>Clear</button>
           </div>
         </div>
-        <Section title={`Relationships (${props.relations.outgoing.length + props.relations.incoming.length})`} testId="phone-graph-relations">
-          {props.relations.outgoing.length + props.relations.incoming.length === 0 ? (
-            <p className="font-mono text-[10px] text-on-surface-variant">No relationships in the served graph.</p>
-          ) : null}
-          {props.relations.outgoing.map((r, i) => (
-            <RowButton key={`o${i}`} onClick={() => props.onSelectSeat(r.agent)} testId="phone-graph-relation">
-              <span aria-hidden="true">→</span>
-              <span className="min-w-0 flex-1 truncate">{r.agent.displayName}<span className="text-on-surface-variant"> {r.agent.logicalId && r.agent.logicalId !== r.agent.displayName ? `· ${r.agent.logicalId}` : ""}</span></span>
-              <span className="shrink-0 text-[10px] text-on-surface-variant">{r.kind.replace(/_/g, " ")}</span>
-            </RowButton>
-          ))}
-          {props.relations.incoming.map((r, i) => (
-            <RowButton key={`i${i}`} onClick={() => props.onSelectSeat(r.agent)} testId="phone-graph-relation">
-              <span aria-hidden="true">←</span>
-              <span className="min-w-0 flex-1 truncate">{r.agent.displayName}<span className="text-on-surface-variant"> {r.agent.logicalId && r.agent.logicalId !== r.agent.displayName ? `· ${r.agent.logicalId}` : ""}</span></span>
-              <span className="shrink-0 text-[10px] text-on-surface-variant">{r.kind.replace(/_/g, " ")}</span>
-            </RowButton>
-          ))}
-        </Section>
       </div>
     );
   }
@@ -781,7 +905,7 @@ function PhoneGraphDetails(props: DetailsProps) {
           </div>
           <Section title={`Seats (${agents.length})`}>
             {agents.map((a) => (
-              <RowButton key={a.key} onClick={() => props.onSelectSeat(a)} testId="phone-graph-seat-row">
+              <RowButton key={a.key} onClick={() => props.onOpenSeat(a)} testId="phone-graph-seat-row">
                 <ToneDot tone={statusByKey.get(a.key)?.tone ?? "unknown"} />
                 <span className="min-w-0 flex-1 truncate">{a.displayName}</span>
                 <span className="shrink-0 text-[10px] text-on-surface-variant">{statusByKey.get(a.key)?.label ?? "unknown"}</span>
@@ -860,7 +984,7 @@ function PhoneGraphDetails(props: DetailsProps) {
     <div data-testid="phone-graph-overview">
       <div className="px-3 py-3">
         <p className="font-mono text-[10px] leading-relaxed text-on-surface-variant">
-          Tap a rig, pod or seat to see its details and actions. Drag to pan, pinch to zoom.
+          Tap a seat to open its terminal, or a rig or pod for its details. Drag to scroll, pinch to zoom.
         </p>
         <div className="mt-2 font-mono text-[11px] text-on-surface">
           {scope.kind === "host" ? `${entries.length + props.truncatedRigCount} rig${entries.length + props.truncatedRigCount === 1 ? "" : "s"} · ` : ""}

@@ -225,6 +225,27 @@
   text-overflow: ellipsis;
 }
 
+/* Plan (Top) view: every seat is named, so unforced names clip to the
+   projected seat pitch the renderer sets on the label layer. */
+.spatial-label--agent.is-compact:not(.is-selected):not(.is-hovered) {
+  max-width: var(--spatial-plan-name-max, 11rem);
+}
+
+/* A plan name moved off its seat for room keeps a hairline back to it
+   (geometry from the renderer, in the label's own frame). */
+.spatial-label--agent.has-leader::after {
+  content: "";
+  position: absolute;
+  left: var(--leader-x, 0);
+  top: var(--leader-y, 0);
+  width: var(--leader-len, 0);
+  height: 1px;
+  background: hsl(var(--on-surface-variant) / 0.65);
+  transform-origin: 0 50%;
+  transform: rotate(var(--leader-angle, 0rad));
+  pointer-events: none;
+}
+
 .spatial-label--agent.is-compact::before {
   left: 3.5px;
   top: 5px;

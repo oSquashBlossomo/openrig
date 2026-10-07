@@ -6,6 +6,8 @@
 import { describe, it, expect } from "vitest";
 import { deriveSeatStatus, parseSpatialRig, type SpatialRig, type SpatialSeatStatus } from "../src/lib/spatial-topology.js";
 import {
+  boundPhoneViewport,
+  phoneTranslateExtent,
   PHONE_HOST_AUTO_EXPAND_SEATS,
   PHONE_POD_AUTO_COLLAPSE_SEATS,
   PHONE_POD_W,
@@ -234,5 +236,44 @@ describe("readablePhoneViewport", () => {
 
   it("returns null until the canvas has a size", () => {
     expect(readablePhoneViewport({ x: 0, y: 0, width: 10, height: 10 }, { width: 0, height: 0 })).toBeNull();
+  });
+});
+
+describe("vertical-only drag extent", () => {
+  const bounds = { x: 0, y: 0, width: 360, height: 1200 };
+  const extent = phoneTranslateExtent(bounds);
+  const surface = { width: 430, height: 500 };
+
+  it("a graph that fits the width stays centred on x whatever x is asked for; y is bounded to the graph", () => {
+    const centredX = (430 - 360) / 2; // x extent is the graph itself
+    for (const x of [-300, 0, 37, 900]) expect(boundPhoneViewport({ x, y: -200, zoom: 1 }, extent, surface).x).toBeCloseTo(centredX);
+    // y keeps the operator's scroll inside the graph, never past its ends.
+    expect(boundPhoneViewport({ x: 0, y: -200, zoom: 1 }, extent, surface).y).toBe(-200);
+    expect(boundPhoneViewport({ x: 0, y: 400, zoom: 1 }, extent, surface).y).toBe(24);
+    expect(boundPhoneViewport({ x: 0, y: -5000, zoom: 1 }, extent, surface).y).toBe(500 - 1224);
+  });
+
+  it("a tall graph opened at its readable fit-width zoom cannot drift sideways (no margin overflow)", () => {
+    const tall = { x: 0, y: 0, width: 344, height: 1200 };
+    const narrow = { width: 404, height: 480 };
+    const readable = readablePhoneViewport(tall, narrow)!;
+    expect(readable.zoom).toBeCloseTo(1.104651, 5);
+    expect(readable.x).toBeCloseTo(12, 5); // 380px graph centred in 404px
+    const tallExtent = phoneTranslateExtent(tall);
+    const opened = boundPhoneViewport(readable, tallExtent, narrow);
+    expect(opened.x).toBeCloseTo(readable.x, 9);
+    expect(opened.y).toBeCloseTo(readable.y, 9);
+    for (const x of [-60, -2.5, 0, 26.5, 90]) {
+      expect(boundPhoneViewport({ ...readable, x }, tallExtent, narrow).x).toBeCloseTo(12, 5);
+    }
+    // Vertical scroll keeps its margin past both ends.
+    expect(boundPhoneViewport({ ...readable, y: 500 }, tallExtent, narrow).y).toBeCloseTo(24 * readable.zoom, 5);
+  });
+
+  it("zoomed in past the width, x is bounded to the graph instead of drifting off it", () => {
+    const vp = boundPhoneViewport({ x: 200, y: 0, zoom: 2 }, extent, surface);
+    expect(vp.x).toBe(0); // the graph's left edge at the surface edge
+    expect(boundPhoneViewport({ x: -5000, y: 0, zoom: 2 }, extent, surface).x).toBe(430 - 360 * 2);
+    expect(boundPhoneViewport({ x: -100, y: 0, zoom: 2 }, extent, surface).x).toBe(-100);
   });
 });

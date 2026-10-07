@@ -34,9 +34,12 @@ function duplicateIds(rows: readonly RecentTransition[]): Set<number> {
   return dup;
 }
 
-export function RecentTransitionList({ recent, filter, selectedId, onSelect, hrefFor, testId = "recent-list" }: {
+export function RecentTransitionList({ recent, filter, selectedId, onSelect, hrefFor, testId = "recent-list", compact = false }: {
   recent: RecentRead; filter: RecentScope; selectedId: number | null;
   onSelect?: (id: number) => void; hrefFor?: (id: number) => string; testId?: string;
+  /** Embedded panels: one line per row (time, change, summary[, rig]); the
+   *  ID, actor and target are one tap away in the row's frozen detail. */
+  compact?: boolean;
 }) {
   const flashing = useArrivalFlash(recent.status === "ready" ? recent.rows.map((r) => String(r.transitionId)) : null);
   const duplicates = useMemo(() => duplicateIds(recent.rows), [recent.rows]);
@@ -62,12 +65,21 @@ export function RecentTransitionList({ recent, filter, selectedId, onSelect, hre
         {recent.visibleRows.map((row, index) => {
           const selected = row.transitionId === selectedId;
           const flash = flashing.has(String(row.transitionId));
-          const body = (
+          const tone = row.change.includes("blocked") ? "warn" : row.change.includes("fail") || row.change.includes("denied") ? "bad" : "neutral";
+          const body = compact ? (
+            <span title={`#${row.transitionId} · ${row.actorSession || "actor unknown"} · ${row.targetKind}: ${row.target}${showRig ? ` · rig ${row.rig}` : ""}`} className="flex min-w-0 items-baseline gap-2 font-mono text-[11px] text-on-surface-variant">
+              <span className="shrink-0"><Timestamp iso={row.ts} /></span>
+              <span className="shrink-0"><Tag tone={tone}>{row.change}</Tag></span>
+              <span className="min-w-0 flex-1 truncate font-sans text-[13px] text-on-surface">{row.summary ?? <span className="text-on-surface-variant">no summary recorded</span>}</span>
+              {showRig ? <span className="hidden shrink-0 sm:inline">{row.rig}</span> : null}
+              <NewTag active={flash} />
+            </span>
+          ) : (
             <>
               <span className="flex flex-wrap items-baseline gap-x-2 font-mono text-[11px] text-on-surface-variant">
                 <Timestamp iso={row.ts} />
                 <span>#{row.transitionId}</span>
-                <Tag tone={row.change.includes("blocked") ? "warn" : row.change.includes("fail") || row.change.includes("denied") ? "bad" : "neutral"}>{row.change}</Tag>
+                <Tag tone={tone}>{row.change}</Tag>
                 {showRig ? <span>rig {row.rig}</span> : null}
                 <NewTag active={flash} />
               </span>
@@ -75,7 +87,7 @@ export function RecentTransitionList({ recent, filter, selectedId, onSelect, hre
               <span className="mt-0.5 block font-mono text-[11px] text-on-surface-variant [overflow-wrap:anywhere]">{row.actorSession || "actor unknown"} · {row.targetKind}: {row.target}</span>
             </>
           );
-          const className = cn("block w-full px-3 py-2 text-left hover:bg-surface-low focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-on-surface", selected && "bg-surface-low", flashClass(flash));
+          const className = cn("block w-full px-3 text-left", compact ? "py-1.5" : "py-2", "hover:bg-surface-low focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-on-surface", selected && "bg-surface-low", flashClass(flash));
           return (
             <li key={`${row.transitionId}:${index}`} data-testid={`${testId}-row`} data-transition-id={row.transitionId} aria-current={selected ? "true" : undefined}>
               {hrefFor ? (
@@ -92,10 +104,18 @@ export function RecentTransitionList({ recent, filter, selectedId, onSelect, hre
 }
 
 /** Served-window disclosure: shown vs served, latest-window bound, no total. */
-export function RecentWindowFooter({ recent, expanded, testId = "recent-window" }: { recent: RecentRead; expanded: boolean; testId?: string }) {
+export function RecentWindowFooter({ recent, expanded, testId = "recent-window", compact = false }: { recent: RecentRead; expanded: boolean; testId?: string; compact?: boolean }) {
   if (recent.status !== "ready") return null;
   const served = recent.servedCount ?? 0;
   const shown = recent.visibleRows.length;
+  if (compact) {
+    return (
+      <p data-testid={testId} className="font-mono text-[10px] text-on-surface-variant">
+        {expanded ? `All ${served} served` : `Last ${shown} of ${served} served`} · limit {RECENT_LIMIT}
+        {recent.possiblyBounded ? " · window full: older transitions may exist (no older pages here)" : " · fewer than the limit served"}
+      </p>
+    );
+  }
   return (
     <p data-testid={testId} className="mt-2 font-mono text-[10px] uppercase tracking-[0.08em] text-on-surface-variant">
       {expanded ? `All ${served} served` : `Last ${shown} of ${served} served`} · latest window, limit {RECENT_LIMIT}
@@ -287,11 +307,16 @@ export function RecentScopePanel({ instance, filter, testId = "recent-scope-pane
   const recent = useRecentTransitions(instance ?? LOCAL_OPERATOR_INSTANCE, typeof filter === "string" ? { kind: "instance" } : filter, { limit: RECENT_LIMIT, expanded, enabled: ready });
   const rig = typeof filter !== "string" && filter.kind === "rig" ? filter.rig : null;
   return (
-    <section data-testid={testId} aria-labelledby={`${testId}-heading`} className="border-t border-outline-variant px-6 py-4">
-      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+    <section data-testid={testId} aria-labelledby={`${testId}-heading`} className="border-t border-outline-variant px-4 pb-3 sm:px-6">
+      {/* Sticky inside the bounded panel frame, so the title and its links
+          stay reachable however far the rows are scrolled. */}
+      <div data-testid={`${testId}-header`} className="sticky top-0 z-10 -mx-4 mb-1 flex flex-wrap items-center gap-x-3 gap-y-1 bg-background/95 px-4 py-2 backdrop-blur-sm sm:-mx-6 sm:px-6">
         <h2 id={`${testId}-heading`} className="font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-on-surface">Recent transitions</h2>
+        {typeof filter !== "string" ? (
+          <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-on-surface-variant">{recentScopeLabel(filter)}</span>
+        ) : <span className="flex-1" />}
         {ready && instance.kind === "local-instance" ? (
-          <span className="flex gap-3 font-mono text-[10px] uppercase tracking-[0.08em]">
+          <span className="flex shrink-0 gap-3 font-mono text-[10px] uppercase tracking-[0.08em]">
             <HistoryLink href={recentPulseHref({ view: "recent", rig })} data-testid={`${testId}-open`} className="underline decoration-dotted hover:text-secondary">Open Recent</HistoryLink>
             {rig === null ? <HistoryLink href={recentPulseHref({ view: "pulse" })} data-testid={`${testId}-pulse`} className="underline decoration-dotted hover:text-secondary">Open Pulse</HistoryLink> : null}
           </span>
@@ -305,20 +330,22 @@ export function RecentScopePanel({ instance, filter, testId = "recent-scope-pane
         <p data-testid={`${testId}-rig-unavailable`} className="text-xs text-on-surface-variant">This rig&apos;s name was not served, and Recent filters by exact rig name, so no rig window is shown. The instance window is on the host page.</p>
       ) : (
         <>
-          <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.1em] text-on-surface-variant">{recentScopeLabel(filter)}</p>
           <RecentTransitionList
+            compact
             recent={recent}
             filter={filter}
             selectedId={null}
             hrefFor={(id) => recentPulseHref({ view: "recent", rig, transition: id })}
             testId={`${testId}-list`}
           />
-          {recent.status === "ready" && recent.rows.length > 5 ? (
-            <button type="button" data-testid={`${testId}-expand`} aria-expanded={expanded} onClick={() => setExpanded((v) => !v)} className="mt-2 border border-outline-variant px-2 py-0.5 font-mono text-[10px] uppercase hover:bg-surface-low">
-              {expanded ? "Show last 5" : `Show all ${recent.servedCount} served`}
-            </button>
-          ) : null}
-          <RecentWindowFooter recent={recent} expanded={expanded} testId={`${testId}-window`} />
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
+            <RecentWindowFooter recent={recent} expanded={expanded} testId={`${testId}-window`} compact />
+            {recent.status === "ready" && recent.rows.length > 5 ? (
+              <button type="button" data-testid={`${testId}-expand`} aria-expanded={expanded} onClick={() => setExpanded((v) => !v)} className="min-h-8 border border-outline-variant px-2 font-mono text-[10px] uppercase hover:bg-surface-low">
+                {expanded ? "Show last 5" : `Show all ${recent.servedCount} served`}
+              </button>
+            ) : null}
+          </div>
         </>
       )}
     </section>

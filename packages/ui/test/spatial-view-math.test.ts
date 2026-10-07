@@ -9,6 +9,7 @@ import {
   estimateLabelSize,
   frameBox,
   layoutLabels,
+  leaderLine,
   sceneBudgetVerdict,
   nearestWithin,
   trafficPhase,
@@ -346,5 +347,51 @@ describe("trafficBeads (travelling sparks)", () => {
     expect(trafficBeads(trafficPhase(T0 + TRAFFIC_TRAVEL_MS + 10, T0, false))).toEqual([]);
     expect(trafficBeads(trafficPhase(T0 + 500, T0, true))).toEqual([]);
     expect(trafficBeads(trafficPhase(T0 + TRAFFIC_TOTAL_MS, T0, false))).toEqual([]);
+  });
+});
+
+describe("layoutLabels relocation (plan-view seat names)", () => {
+  const rect = (c: LabelCandidate, s = { dx: 0, dy: 0 }): Rect => {
+    const b = boxOf(c);
+    return { left: b.left + s.dx, top: b.top + s.dy, right: b.right + s.dx, bottom: b.bottom + s.dy };
+  };
+  const hit = (a: Rect, b: Rect) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+
+  it("moves a colliding relocatable name to the nearest free spot instead of suppressing it", () => {
+    const first = cand("agent:a", 300, 200, LABEL_TIER.match);
+    const second = cand("agent:b", 310, 205, LABEL_TIER.match, { relocate: true });
+    const blocker: Rect = { left: 240, top: 210, right: 380, bottom: 260 };
+    const { visible, shifts, choice, suppressed } = layoutLabels([first, second], { width: 800, height: 500, silhouettes: [blocker] });
+    expect([...visible].sort()).toEqual(["agent:a", "agent:b"]);
+    expect(suppressed).toBe(0);
+    expect(choice.get("agent:b")).toBe(0);
+    const moved = rect(second, shifts.get("agent:b"));
+    expect(hit(moved, rect(first))).toBe(false);
+    expect(hit(moved, blocker)).toBe(false);
+    expect(Math.hypot(shifts.get("agent:b")!.dx, shifts.get("agent:b")!.dy)).toBeLessThan(60);
+  });
+
+  it("leaves non-relocatable labels (angled view) suppressed, and stops at the probe budget", () => {
+    const a = cand("agent:a", 300, 200, LABEL_TIER.match);
+    expect(layoutLabels([a, cand("agent:b", 310, 205, LABEL_TIER.match)], { width: 800, height: 500 }).visible.has("agent:b")).toBe(false);
+    const capped = layoutLabels([a, cand("agent:b", 310, 205, LABEL_TIER.match, { relocate: true })], { width: 800, height: 500, relocateBudget: 0 });
+    expect(capped.visible.has("agent:b")).toBe(false);
+    expect(capped.suppressed).toBe(1);
+  });
+
+  it("draws a leader from the moved box edge back to the anchor, none for a box still on it", () => {
+    // Anchor at the box's top centre; box moved 40px down.
+    const line = leaderLine({ w: 80, h: 16, cx: 0.5, cy: 0 }, 0, 40)!;
+    expect(line).toEqual({ x: 40, y: 0, length: 40, angle: Math.round(-Math.PI / 2 * 1000) / 1000 });
+    expect(leaderLine({ w: 80, h: 16, cx: 0.5, cy: 0 }, 2, 2)).toBeNull();
+  });
+});
+
+describe("layoutLabels relocation bounds", () => {
+  it("never pulls an off-screen seat's name into view", () => {
+    const off = cand("agent:off", -40, 200, LABEL_TIER.match, { relocate: true });
+    const result = layoutLabels([off], { width: 800, height: 500 });
+    expect(result.visible.has("agent:off")).toBe(false);
+    expect(result.shifts.size).toBe(0);
   });
 });
