@@ -341,6 +341,7 @@ directory's `CLAUDE.md`, including blocks written by other rigs.
 | `label` | string | no | — | Human-readable member name. Shown in UI when present. |
 | `model` | string | no | — | Model override. Runtime-specific (e.g., `claude-opus-4-6` for Claude Code). |
 | `effort` | string | no | — | Reasoning effort override, trimmed. A non-string value is ignored with an advisory. |
+| `advisor_model` | string | no | — | Claude Code only: explicit advisor model id, or `off`. Omit to inherit native defaults. Passed as a session-local settings override on fresh, resume and fork launches; shared project and user settings are untouched. |
 | `permission_policy` | string | no | — | Member-level permission policy; overrides the rig's. Not valid on terminal members. |
 | `role` | string | no | — | The seat's role, letters, digits, `_`, `.` and `-`. Not valid on terminal members. |
 | `restore_policy` | string | no | the AgentSpec's | Restore behavior. One of: `resume_if_possible`, `relaunch_fresh`, `checkpoint_only`. The default comes from the AgentSpec's `defaults.lifecycle` (else `resume_if_possible`) as narrowed by its profile; a member value may only narrow it further, in that order. |
@@ -349,6 +350,8 @@ directory's `CLAUDE.md`, including blocks written by other rigs.
 | `session_source` | object | no | — | Start the seat from an existing session: `fork` with `native_id`, `rebuild` with `artifact_set`, or `agent_image` with `image_name`. Not valid on terminal members. |
 | `starter_ref` | object | no | — | `{ name }` of an agent starter (`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`) whose files lead the seat's startup. Not valid on terminal members or with a fork. |
 | `startup` | StartupBlock | no | — | Member-level startup files and actions. Applied only to this member. |
+
+Per-seat model configuration can also be persisted with `rig seat set-model <seat> --model <id> --effort <level> --advisor <model|off|inherit> --reason <text>`. Omitted flags preserve existing values; `inherit` removes the seat override. The change is audited and applies to later managed launches. The running native conversation is not restarted. Launching a member from its RigSpec again re-resolves effort and advisor from the spec, replacing a `set-model` value. Snapshot restore uses the configuration captured in that snapshot, so take a new snapshot after configuration changes when it should become the recovery default.
 
 ### Pi (`runtime: pi`)
 

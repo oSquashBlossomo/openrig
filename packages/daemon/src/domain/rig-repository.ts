@@ -122,6 +122,7 @@ interface NodeOptions {
   runtime?: string;
   model?: string;
   effort?: string;
+  advisorModel?: string;
   codexConfigProfile?: string;
   /** OPR.0.4.8.3 Seam B: per-seat permission_policy REF (builtin:<name> or spec-relative path). */
   permissionPolicy?: string;
@@ -450,6 +451,8 @@ export class RigRepository {
         .run(opts.effort, id);
     }
 
+    if (opts?.advisorModel !== undefined) this.setNodeAdvisorModel(id, opts.advisorModel);
+
     return this.rowToNode(
       this.db.prepare("SELECT * FROM nodes WHERE id = ?").get(id) as NodeRow
     );
@@ -463,6 +466,11 @@ export class RigRepository {
       .prepare("UPDATE nodes SET model = ? WHERE id = ?")
       .run(model, nodeId);
     return result.changes > 0;
+  }
+
+  setNodeAdvisorModel(nodeId: string, advisorModel: string | null): boolean {
+    if (!this.hasNodeColumn("advisor_model")) return false;
+    return this.db.prepare("UPDATE nodes SET advisor_model = ? WHERE id = ?").run(advisorModel, nodeId).changes > 0;
   }
 
   setNodeEffort(nodeId: string, effort: string): boolean {
@@ -723,6 +731,7 @@ export class RigRepository {
       runtime: row.runtime,
       model: row.model,
       effort: row.effort ?? null,
+      advisorModel: row.advisor_model ?? null,
       codexConfigProfile: row.codex_config_profile ?? null,
       permissionPolicy: row.permission_policy ?? null,
       cwd: row.cwd,
@@ -812,6 +821,7 @@ interface NodeRow {
   runtime: string | null;
   model: string | null;
   effort?: string | null;
+  advisor_model?: string | null;
   codex_config_profile?: string | null;
   permission_policy?: string | null;
   cwd: string | null;

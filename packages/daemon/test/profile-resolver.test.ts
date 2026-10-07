@@ -225,12 +225,35 @@ describe("Profile resolver + precedence engine", () => {
         defaults: { effort: "low" },
         profiles: { default: { preferences: { effort: "medium" }, uses: { skills: ["skill-a"], guidance: [], subagents: [], plugins: [], runtimeResources: [] } } },
       })),
-      member: makeMember({ effort: "high" }),
+      member: makeMember({ effort: "high", advisorModel: "off" }),
     });
 
     const result = resolveNodeConfig(ctx);
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.config.effort).toBe("high");
+    if (result.ok) {
+      expect(result.config.effort).toBe("high");
+      expect(result.config.advisorModel).toBe("off");
+    }
+  });
+
+  it("a shared spec or profile advisor default does not block non-Claude members", () => {
+    for (const runtime of ["codex", "pi"] as const) {
+      const ctx = makeCtx({
+        baseSpec: makeResolved(makeSpec({
+          defaults: { advisorModel: "claude-fable-5-1" },
+          profiles: { default: { preferences: { advisorModel: "off" }, uses: { skills: ["skill-a"], guidance: [], subagents: [], plugins: [], runtimeResources: [] } } },
+        })),
+        member: makeMember({ runtime }),
+      });
+      const result = resolveNodeConfig(ctx);
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.config.advisorModel).toBeUndefined();
+    }
+  });
+
+  it("a member-level advisor on a non-Claude member is still refused", () => {
+    const result = resolveNodeConfig(makeCtx({ member: makeMember({ runtime: "codex", advisorModel: "claude-fable-5-1" }) }));
+    expect(result.ok).toBe(false);
   });
 
   it("profile preference effort overrides spec defaults", () => {

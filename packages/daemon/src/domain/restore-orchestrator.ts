@@ -1025,7 +1025,7 @@ export class RestoreOrchestrator {
         await this.rollbackToZeroSession(node.id, sessionName, launchResult?.session.id, priorState);
         return { nodeId: node.id, logicalId: node.logicalId, status: "awaiting-decision", error: `Original session unresumable: resume requested but no token available. No session is running. Re-run with --fresh ${node.logicalId} for a deliberate fresh-primed seat, or restore the original session manually.` };
       } else {
-        const resumeOutcome = await this.attemptResume(node.id, sessionName, resumeType, resumeToken, node.cwd ?? "/", node.codexConfigProfile, node.model, this.resolveRestorePosture(node.id, rigId), node.effort, warnings);
+        const resumeOutcome = await this.attemptResume(node.id, sessionName, resumeType, resumeToken, node.cwd ?? "/", node.codexConfigProfile, node.model, this.resolveRestorePosture(node.id, rigId), node.effort, warnings, node.advisorModel);
         if (resumeOutcome.kind === "resumed") {
           baseStatus = "resumed";
         } else if (resumeOutcome.kind === "attention_required") {
@@ -1191,7 +1191,7 @@ export class RestoreOrchestrator {
             // found" on every resumed Pi seat). Claude/Codex silently lost
             // their -m/--model on restore the same way.
             model: node.model ?? undefined,
-            effort: node.effort ?? undefined,
+            effort: node.effort ?? undefined, advisorModel: node.advisorModel ?? undefined,
           };
 
           try {
@@ -1471,6 +1471,8 @@ export class RestoreOrchestrator {
     resolvedPosture?: "floor" | "full_bypass" | "auto",
     effort?: string | null,
     warnings?: string[],
+    // Trailing so positional callers that stop at warnings stay correct.
+    advisorModel?: string | null,
   ): Promise<
     | { kind: "resumed" }
     | { kind: "retry_fresh" }
@@ -1495,8 +1497,10 @@ export class RestoreOrchestrator {
     const launchTail: [effort?: string | null, nonInterruptive?: boolean, kernelAuthority?: boolean] = kernelAuthority
       ? [effort, nonInterruptive, true] : nonInterruptive ? [effort, true] : effort !== undefined ? [effort] : [];
     if (this.claudeResume.canResume(resumeType, resumeToken)) {
-      const claudeTail: [effort?: string | null, nonInterruptive?: boolean, kernelAuthority?: boolean, claudePermissionFloor?: boolean] = claudePermissionFloor
-        ? [effort, nonInterruptive, kernelAuthority, true] : launchTail;
+      // Advisor rides last, so it fills the whole tail; without either the call stays as before.
+      const claudeTail: [effort?: string | null, nonInterruptive?: boolean, kernelAuthority?: boolean, claudePermissionFloor?: boolean, advisorModel?: string | null] = advisorModel != null
+        ? [effort, nonInterruptive, kernelAuthority, claudePermissionFloor, advisorModel]
+        : claudePermissionFloor ? [effort, nonInterruptive, kernelAuthority, true] : launchTail;
       const result = await this.claudeResume.resume(sessionName, resumeType, resumeToken, cwd, resolvedPosture, model, permissionMode, nodeId, ...claudeTail);
       if (result.ok) {
         const notice = nonInterruptiveNotice("claude-code", { nonInterruptive, launchPosture: resolvedPosture, permissionMode });

@@ -578,24 +578,27 @@ identity remains unverified; a version number alone cannot clear it.
     .command("set-model")
     .argument("<seat>", "Canonical session name or logical seat ref")
     .requiredOption("--model <id>", "Target model id (e.g. the canonical id an alias pin migrates to)")
+    .option("--effort <level>", "Persist reasoning effort, or inherit native defaults")
+    .option("--advisor <model>", "Claude advisor model id, off, or inherit; applies only to this seat")
     .requiredOption("--reason <text>", "Audit reason recorded on the node.model_changed event")
     .option("--operator <address>", "Operator recorded on the audit event")
     .option("--json", "JSON output for agents")
     .description("Persist a seat's model id (audited); subsequent managed resumes use the new model")
     .addHelpText("after", `
-Session lineage is untouched — only nodes.model changes, and every managed
-resume/successor launch reads it at call time. Examples:
+Session lineage is untouched. Model, optional effort and advisor apply to subsequent managed
+resumes and successor launches. Snapshot restore uses the captured configuration. Examples:
   rig seat set-model dev-impl@my-rig --model claude-fable-5 --reason "alias fable -> canonical"
-  rig seat set-model dev.impl --model claude-fable-5 --reason "canonical migration" --json`)
-    .action(async (seat: string, opts: { model: string; reason: string; operator?: string; json?: boolean }) => {
-      await runLifecycleVerb("set-model", seat, { model: opts.model, reason: opts.reason, operator: opts.operator }, opts, (data) => {
+  rig seat set-model dev.impl --model claude-fable-5 --reason "canonical migration" --json
+  rig seat set-model orch.lead --model claude-opus-5-5 --effort xhigh --advisor claude-fable-5-1 --reason "routing"`)
+    .action(async (seat: string, opts: { model: string; effort?: string; advisor?: string; reason: string; operator?: string; json?: boolean }) => {
+      await runLifecycleVerb("set-model", seat, { model: opts.model, effort: opts.effort, advisor: opts.advisor, reason: opts.reason, operator: opts.operator }, opts, (data) => {
         const s = data["seat"] as { logicalId?: string; rigName?: string } | undefined;
         if (data["changed"] === false) {
-          console.log(`Model for ${s?.logicalId}@${s?.rigName} already ${String(data["to"])} — no change recorded.`);
+          console.log(`Model configuration for ${s?.logicalId}@${s?.rigName} already ${String(data["to"])} — no change recorded.`);
           return;
         }
         console.log(`Model for ${s?.logicalId}@${s?.rigName}: ${String(data["from"] ?? "none")} -> ${String(data["to"])} (audited).`);
-        console.log("The next managed resume/successor launch composes the new model.");
+        console.log("The next managed resume/successor launch uses the saved model configuration.");
       });
     });
 

@@ -107,16 +107,27 @@ function codexResumeToken(args: string[]): string | null | undefined {
 // A fork's --resume names its parent, so it cannot prove the new occupant.
 function claudeSessionToken(args: string[]): string | null {
   let token: string | null = null;
+  const seen = new Set<string>();
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]!;
     if (index === 0 && /^\(\d+\.\d+\.\d+[^)]*\)$/.test(arg)) continue;
-    if (arg === "--settings") {
-      const value = args[++index];
+    if (arg === "--settings" || arg.startsWith("--settings=")) {
+      // Launch-only settings (an inline JSON object or a file) never name the session.
+      const value = arg === "--settings" ? args[++index] : arg.slice("--settings=".length);
       if (!value || value.startsWith("-")) return null;
       continue;
     }
-    if (["--permission-mode", "--model", "--name", "--effort"].includes(arg)) { index += 1; continue; }
-    if (/^--(?:permission-mode|model|name|settings|effort)=/.test(arg) || arg === "--dangerously-skip-permissions") continue;
+    const option = arg.match(/^--(permission-mode|model|name|effort)(?:=(.*))?$/);
+    if (option) {
+      const key = option[1]!;
+      const value = option[2] ?? args[++index];
+      if (seen.has(key) || !value || value.startsWith("-")) return null;
+      // Values are not validated here: the effort level never names the conversation,
+      // and specs may carry levels newer than this list. Duplicates stay indeterminate.
+      seen.add(key);
+      continue;
+    }
+    if (arg === "--dangerously-skip-permissions") continue;
     const identity = arg.match(/^--(?:session-id|resume)(?:=(.*))?$/);
     if (!identity) return null; // Unknown argv is not positive identity proof.
     const value = identity[1] ?? args[++index];
@@ -132,10 +143,18 @@ function claudeSessionToken(args: string[]): string | null {
 function claudeSessionIdentity(args: string[]): string | null | { unparsed: true } {
   const unparsed = { unparsed: true } as const;
   let token: string | null = null;
+  let effortSeen = false;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]!;
     if (index === 0 && /^\(\d+\.\d+\.\d+[^)]*\)$/.test(arg)) continue;
-    if (["--permission-mode", "--model", "--name", "--settings", "--effort"].includes(arg)) {
+    const effort = arg.match(/^--effort(?:=(.*))?$/);
+    if (effort) {
+      const value = effort[1] ?? args[++index];
+      if (effortSeen || !value || value.startsWith("-")) return unparsed;
+      effortSeen = true;
+      continue;
+    }
+    if (["--permission-mode", "--model", "--name", "--settings"].includes(arg)) {
       const value = args[++index];
       if (!value || value.startsWith("-")) return unparsed;
       continue;

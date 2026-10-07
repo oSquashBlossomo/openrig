@@ -1,7 +1,8 @@
-import { operationalLaunchArgs, operationalLaunchArg } from "./kernel-authority.js";
+import { operationalLaunchArgs } from "./kernel-authority.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { TmuxAdapter } from "./tmux.js";
 import type { SeatLaunchEnvironment } from "../domain/seat-launch-environment.js";
+import { claudeLaunchSettingsArgs } from "../domain/claude-advisor.js";
 import { shellQuote } from "./shell-quote.js";
 import { claudePostureFlag, claudeClassicRendererEnvPrefix } from "./yolo-mode.js";
 import { assessNativeResumeProbe } from "../domain/native-resume-probe.js";
@@ -63,6 +64,8 @@ export class ClaudeResumeAdapter {
     nonInterruptive?: boolean,
     kernelAuthority?: boolean,
     claudePermissionFloor?: boolean,
+    // Trailing: positional callers that stop earlier keep their meaning.
+    advisorModel?: string | null,
   ): Promise<ResumeResult> {
     if (!this.canResume(resumeType, resumeToken)) {
       return { ok: false, code: "no_resume", message: "Claude resume not available" };
@@ -81,11 +84,14 @@ export class ClaudeResumeAdapter {
       } catch (error) { return { ok: false, code: "permission_selection_refused", message: (error as Error).message }; }
     }
     const choice = { kernelAuthority, nonInterruptive, launchPosture: resolvedPosture, permissionMode: selectedPermissionMode };
+    const launchSettings = claudeLaunchSettingsArgs(operationalLaunchArgs("claude-code", choice), advisorModel);
+    const advisorArgs = launchSettings.advisor;
+    const advisorArg = advisorArgs.length ? ` --settings ${shellQuote(advisorArgs[1]!)}` : "";
     const posture = claudePostureFlag(process.env, resolvedPosture, selectedPermissionMode, cwd, claudePermissionFloor);
     const appliedLaunch = observeClaudePermission(posture);
-    const permissionMode = posture + operationalLaunchArg("claude-code", choice);
-    const cmd = managed ? managed.command(["--permission-mode", selectedPermissionMode!, ...operationalLaunchArgs("claude-code", choice), ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []), "--resume", resumeToken!])
-      : `${claudeClassicRendererEnvPrefix(process.env)}claude ${permissionMode}${modelArg}${effortArg} --resume ${shellQuote(resumeToken!)}`;
+    const permissionMode = posture + launchSettings.operational.map(arg => ` ${shellQuote(arg)}`).join("");
+    const cmd = managed ? managed.command(["--permission-mode", selectedPermissionMode!, ...launchSettings.operational, ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []), ...advisorArgs, "--resume", resumeToken!])
+      : `${claudeClassicRendererEnvPrefix(process.env)}claude ${permissionMode}${modelArg}${effortArg}${advisorArg} --resume ${shellQuote(resumeToken!)}`;
 
     const textResult = managed ? await this.tmux.sendShellCommand(tmuxSessionName, cmd, managed.assertCurrent)
       : this.options.seatLaunchEnvironment

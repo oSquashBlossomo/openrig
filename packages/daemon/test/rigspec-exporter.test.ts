@@ -67,6 +67,16 @@ describe("RigSpecExporter", () => {
     return { rig, n1, n2 };
   }
 
+  it("exports seat effort and advisor selection without changing peers", () => {
+    const { rig, n1 } = seedRig();
+    rigRepo.setNodeEffort(n1.id, "xhigh");
+    rigRepo.setNodeAdvisorModel(n1.id, "off");
+    const spec = exporter.exportRig(rig.id);
+    const parsed = RigSpecSchema.normalize(RigSpecCodec.parse(RigSpecCodec.serialize(spec)) as Record<string, unknown>);
+    expect(parsed.nodes.find(n => n.id === "orchestrator")).toMatchObject({ effort: "xhigh", advisorModel: "off" });
+    expect(parsed.nodes.find(n => n.id === "worker")!.advisorModel).toBeUndefined();
+  });
+
   it("export rig with nodes and edges -> valid RigSpec", () => {
     const { rig } = seedRig();
     const spec = exporter.exportRig(rig.id);

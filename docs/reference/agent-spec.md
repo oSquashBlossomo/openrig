@@ -177,6 +177,7 @@ defaults:
 | `runtime` | string | no | — | Default runtime for this agent. Precedence: the rig spec member's `runtime`, then the profile's `preferences.runtime`, then this, then `claude-code`. |
 | `model` | string | no | — | Default model, with the same precedence. |
 | `effort` | string | no | — | Default reasoning effort, with the same precedence. Claude gets `--effort`, Codex `-c model_reasoning_effort=…`. A blank or non-string value is ignored with an advisory. |
+| `advisor_model` | string | no | — | Claude advisor model id or `off`. Same precedence as `model`; omitted values inherit native defaults. This is a session-local launch override. Members on other runtimes ignore this default. |
 | `lifecycle` | Lifecycle | no | see below | Lifecycle behavior defaults. |
 
 ### Lifecycle Defaults
@@ -261,6 +262,7 @@ profiles:
 | `preferences.runtime` | string | no | — | Preferred runtime. |
 | `preferences.model` | string | no | — | Preferred model. |
 | `preferences.effort` | string | no | — | Preferred reasoning effort. |
+| `preferences.advisor_model` | string | no | — | Claude advisor model id or `off`; overrides agent defaults. |
 | `uses` | Uses | no | all empty | Selects which declared resources are active for this profile. |
 | `startup` | StartupBlock | no | — | Profile-level startup files and actions. Merged with agent-level startup via layering. |
 | `lifecycle` | Lifecycle | no | — | Profile-level lifecycle overrides. `restore_policy` can only narrow (`resume_if_possible` → `relaunch_fresh` → `checkpoint_only`); `compaction_strategy` and `mechanic` take the most specific value (defaults, then profile, then member). |

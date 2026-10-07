@@ -51,7 +51,7 @@ const RIG_KEYS = new Set([
 const POD_KEYS = new Set(["id", "label", "summary", "continuity_policy", "startup", "members", "edges"]);
 const MEMBER_KEYS = new Set([
   "id", "label", "agent_ref", "profile", "runtime", "codex_config_profile",
-  "model", "effort", "role", "permission_policy", "cwd", "restore_policy",
+  "model", "effort", "advisor_model", "role", "permission_policy", "cwd", "restore_policy",
   "compaction_strategy", "mechanic", "startup", "session_source", "starter_ref",
 ]);
 const EDGE_KEYS = new Set(["kind", "from", "to"]);
@@ -473,6 +473,11 @@ function validateMember(member: Record<string, unknown>, index: number, podPrefi
       errors.push(`${prefix}.codex_config_profile: must contain only letters, numbers, underscores, dots, or hyphens`);
     } else if (member["runtime"] !== "codex") {
       errors.push(`${prefix}.codex_config_profile: only valid when runtime is "codex"`);
+    }
+  }
+  if (member["advisor_model"] !== undefined) {
+    if (member["runtime"] !== "claude-code" || typeof member["advisor_model"] !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(member["advisor_model"]) || ["on", "inherit"].includes(member["advisor_model"])) {
+      errors.push(`${prefix}.advisor_model: requires a Claude seat and an explicit model id or off`);
     }
   }
   if (member["effort"] !== undefined) {
@@ -1129,6 +1134,7 @@ function normalizePod(raw: Record<string, unknown>): RigSpecPod {
     runtime: m["runtime"] as string,
     codexConfigProfile: m["codex_config_profile"] as string | undefined,
     model: m["model"] as string | undefined,
+    advisorModel: typeof m["advisor_model"] === "string" && m["advisor_model"].trim() ? m["advisor_model"].trim() : undefined,
     effort: typeof m["effort"] === "string" && m["effort"].trim() ? m["effort"].trim() : undefined,
     role: m["role"] as string | undefined,
     permissionPolicy: m["permission_policy"] as string | undefined,
@@ -1245,6 +1251,9 @@ export class LegacyRigSpecSchema {
           errors.push(`node ${node["id"]}: unknown runtime '${node["runtime"]}'`);
         }
 
+        if (node["advisor_model"] !== undefined && (node["runtime"] !== "claude-code" || typeof node["advisor_model"] !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(node["advisor_model"]) || ["on", "inherit"].includes(node["advisor_model"]))) {
+          errors.push(`nodes.${nodeWhere}.advisor_model: requires a Claude seat and an explicit model id or off`);
+        }
         if (node["effort"] !== undefined) {
           if (typeof node["effort"] !== "string" || !node["effort"].trim()) {
             advisories.push(`nodes.${nodeWhere}.effort: non-string value "${node["effort"]}" ignored; effort must be a text value`);
@@ -1300,6 +1309,7 @@ export class LegacyRigSpecSchema {
       runtime: n["runtime"] as string,
       role: (n["role"] as string) ?? undefined,
       model: (n["model"] as string) ?? undefined,
+      advisorModel: typeof n["advisor_model"] === "string" && n["advisor_model"].trim() ? n["advisor_model"].trim() : undefined,
       effort: typeof n["effort"] === "string" && n["effort"].trim() ? n["effort"].trim() : undefined,
       cwd: (n["cwd"] as string) ?? undefined,
       surfaceHint: (n["surface_hint"] as string) ?? undefined,

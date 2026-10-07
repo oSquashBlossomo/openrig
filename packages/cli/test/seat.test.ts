@@ -928,3 +928,13 @@ describe("seat request deadlines (#260)", () => {
     expect((output as { error: Error }).error.message).toContain("timed out after 5000ms");
   });
 });
+
+describe("seat model configuration", () => {
+  it("sends optional effort and explicit advisor to the audited mutation", async () => {
+    const paths: string[] = [], bodies: unknown[] = [];
+    const deps = makeDeps({ status: 200, data: { ok: true, changed: true } }, paths, bodies);
+    await captureLogs(() => makeCommand(deps).parseAsync(["seat", "set-model", "orch-lead@rig", "--model", "claude-opus-5-5", "--effort", "xhigh", "--advisor", "claude-fable-5-1", "--reason", "routing", "--json"], { from: "user" }));
+    expect(paths).toEqual(["/api/seat/set-model/orch-lead%40rig"]);
+    expect(bodies).toEqual([{ model: "claude-opus-5-5", effort: "xhigh", advisor: "claude-fable-5-1", reason: "routing", operator: undefined }]);
+  });
+});

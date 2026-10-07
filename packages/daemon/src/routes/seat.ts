@@ -247,7 +247,7 @@ export function seatLifecycleService(c: { get(key: never): unknown }): SeatLifec
 }
 
 function seatLifecycleStatus(code: SeatRefusal["code"]): 400 | 404 | 409 | 500 | 502 {
-  if (code === "seat_ref_required" || code === "missing_model" || code === "missing_reason" || code === "fresh_required") return 400;
+  if (code === "seat_ref_required" || code === "missing_model" || code === "invalid_model_configuration" || code === "missing_reason" || code === "fresh_required") return 400;
   if (code === "seat_not_found") return 404;
   if (code === "tmux_probe_failed") return 502;
   if (code === "launch_unavailable" || code === "runtime_adapter_missing" || code === "launch_failed" || code === "startup_failed") return 500;
@@ -273,6 +273,8 @@ seatRoutes.post("/set-model/:seatRef", async (c) => {
   const result = await seatLifecycleService(c).setModel({
     seatRef: c.req.param("seatRef")!,
     model: typeof body["model"] === "string" ? body["model"] : "",
+    ...(Object.hasOwn(body, "effort") ? { effort: typeof body["effort"] === "string" ? body["effort"] : "" } : {}),
+    ...(Object.hasOwn(body, "advisor") ? { advisor: typeof body["advisor"] === "string" ? body["advisor"] : "" } : {}),
     reason: typeof body["reason"] === "string" ? body["reason"] : "",
     operator: typeof body["operator"] === "string" ? body["operator"] : null,
   });

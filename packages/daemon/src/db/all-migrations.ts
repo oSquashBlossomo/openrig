@@ -96,6 +96,7 @@ import { humanReplyToSchema } from "./migrations/090_human_reply_to.js";
 import { humanQuestionsSchema } from "./migrations/091_human_questions.js";
 import { nodeEffortSchema } from "./migrations/092_node_effort.js";
 import { usageSamplesLatestIndexesSchema } from "./migrations/094_usage_samples_latest_indexes.js";
+import { nodeAdvisorModelSchema } from "./migrations/095_node_advisor_model.js";
 import type { Migration } from "./migrate.js";
 
 import { rigNonInterruptiveSchema } from "./migrations/095_rig_non_interruptive.js";
@@ -196,5 +197,6 @@ export const ALL_MIGRATIONS: Migration[] = [
   humanQuestionsSchema,
   nodeEffortSchema,
   usageSamplesLatestIndexesSchema,
+  nodeAdvisorModelSchema,
   rigNonInterruptiveSchema,
 ];

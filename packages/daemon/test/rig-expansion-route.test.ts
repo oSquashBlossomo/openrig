@@ -28,6 +28,28 @@ describe("POST /api/rigs/:rigId/expand", () => {
     };
   }
 
+  it.each(["advisor_model", "advisorModel"])("preserves %s and effort on the real expansion ingress", async key => {
+    const rig = seedRig("advisor-expansion");
+    const spy = vi.spyOn(setup.podInstantiator, "materializeStructured");
+    await setup.app.request(`/api/rigs/${rig.id}/expand`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pod: { id: "dev", label: "Dev", members: [{ id: "lead", runtime: "claude-code", agent_ref: "local:agents/impl", profile: "default", cwd: "/tmp", effort: "xhigh", [key]: "claude-fable-5-1" }], edges: [] } }),
+    });
+    const spec = spy.mock.calls[0]![0] as { pods: Array<{ members: Array<Record<string, unknown>> }> };
+    expect(spec.pods[0]!.members[0]).toMatchObject({ effort: "xhigh", advisor_model: "claude-fable-5-1" });
+    spy.mockRestore();
+  });
+
+  it.each([null, true, "", "on", { model: "x" }])("rejects invalid expansion advisor %s before persistence", async advisor => {
+    const rig = seedRig("invalid-advisor");
+    const res = await setup.app.request(`/api/rigs/${rig.id}/expand`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pod: { id: "dev", label: "Dev", members: [{ id: "lead", runtime: "claude-code", agent_ref: "local:agents/impl", profile: "default", cwd: "/tmp", advisor_model: advisor }], edges: [] } }),
+    });
+    expect(res.status).toBe(400);
+    expect(db.prepare("SELECT COUNT(*) AS c FROM nodes WHERE rig_id = ?").get(rig.id)).toEqual({ c: 0 });
+  });
+
   // Seam B (R2 terminal at 4ac243c3): present-INVALID permission_policy must reach the
   // ONE canonical validator — the normalizer may not erase presence into absence/floor.
   it("SEAM-B RED: expansion member permission_policy: null -> structured 400, ZERO persistence, NO launch (rig carries builtin:yolo)", async () => {

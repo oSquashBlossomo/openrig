@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { findExactNativeResumeProcess, observeClaudePaneStartedAt, verifyClaudePaneProcess, verifyCodexPaneProcess, type NativeProcessRow } from "../src/domain/native-process-lineage.js";
+import { findExactNativeResumeProcess, observeClaudeDelivery, observeClaudePaneStartedAt, verifyClaudePaneProcess, verifyCodexPaneProcess, type NativeProcessRow } from "../src/domain/native-process-lineage.js";
 
 const token = "00000000-0000-7000-8000-000000000001";
 const startedAt = "Sat Jan  1 12:00:00 2000";
@@ -116,5 +116,24 @@ describe("Claude rewritten process titles", () => {
   it("rejects executable path changes between the two observations", async () => {
     const changed = processRows("/other/.local/share/claude/versions/2.1.288");
     expect(await verify(vi.fn().mockReturnValueOnce(processRows()).mockReturnValueOnce(changed))).toBeNull();
+  });
+});
+
+describe("Claude advisor launch identity", () => {
+  const native = (options: string): NativeProcessRow[] => [{ pid: 10, ppid: 1, pgid: 10, tpgid: 10, executableName: "claude", startedAt, command: `claude --effort xhigh ${options} --resume ${token}` }];
+  const proof = (options: string) => verifyClaudePaneProcess({ target: "%1", tmux: { getPanePid: async () => 10 }, listProcesses: () => native(options), expectedToken: token });
+  it("accepts the advisor override alone or merged into launch-only operational settings", async () => {
+    expect((await proof(`--settings '{"advisorModel":"claude-fable-5-1"}'`))?.process.pid).toBe(10);
+    expect((await proof(`--settings '{"advisorModel":""}'`))?.process.pid).toBe(10);
+    expect((await proof(`--settings '{"permissions":{"allow":["Bash(rig:*)"]},"advisorModel":"claude-fable-5-1"}'`))?.process.pid).toBe(10);
+  });
+  it.each([`--effort invalid`, `--effort high --effort xhigh`, `--fork-session`, `--settings`])("rejects indeterminate or conflicting native options: %s", async options => {
+    expect(await proof(options)).toBeNull();
+  });
+  it.each(["ultracode", "High"])("does not validate a single effort level (%s) while proving or observing identity", async effort => {
+    const rows: NativeProcessRow[] = [{ pid: 10, ppid: 1, pgid: 10, tpgid: 10, executableName: "claude", startedAt, command: `claude --effort ${effort} --resume ${token}` }];
+    const input = { target: "%1", tmux: { getPanePid: async () => 10 }, listProcesses: () => rows, expectedToken: token };
+    expect((await verifyClaudePaneProcess(input))?.process.pid).toBe(10);
+    expect((await observeClaudeDelivery(input)).state).toBe("verified");
   });
 });

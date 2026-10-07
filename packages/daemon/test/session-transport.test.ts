@@ -923,9 +923,11 @@ describe("SessionTransport", () => {
     const result = await transport.send("dev-impl@my-rig", "hello", { waitForIdleMs: 60 });
     const wall = performance.now() - t0;
     expect(result).toMatchObject({ ok: false, reason: "target_activity_unknown", sent: false });
-    expect(result.waitedMs!).toBeGreaterThanOrEqual(60);
+    expect(result.waitedMs).toBe(60);
     expect(result.attempts!).toBeGreaterThanOrEqual(2);
-    expect(wall).toBeLessThan(60 + 250);
+    // Parallel CI workers can delay timer delivery beyond 250ms. The exact-clock and
+    // QA603 controls enforce the 60ms deadline; this real-timer check remains bounded.
+    expect(wall).toBeLessThan(60 + 500);
     expect(sendTextSpy).not.toHaveBeenCalled();
   });
 

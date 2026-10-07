@@ -153,6 +153,8 @@ export class RigExpansionService {
               : {}),
             ...(member.cwd ? { cwd: member.cwd } : {}),
             ...(member.model ? { model: member.model } : {}),
+            ...("effort" in member ? { effort: member.effort } : {}),
+            ...("advisorModel" in member ? { advisor_model: member.advisorModel } : {}),
             // OPR.0.4.6.FAC1: role rides the fragment→spec map (a
             // provided role must never be silently dropped here).
             ...(member.role ? { role: member.role } : {}),

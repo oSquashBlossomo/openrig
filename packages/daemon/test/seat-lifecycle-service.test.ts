@@ -123,6 +123,40 @@ describe("SeatLifecycleService", () => {
     return { rig: existing, node, session, sessionName };
   }
 
+  it("updates effort and advisor atomically even when model is unchanged, preserving lineage and peers", async () => {
+    const { rig, node, sessionName } = seatFixture("advisor-rig", "orch.lead", { model: "claude-opus-5-5" });
+    const peer = seatFixture("advisor-rig", "dev.impl", { model: "claude-opus-5-5" });
+    const before = lineageSnapshot(db, node.id);
+    const peerBefore = rigRepo.getRig(rig.id)!.nodes.find(n => n.id === peer.node.id);
+    const result = await service.setModel({ seatRef: sessionName, model: "claude-opus-5-5", effort: "xhigh", advisor: "claude-fable-5-1", reason: "seat routing" });
+    expect(result).toMatchObject({ ok: true, changed: true });
+    expect(rigRepo.getRig(rig.id)!.nodes.find(n => n.id === node.id)).toMatchObject({ effort: "xhigh", advisorModel: "claude-fable-5-1" });
+    expect(lineageSnapshot(db, node.id)).toEqual(before);
+    expect(rigRepo.getRig(rig.id)!.nodes.find(n => n.id === peer.node.id)).toEqual(peerBefore);
+    expect(eventsOfType(db, "node.model_changed")[0]).toMatchObject({ effortFrom: null, effortTo: "xhigh", advisorFrom: null, advisorTo: "claude-fable-5-1" });
+    expect(await service.setModel({ seatRef: sessionName, model: "claude-opus-5-5", effort: "xhigh", advisor: "claude-fable-5-1", reason: "repeat" })).toMatchObject({ ok: true, changed: false });
+    expect(eventsOfType(db, "node.model_changed")).toHaveLength(1);
+  });
+
+  it("advisor off and inherit preserve other settings; invalid values never mutate", async () => {
+    const { rig, node, sessionName } = seatFixture("advisor-off", "orch.lead");
+    rigRepo.setNodeEffort(node.id, "high");
+    for (const advisor of ["", "on", "bad model"]) {
+      expect(await service.setModel({ seatRef: sessionName, model: "changed", advisor, reason: "invalid" })).toMatchObject({ ok: false, code: "invalid_model_configuration" });
+    }
+    expect(await service.setModel({ seatRef: sessionName, model: "fable", effort: "wrong", reason: "invalid" })).toMatchObject({ ok: false });
+    for (const effort of ["none", "minimal"]) {
+      expect(await service.setModel({ seatRef: sessionName, model: "changed", effort, reason: "invalid Claude effort" })).toMatchObject({ ok: false, code: "invalid_model_configuration" });
+    }
+    for (const advisor of ["off", "inherit"]) {
+      expect(await service.setModel({ seatRef: sessionName, model: "fable", advisor, reason: "native selection" })).toMatchObject({ ok: true, changed: true });
+      expect(rigRepo.getRig(rig.id)!.nodes.find(n => n.id === node.id)).toMatchObject({ model: "fable", effort: "high", advisorModel: advisor === "off" ? "off" : null });
+    }
+    db.prepare("UPDATE nodes SET runtime = 'codex' WHERE id = ?").run(node.id);
+    expect(await service.setModel({ seatRef: sessionName, model: "changed", advisor: "off", reason: "wrong runtime" })).toMatchObject({ ok: false, code: "invalid_model_configuration" });
+    expect(rigRepo.getRig(rig.id)!.nodes.find(n => n.id === node.id)!.model).toBe("fable");
+  });
+
   // ---- P1 / P2 — set-model ----
 
   it("P1: set-model persists nodes.model and emits one audited node.model_changed event", async () => {

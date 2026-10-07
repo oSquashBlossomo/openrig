@@ -1,3 +1,4 @@
+import "./helpers/isolated-claude-config.js";
 import { describe, it, expect, vi } from "vitest";
 import { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
 import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
@@ -102,6 +103,27 @@ describe("ClaudeResumeAdapter", () => {
       expect(sendText.mock.calls[0]![1]).toBe(
         "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --permission-mode acceptEdits --model 'gpt-5.4-cheap' --effort 'high' --resume 'my-session'"
       );
+    });
+
+    it.each(["claude-fable-5-1", "off"])("advisor %s stays session-local while resume identity and permission remain exact", async (advisor) => {
+      const sendText = vi.fn(async () => ({ ok: true as const }));
+      const adapter = new ClaudeResumeAdapter(mockTmux({ sendText }));
+      await adapter.resume("control@rig", "claude_id", "native-token", "/repo", "floor", "claude-opus-5-5", undefined, "node", "xhigh");
+      const control = sendText.mock.calls[0]![1];
+      await adapter.resume("lead@rig", "claude_id", "native-token", "/repo", "floor", "claude-opus-5-5", undefined, "node", "xhigh", undefined, undefined, undefined, advisor);
+      expect(sendText.mock.calls[1]![1]).toBe(control.replace(" --resume", ` --settings '${JSON.stringify({ advisorModel: advisor === "off" ? "" : advisor })}' --resume`));
+    });
+
+    it("an advisor joins kernel-authority settings in one --settings value instead of shadowing them", async () => {
+      const sendText = vi.fn(async () => ({ ok: true as const }));
+      const adapter = new ClaudeResumeAdapter(mockTmux({ sendText }));
+      await adapter.resume("lead@kernel", "claude_id", "native-token", "/repo", "floor", undefined, undefined, "node", undefined, undefined, true, undefined, "claude-fable-5-1");
+      const command = sendText.mock.calls[0]![1] as string;
+      expect(command.match(/--settings/g)).toHaveLength(1);
+      const settings = JSON.parse(command.match(/'--settings' '([^']+)'/)![1]!);
+      expect(settings.advisorModel).toBe("claude-fable-5-1");
+      expect(settings.permissions.allow).toContain("Bash(rig:*)");
+      expect(command).toContain("--resume 'native-token'");
     });
 
     it("returns { ok: true } on success", async () => {

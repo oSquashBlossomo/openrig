@@ -31,6 +31,8 @@ interface InventoryRow {
   role: string | null;
   runtime: string | null;
   model: string | null;
+  effort: string | null;
+  advisor_model: string | null;
   codex_config_profile: string | null;
   agent_ref: string | null;
   profile: string | null;
@@ -510,8 +512,8 @@ export function getNodeInventory(db: Database.Database, rigId: string): NodeInve
 function runInventoryRowQuery(db: Database.Database, whereClause: string, orderClause: string, params: readonly string[]): InventoryRow[] {
   // Join nodes with newest session (max ULID = max session.id string comparison)
   // and the rig name
-  const hasCodexConfigProfile = db.prepare("PRAGMA table_info(nodes)").all()
-    .some((row) => (row as { name?: string }).name === "codex_config_profile");
+  const columns = new Set((db.prepare("PRAGMA table_info(nodes)").all() as Array<{ name: string }>).map(row => row.name));
+  const hasCodexConfigProfile = columns.has("codex_config_profile");
   const codexConfigProfileSelect = hasCodexConfigProfile
     ? "n.codex_config_profile"
     : "NULL";
@@ -526,6 +528,8 @@ function runInventoryRowQuery(db: Database.Database, whereClause: string, orderC
       n.role,
       n.runtime,
       n.model,
+      ${columns.has("effort") ? "n.effort" : "NULL"} as effort,
+      ${columns.has("advisor_model") ? "n.advisor_model" : "NULL"} as advisor_model,
       ${codexConfigProfileSelect} as codex_config_profile,
       n.agent_ref,
       n.profile,
@@ -664,6 +668,8 @@ function buildInventoryEntry(
     latestError: row.startup_status === "ready" ? null : getLatestError(db, row.rig_id, row.node_id),
     // Extended fields
     model: row.model,
+    effort: row.effort,
+    advisorModel: row.advisor_model,
     agentRef: row.agent_ref,
     profile: row.profile,
     codexConfigProfile: row.codex_config_profile,

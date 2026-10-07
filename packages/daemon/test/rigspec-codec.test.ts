@@ -75,7 +75,7 @@ describe("RigSpec codec (pod-aware)", () => {
       pods: [{
         id: "dev",
         label: "Dev",
-        members: [{ id: "impl", agentRef: "local:agents/impl", profile: "tdd", runtime: "claude-code", cwd: ".", effort: "high" }],
+        members: [{ id: "impl", agentRef: "local:agents/impl", profile: "tdd", runtime: "claude-code", cwd: ".", effort: "high", advisorModel: "claude-fable-5-1" }],
         edges: [],
       }],
       edges: [],
@@ -83,9 +83,11 @@ describe("RigSpec codec (pod-aware)", () => {
 
     const yaml = RigSpecCodec.serialize(rigWithEffort);
     expect(yaml).toContain("effort: high");
+    expect(yaml).toContain("advisor_model: claude-fable-5-1");
     const parsed = RigSpecCodec.parse(yaml) as Record<string, unknown>;
     const normalized = RigSpecSchema.normalize(parsed);
     expect(normalized.pods[0]!.members[0]!.effort).toBe("high");
+    expect(normalized.pods[0]!.members[0]!.advisorModel).toBe("claude-fable-5-1");
   });
 
   it("loads YAML with member effort through validation, normalization, and serializes back", () => {
