@@ -444,7 +444,7 @@ export class SeatHandoverService {
       ?? "floor"; // R2 terminal: absence = the locked floor on the continuity edge too
     let permissionOverride: ReturnType<NativePermissionStore["launchOverride"]>;
     try {
-      permissionOverride = new NativePermissionStore(this.db).launchOverride(node.id, node.runtime ?? "");
+      permissionOverride = new NativePermissionStore(this.db).launchOverride(node.id, node.runtime ?? "", successorPosture);
     } catch (error) { return { ok: false, code: "successor_create_failed", message: `Permission selection: ${(error as Error).message}`,
       guidance: "No successor was created. Inspect the seat permission selection before a separately authorized retry." }; }
     const effectivePosture = permissionOverride.launchPosture ?? successorPosture;

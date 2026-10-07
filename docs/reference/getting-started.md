@@ -705,9 +705,10 @@ This records the actor, reason and old/new choice on that seat. It does not
 relaunch it, alter native history, change sibling seats, or edit permission
 rules/hooks. A later lifecycle action remains a separate decision. The explicit
 seat choice overrides the inherited member/rig policy; `--mode inherit` clears
-it without changing that inherited policy. `floor` selects the existing normal
-launch path (including a Codex named profile when configured); it does not
-rewrite a native profile or force its approval settings.
+it without changing that inherited policy. An explicit Claude `floor` selects
+`--permission-mode acceptEdits`; no policy or `permission_policy: none` preserves
+a selected native default. Codex `floor` keeps its normal launch path, including
+a named profile when configured. These choices do not rewrite native settings.
 
 Codex and Claude accept `floor` and `full_bypass`. Additional Claude native modes,
 including `auto`, require support advertised by the managed executable's help.

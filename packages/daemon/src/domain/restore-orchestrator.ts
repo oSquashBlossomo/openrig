@@ -1485,7 +1485,7 @@ export class RestoreOrchestrator {
     try {
       const runtime = this.claudeResume.canResume(resumeType, resumeToken) ? "claude-code"
         : this.codexResume.canResume(resumeType, resumeToken) ? "codex" : "pi";
-      const override = new NativePermissionStore(this.db).launchOverride(nodeId, runtime);
+      const override = new NativePermissionStore(this.db).launchOverride(nodeId, runtime, resolvedPosture);
       kernelAuthority = override.kernelAuthority === true;
       resolvedPosture = override.launchPosture ?? resolvedPosture;
       permissionMode = override.permissionMode ?? (resolvedPosture === "auto" && runtime === "claude-code" ? "auto" : undefined);

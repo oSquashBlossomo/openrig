@@ -18,6 +18,7 @@ import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import { observeCodexSandbox } from "../src/domain/permission-drift.js";
 import { AppliedLaunchObservationStore } from "../src/domain/applied-launch-observation-store.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
+import { NativePermissionStore } from "../src/domain/native-permission-store.js";
 import { DefaultOccupantInvalidator, type OccupantInvalidator } from "../src/domain/occupant-invalidator.js";
 
 describe("SeatHandoverService", () => {
@@ -110,7 +111,7 @@ describe("SeatHandoverService", () => {
       tmuxAdapter: adapter,
       now: () => new Date("2026-04-24T18:30:00.000Z"),
       newSuccessorId: () => "01SUCCID0",
-      runtimeAdapters: { codex: codexAdapter() },
+      runtimeAdapters: { codex: codexAdapter(), "claude-code": { runtime: "claude-code", launchHarness, checkReady } as unknown as RuntimeAdapter },
       contextUsageStore: { readSidecar } as never,
       resumeTokenCapturer: { captureCodexThreadId } as never,
       ...(claudeProcessStartedAt ? { claudeProcessStartedAt } : {}),
@@ -135,6 +136,29 @@ describe("SeatHandoverService", () => {
     }
     return { rig, node, sessionId };
   }
+
+  it.each(["authored floor", "stored floor", "none", "absent", "explicit auto"])(
+    "Claude handover retains the %s permission distinction at the real successor boundary", async choice => {
+      const { rig, node } = seedSeat({ runtime: "claude-code" });
+      if (choice !== "absent") {
+        rigRepo.setRigPermissionPolicy(rig.id, "builtin:locked");
+        rigRepo.setRigPolicyProvenance(rig.id, { origin: "builtin", launchPosture: "floor", resolvedTarget: null, declaringDir: null });
+      }
+      if (choice === "none") {
+        db.prepare("UPDATE nodes SET permission_policy='none' WHERE id=?").run(node.id);
+        rigRepo.setNodePolicyProvenance(node.id, { origin: "deliberate_none", launchPosture: "floor", resolvedTarget: null, declaringDir: null });
+      }
+      if (choice === "stored floor" || choice === "explicit auto") {
+        new NativePermissionStore(db).write(node.id, { runtime: "claude-code", mode: choice === "stored floor" ? "floor" : "auto" }, "operator", "selection");
+      }
+      launchHarness.mockResolvedValueOnce({ ok: false, error: "inert successor launch" });
+      await service.handover({ seatRef: "dev-impl@seat-rig", operator: "operator", reason: "test continuity", source: "fresh" });
+      expect(launchHarness).toHaveBeenCalledTimes(1);
+      const launched = launchHarness.mock.calls[0]![0];
+      expect(launched.launchPosture).toBe("floor");
+      expect(launched.permissionMode).toBe(choice === "explicit auto" ? "auto"
+        : choice === "authored floor" || choice === "stored floor" ? "acceptEdits" : undefined);
+    });
 
   function seedDiscovery(opts?: { id?: string; tmuxSession?: string; tmuxPane?: string; runtimeHint?: "codex" | "claude-code" | "terminal" | "unknown" }) {
     const discovered = discoveryRepo.upsertDiscoveredSession({

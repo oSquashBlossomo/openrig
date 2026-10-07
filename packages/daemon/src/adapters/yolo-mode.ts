@@ -39,7 +39,9 @@ export function yoloEnabled(
 
 /** Claude launch posture flag: explicit selection, full bypass, or the usability floor.
  * Native defaults omit the fallback flag so Claude keeps its own settings
- * precedence. Unreadable settings are also left to Claude. No files are written. */
+ * precedence. Authored floors arrive as permissionMode=acceptEdits; a bare floor
+ * also represents unselected inheritance. Unreadable settings are left to Claude.
+ * No files are written. */
 export function claudePostureFlag(
   env: NodeJS.ProcessEnv = process.env,
   resolvedPosture?: ResolvedLaunchPosture,

@@ -32,6 +32,9 @@ export function permissionBindingOverride(selection: NativePermissionSelection |
   permissionMode?: string;
 } {
   if (!selection) return {};
+  if (selection.runtime === "claude-code" && selection.mode === "floor") {
+    return { launchPosture: "floor", permissionMode: "acceptEdits" };
+  }
   if (selection.mode === "floor" || selection.mode === "full_bypass") return { launchPosture: selection.mode };
   if (selection.runtime !== "claude-code") throw new Error("Invalid persisted native permission selection.");
   return { permissionMode: selection.mode };

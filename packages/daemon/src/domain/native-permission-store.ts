@@ -43,13 +43,23 @@ export class NativePermissionStore {
   }
 
   /** One decision shared by fresh/continue, legacy restore and same-seat handover. */
-  launchOverride(nodeId: string, runtime: string): Pick<NodeBinding, "launchPosture" | "permissionMode" | "kernelAuthority"> {
+  launchOverride(nodeId: string, runtime: string, resolvedPosture?: NodeBinding["launchPosture"]): Pick<NodeBinding, "launchPosture" | "permissionMode" | "kernelAuthority"> {
     const selection = this.read(nodeId);
     if (selection && selection.runtime !== runtime) {
       throw new Error("Seat runtime changed since permission selection; explicitly select again or inherit.");
     }
     if (!selection && this.hasKernelDefault(nodeId, runtime)) {
       return { kernelAuthority: true, launchPosture: runtime === "codex" ? "full_bypass" : "floor" };
+    }
+    if (!selection && runtime === "claude-code" && resolvedPosture === "floor") {
+      // Lifecycle bindings also use floor for honest absence, to suppress ambient
+      // YOLO. Only an authored policy selects a native mode. Use the caller's
+      // current posture: restore may have re-derived a changed custom policy.
+      const row = this.db.prepare(`SELECT COALESCE(n.policy_origin, r.rig_policy_origin) AS origin
+        FROM nodes n JOIN rigs r ON r.id = n.rig_id WHERE n.id = ?`).get(nodeId) as { origin: string | null } | undefined;
+      if (row?.origin === "builtin" || row?.origin === "custom") {
+        return { kernelAuthority: false, permissionMode: "acceptEdits" };
+      }
     }
     return { kernelAuthority: false, ...permissionBindingOverride(selection) };
   }
@@ -234,7 +244,7 @@ export class NativePermissionStore {
   }
 
   apply(binding: NodeBinding, runtime: string): NodeBinding {
-    const override = this.launchOverride(binding.nodeId, runtime);
+    const override = this.launchOverride(binding.nodeId, runtime, binding.launchPosture);
     const effectivePosture = override.launchPosture ?? binding.launchPosture;
     const permissionMode = override.permissionMode ?? (effectivePosture === "auto" && runtime === "claude-code" ? "auto" : undefined);
     return {
