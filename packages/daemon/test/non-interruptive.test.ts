@@ -117,6 +117,26 @@ describe("non-interruptive launch choice", () => {
     expect(vi.mocked(tmux.sendText).mock.calls[0]![1]).toBe(command.replace(" '--settings' '{\"skipDangerousModePermissionPrompt\":true}'", ""));
   });
 
+  it.each(["fresh", "resume", "fork", "restore"] as const)("Claude %s combines advisor and explicit warning settings once", async mode => {
+    const { tmux, fsOps, binding } = fixture("claude-code");
+    if (mode === "restore") {
+      await new ClaudeResumeAdapter(tmux, { maxWaitMs: 0 }).resume("dev@test", "claude_id", "old-id", "/work",
+        "full_bypass", null, undefined, undefined, "xhigh", true, false, undefined, "claude-fable-5-1");
+    } else {
+      await new ClaudeCodeAdapter({ tmux, fsOps, sleep: async () => {} }).launchHarness({ ...binding, advisorModel: "claude-fable-5-1", effort: "xhigh" },
+        { name: "dev@test", ...(mode === "resume" ? { resumeToken: "old-id" } : {}),
+          ...(mode === "fork" ? { forkSource: { kind: "native_id" as const, value: "old-id" } } : {}) });
+    }
+    const command = vi.mocked(tmux.sendText).mock.calls[0]![1];
+    expect(command.match(/--settings/g)).toHaveLength(1);
+    expect(JSON.parse(command.match(/'--settings' '([^']+)'/)![1]!)).toEqual({
+      skipDangerousModePermissionPrompt: true, advisorModel: "claude-fable-5-1",
+    });
+    expect(command).toContain("--effort 'xhigh'");
+    if (mode !== "fresh") expect(command).toContain(mode === "resume" ? "--resume old-id" : "--resume 'old-id'");
+    expect(fsOps.writeFile).not.toHaveBeenCalled();
+  });
+
   it.each(["fresh", "resume", "fork"] as const)("Codex %s uses the same notices without changing model, sandbox or profile", async mode => {
     const { tmux, fsOps, binding } = fixture("codex");
     const adapter = new CodexRuntimeAdapter({ tmux, fsOps, sleep: async () => {} });

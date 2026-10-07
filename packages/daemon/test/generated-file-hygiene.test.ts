@@ -27,7 +27,7 @@ describe("generated file Git hygiene", () => {
   let root: string;
   let repo: string;
   beforeEach(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), "generated-file-hygiene-"));
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "generated-file-hygiene-")));
     repo = path.join(root, "repo"); fs.mkdirSync(repo);
     git(repo, "init", "-q");
     git(repo, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-qm", "initial");
@@ -78,6 +78,16 @@ describe("generated file Git hygiene", () => {
     expect(git(repo, "diff", "--cached", "--name-only").trim().split("\n").sort()).toEqual([
       ".codex/plugins/openrig-core/user.txt", ".codex/plugins/unselected/plugin.json", ".codex/user-file",
     ]);
+  });
+
+  it("recognizes newly generated core plugin files through a working-directory symlink", () => {
+    const alias = path.join(root, "repo-alias");
+    fs.symlinkSync(repo, alias, "dir");
+    const generated = write(".codex/plugins/openrig-core/payload.txt", "Managed", alias);
+    expect(excludeNewGeneratedFiles(alias, [generated])).toEqual([]);
+    expect(git(repo, "check-ignore", "--", fs.realpathSync(generated)).trim()).toBe(fs.realpathSync(generated));
+    git(repo, "add", "-A");
+    expect(git(repo, "ls-files", "-z")).toBe("");
   });
 
   it.each([false, true])("preserves pre-existing guidance and plugin visibility (tracked=%s)", async tracked => {

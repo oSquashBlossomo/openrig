@@ -114,8 +114,8 @@ built-in (`locked`, `standard`, `open`) to `floor`.
 attachment (`:2006`), then the floor, set on the binding as `launchPosture`
 (`:2158`). `NativePermissionStore.apply()`
 (`native-permission-store.ts:236`) then overlays a seat's explicit
-`rig seat set-permissions` choice, or the kernel operational default described
-below. For Claude, an explicit `floor` choice or a lifecycle-resolved floor with
+`rig seat set-permissions` choice. Kernel seats use the same inheritance.
+For Claude, an explicit `floor` choice or a lifecycle-resolved floor with
 builtin/custom policy provenance carries `claudePermissionFloor: true`. The static
 flag selector emits `acceptEdits` while retaining the classic pane-shell executable
 and provider environment; explicitly named native modes still use the managed
@@ -126,8 +126,7 @@ current re-derived posture, so a stale persisted custom floor cannot replace a
 newly resolved `auto` or `full_bypass`. Seat status reports `effectiveMode: inherit`
 for native inheritance and the CLI displays “inherit native settings”. Prior launch
 arguments and the unverified native effect remain separate; this status read does
-not inspect or claim the native settings merge. The Claude kernel allowance does
-not select a permission mode and therefore also reports native inheritance. `bundle-behaviour.ts` is the read-only
+not inspect or claim the native settings merge. `bundle-behaviour.ts` is the read-only
 preview of the same mapping for an unopened bundle (see
 `packaging-bootstrap-bundles.md`).
 
@@ -158,29 +157,13 @@ It never changes permissions or native settings files. `rig up
 --non-interruptive` and `--no-non-interruptive` save the choice; the setting
 `launch.non_interruptive` supplies the default.
 
-**Kernel operational default.** `NativePermissionStore.launchOverride()`
-(`native-permission-store.ts:46`) gives a Claude Code or Codex seat in the
-persisted rig named `kernel` operational launch arguments when the seat has no
-explicit permission choice, its member and rig declare no permission policy,
-and (for Codex) it has no `-p` profile (`hasKernelDefault`, `:28`). Fresh start,
-continue, restore and handover all take this decision per launch.
-`operationalLaunchArgs()` (`packages/daemon/src/adapters/kernel-authority.ts:19`)
-then replaces the non-interruptive arguments for that seat:
-
-- Claude Code inherits a selected user, project or local native default, otherwise
-  uses `--permission-mode acceptEdits`, and gets
-  `--settings '{"permissions":{"allow":[…]}}'` with `KERNEL_CLAUDE_ALLOW`
-  (`:7`): `Skill`, `Read`, `Edit`, `Write`, `Glob`, `Grep`, `Bash(<command>:*)`
-  for 31 operational commands (`rig`, `tmux`, `node`, `npm`, `git`, `ssh` and
-  others), and `Read(~/**)` (`:13`). It is not the bypass flag, and the user's
-  own ask and deny rules still apply.
-- Codex gets the `full_bypass` posture, `-s danger-full-access -a never`, plus
-  the two notice flags above.
-
-It writes no settings file. If the rig lookup fails, the seat keeps its floor.
-`rig seat status` reports the source as "kernel operational default"
-(`kernel_default`, `native-permission-store.ts:180`).
-
+**Kernel permission inheritance.** `NativePermissionStore.launchOverride()`
+uses explicit per-seat selections and clears stale internal authority markers.
+Fresh start, continue, restore and handover preserve the same authored policies
+and native/profile defaults as other rigs. Naming a rig `kernel` grants no extra
+permissions. Claude's selected user, project or local native default remains authoritative when
+no explicit mode overrides it; Codex retains its named profile or workspace-write
+floor. Explicit non-interruptive mode still applies to full-bypass launches.
 If a native settings file cannot be read or parsed, an inherited Claude launch
 also defers to Claude, which handles its own settings error. OpenRig records the
 deliberate deferral without claiming to know the effective native permission mode.

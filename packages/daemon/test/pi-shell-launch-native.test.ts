@@ -27,7 +27,7 @@ describe.skipIf(!hasTmux || process.platform === "win32")("Pi launch through nat
     const launchMode = mode.split("-")[0];
     const longTmp = mode.endsWith("long-tmpdir");
     const routing = mode.includes("-routing");
-    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-shell-"));
+    const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-shell-")));
     const socket = path.join(temp, "tmux.sock");
     const session = "pi-fixture";
     const long = Array.from({ length: 8 }, () => "nested-directory-" + "x".repeat(35)).join(path.sep);

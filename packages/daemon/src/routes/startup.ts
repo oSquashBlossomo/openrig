@@ -27,6 +27,8 @@ import { RigSpecSchema } from "../domain/rigspec-schema.js";
 import { seatLifecycleService } from "./seat.js";
 import { authBearerTokenMiddleware } from "../middleware/auth-bearer-token.js";
 import { readFreshOccupantRelations } from "../domain/fresh-occupant-relation.js";
+import { deriveActiveOccupantsByNode } from "../domain/active-occupant.js";
+import { verifyClaudeCurrentSession } from "../domain/claude-session-identity.js";
 
 export const startupRoutes = new Hono();
 startupRoutes.use("*", async (c, next) => {
@@ -67,7 +69,8 @@ function currentSnapshot(c: Context, rig: RigWithRelations) {
 
 async function observeSeat(c: Context, rig: RigWithRelations, node: Node) {
   const dot = node.logicalId.indexOf(".");
-  const name = sessions(c).getBindingForNode(node.id)?.tmuxSession ?? (node.podId && dot > 0
+  const binding = sessions(c).getBindingForNode(node.id);
+  const name = binding?.tmuxSession ?? (node.podId && dot > 0
     ? deriveCanonicalSessionName(node.logicalId.slice(0, dot), node.logicalId.slice(dot + 1), rig.rig.name)
     : deriveSessionName(rig.rig.name, node.logicalId));
   try {
@@ -78,9 +81,38 @@ async function observeSeat(c: Context, rig: RigWithRelations, node: Node) {
     const pane = await observeSolePane(tmux(c), name);
     if (!pane.ok) return { state: "unverified", detail: pane.detail, sessionName: name };
     if (node.runtime === "terminal") return { state: "running", detail: "Terminal is available", sessionName: name };
-    const probe = assessNativeResumeProbe({ runtime: node.runtime,
+    const readProbeInput = async () => ({ runtime: node.runtime,
       paneCommand: await tmux(c).getPaneCommand(pane.pane),
       paneContent: (tmux(c).capturePaneScreen ? await tmux(c).capturePaneScreen(pane.pane) : await tmux(c).capturePaneContent(pane.pane, 40)) ?? "" });
+    const input = await readProbeInput();
+    let probe = assessNativeResumeProbe(input);
+    const verified = { claudeAutoIdentityVerified: true, claudeResumeIdentityVerified: true };
+    // A live auto-mode composer can outlast its startup banner. Promote only
+    // after proving this seat's unique current conversation, never from its label.
+    if (node.runtime === "claude-code" && probe.status !== "resumed"
+      && assessNativeResumeProbe({ ...input, ...verified }).status === "resumed") {
+      const history = sessions(c).getSessionsForRig(rig.rig.id);
+      const occupant = deriveActiveOccupantsByNode(history, [node.id])[node.id];
+      const session = occupant?.kind === "resolved" ? history.find(row => row.id === occupant.sessionId) : undefined;
+      if (session?.sessionName === name && session.resumeType === "claude_id" && session.resumeToken) {
+        const native = await verifyClaudeCurrentSession({ target: pane.pane, tmux: tmux(c),
+          expectedToken: session.resumeToken, sessionName: name, cwd: node.cwd });
+        const currentPane = native ? await observeSolePane(tmux(c), name) : null;
+        if (native && currentPane?.ok && currentPane.pane === pane.pane
+          && await tmux(c).getPanePid(pane.pane) === native.panePid) {
+          // Read again so a trust/login/chooser gate that appeared during the
+          // process census still wins over otherwise valid native identity.
+          const currentInput = await readProbeInput();
+          const current = deriveActiveOccupantsByNode(sessions(c).getSessionsForRig(rig.rig.id), [node.id])[node.id];
+          const currentBinding = sessions(c).getBindingForNode(node.id);
+          if (current?.kind === "resolved" && current.sessionId === session.id
+            && currentBinding?.tmuxSession === binding?.tmuxSession && currentBinding?.tmuxPane === binding?.tmuxPane
+            && sessions(c).resumeTokenMatches(session.id, "claude_id", session.resumeToken)) {
+            probe = assessNativeResumeProbe({ ...currentInput, ...verified });
+          }
+        }
+      }
+    }
     return { state: probe.status === "resumed" ? "running" : "attention_required", detail: probe.detail, sessionName: name };
   } catch (error) {
     return { state: "unverified", detail: error instanceof Error ? error.message : String(error), sessionName: name };

@@ -137,7 +137,8 @@ data flows. Daemon plugin initialization also checks the OpenRig plugin release
 endpoint on GitHub.
 
 Managed launches supply `HOME`, `CODEX_HOME` and `OPENRIG_*` identity/connection
-variables. Claude uses `--permission-mode acceptEdits` and defaults to the classic
+variables. Claude inherits a selected native auto default, otherwise uses
+`--permission-mode acceptEdits`, and defaults to the classic
 renderer for terminal scrollback. Codex uses `-s workspace-write` unless a named
 profile governs its sandbox; the default does not force an approval-policy flag.
 On that plain launch OpenRig first asks Codex for its own configuration and adds
@@ -148,11 +149,8 @@ answer in time, the launch is left unchanged.
 Fresh Codex launches also add writable access to the workspace's `.git` and the
 pod's shared queue-state directory with `--add-dir`; the shared root comes from
 `OPENRIG_SHARED_DOCS_ROOT` or `~/.openrig/shared-docs`.
-Seats of the rig named `kernel` launch with an operational default instead,
-unless a permission policy, a per-seat choice or (for Codex) a named profile
-applies: Claude in `acceptEdits` with a per-launch allow list for its file tools
-and operational commands (including reads under your home folder), and Codex with
-`-s danger-full-access -a never`. Neither writes a permission file.
+Kernel seats follow the same permission inheritance. A rig name does not add
+operational permissions; an explicit seat choice or authored policy selects them.
 YOLO is **off by default**. An explicitly selected full-bypass policy selects
 Claude's `--dangerously-skip-permissions` or Codex's
 `-s danger-full-access -a never`. The legacy environment-only `OPENRIG_YOLO=1`

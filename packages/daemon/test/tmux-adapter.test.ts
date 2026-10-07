@@ -223,6 +223,19 @@ describe("TmuxAdapter", () => {
       expect(await adapter.hasSession("old-session")).toBe(false);
     });
 
+    it.each(["can't find window: proof", "can't find pane: codex"])("classifies a missing dotted exact target's %s diagnostic as absent", async diagnostic => {
+      const exec = vi.fn<ExecFn>().mockRejectedValue(new Error(`Command failed: tmux has-session -t =proof.codex\n${diagnostic}`));
+      const adapter = new TmuxAdapter(exec);
+      await expect(adapter.probeSession("proof.codex")).resolves.toEqual({ state: "absent" });
+      await expect(adapter.hasSession("proof.codex")).resolves.toBe(false);
+      expect(exec.mock.calls.every(([command]) => command.includes("'=proof.codex'"))).toBe(true);
+    });
+
+    it.each(["window", "pane"])("does not turn a missing-%s diagnostic containing a permission failure into absence", async kind => {
+      const adapter = new TmuxAdapter(mockExec({ "has-session": { error: new Error(`can't find ${kind}: proof\nPermission denied`) } }));
+      await expect(adapter.probeSession("proof.codex")).rejects.toThrow("Permission denied");
+    });
+
     it("returns false on 'no server running' error", async () => {
       const adapter = new TmuxAdapter(mockExec({ "has-session": { error: NO_SERVER_ERROR } }));
       expect(await adapter.hasSession("any-session")).toBe(false);

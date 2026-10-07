@@ -1020,7 +1020,7 @@ it.each(["unavailable", "throw"])("bounds persistent %s display faults with the 
   broken = true;
   await vi.waitFor(() => expect(a.closed[0]?.code).toBe(1011), { timeout: 1500 });
   expect(b.closed).toEqual(a.closed);
-  expect(failedReads).toBe(3); // pending repaint revalidates even on intervening tail ticks
+  expect(failedReads).toBe(3); // tail-only ticks must not reset the display failure budget
   expect(broker.subscriberCount).toBe(0);
   expect(broker.pipeOutputPath).toBeNull();
 });
@@ -1298,6 +1298,76 @@ it("keeps ordinary busy geometry repaints streaming without applying the history
   busy = false;
   await vi.waitFor(() => expect(live.received.at(-1)).toContain("CURRENT_LIVE"));
   expect(live.closed).toEqual([]);
+});
+
+it("bounds busy repaint sampling at the geometry cadence while tailing raw output between retries", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+  let busy = false, width = 90;
+  const captures: number[] = [];
+  let broker: TerminalSessionBroker;
+  broker = track(new TerminalSessionBroker("bounded-repaint@fixture", makeTmux({
+    getPaneCursorPosition: async () => ({ x: 0, y: 0, width, height: 27 }),
+    capturePaneScreen: async () => {
+      if (busy) {
+        captures.push(Date.now());
+        fs.appendFileSync(broker.pipeOutputPath!, `BUSY_${captures.length};`);
+      }
+      return busy ? "UNSAFE_SNAPSHOT" : "CURRENT_LIVE";
+    },
+  })));
+  const live = makeSub();
+  try {
+    const attaching = broker.attach(live);
+    await vi.advanceTimersByTimeAsync(50); await attaching;
+    live.received.length = 0;
+    busy = true; width = 100;
+    await vi.advanceTimersByTimeAsync(100);
+    expect(captures).toHaveLength(1);
+    fs.appendFileSync(broker.pipeOutputPath!, "BETWEEN_RETRIES_🙂;");
+    await vi.advanceTimersByTimeAsync(50);
+    expect(live.received.join("")).toBe("BUSY_1;BETWEEN_RETRIES_🙂;");
+    expect(captures).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(captures.length).toBeGreaterThan(3);
+    for (let i = 1; i < captures.length; i++) expect(captures[i]! - captures[i - 1]!).toBeGreaterThanOrEqual(250);
+    expect(live.closed).toEqual([]);
+    expect(live.received.join("")).not.toContain("UNSAFE_SNAPSHOT");
+    busy = false;
+    const raw = fs.readFileSync(broker.pipeOutputPath!, "utf8");
+    await vi.advanceTimersByTimeAsync(300);
+    expect(live.received.slice(0, -1).join("")).toBe(raw);
+    expect(live.received.at(-1)).toBe(screenSnapshotEscape("CURRENT_LIVE", { x: 0, y: 0, width, height: 27 }));
+    expect(live.closed).toEqual([]);
+  } finally {
+    broker.dispose(); await broker.waitForShutdown(); vi.useRealTimers();
+  }
+});
+
+it("retains the capture failure bound across tail-only ticks between repaint retries", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+  let failed = false, captures = 0, width = 90;
+  const broker = track(new TerminalSessionBroker("bounded-failure@fixture", makeTmux({
+    getPaneCursorPosition: async () => ({ x: 0, y: 0, width, height: 27 }),
+    capturePaneScreen: async () => { captures++; return failed ? null : "CURRENT_LIVE"; },
+  })));
+  const live = makeSub();
+  try {
+    const attaching = broker.attach(live);
+    await vi.advanceTimersByTimeAsync(50); await attaching;
+    live.received.length = 0;
+    failed = true; width = 100;
+    await vi.advanceTimersByTimeAsync(400);
+    expect(captures).toBe(3); // successful seed, then two failed samples
+    expect(live.closed).toEqual([]);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(captures).toBe(4);
+    expect(live.closed).toEqual([{ code: 1011, reason: "terminal screen capture unavailable; reopen to retry" }]);
+    expect(live.received).toEqual([]);
+  } finally {
+    broker.dispose(); await broker.waitForShutdown(); vi.useRealTimers();
+  }
 });
 
 it("does not restart a busy history-return budget on repeated live-bottom requests", async () => {

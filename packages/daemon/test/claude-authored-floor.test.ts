@@ -51,20 +51,20 @@ function fixture(scope = "user", nativeMode = "auto") {
       repo.setNodePolicyProvenance(node.id, provenance);
     } else { repo.setRigPermissionPolicy(rig.id, ref); repo.setRigPolicyProvenance(rig.id, provenance); }
   }
-  async function launch(kind: string, posture: NodeBinding["launchPosture"] = "floor") {
+  async function launch(kind: string, posture: NodeBinding["launchPosture"] = "floor", advisorModel?: string) {
     if (kind === "legacy restore") {
       const ctx = { db, rigRepo: repo, sessionRegistry: registry,
         claudeResume: new ClaudeResumeAdapter(tmux, { claudeManagedLaunch: managed }),
         codexResume: { canResume: () => false } };
       await (RestoreOrchestrator.prototype as any).attemptResume.call(ctx, node.id, session.sessionName,
-        "claude_id", "saved-native-id", cwd, null, null, posture);
+        "claude_id", "saved-native-id", cwd, null, advisorModel ? "claude-opus-5-5" : null, posture, advisorModel ? "xhigh" : undefined, undefined, advisorModel);
     } else {
       const adapter = new ClaudeCodeAdapter({ tmux, claudeManagedLaunch: managed, fsOps: {
         homedir: dir, exists: () => false, readFile: () => "", writeFile: () => {},
         mkdirp: () => {}, copyFile: () => {}, listFiles: () => [],
       } as ClaudeAdapterFsOps });
       await new StartupOrchestrator({ db, sessionRegistry: registry, eventBus: new EventBus(db), tmuxAdapter: tmux }).startNode({
-        rigId: rig.id, nodeId: node.id, sessionId: session.id, binding: { ...binding, launchPosture: posture }, adapter,
+        rigId: rig.id, nodeId: node.id, sessionId: session.id, binding: { ...binding, launchPosture: posture, ...(advisorModel ? { advisorModel, model: "claude-opus-5-5", effort: "xhigh" } : {}) }, adapter,
         plan: { entries: [] } as never, resolvedStartupFiles: [], startupActions: [], isRestore: kind === "resume",
         ...(kind === "resume" ? { resumeToken: "saved-native-id", resumeType: "claude_id" } : {}),
         ...(kind === "fork" ? { forkSource: { kind: "native_id" as const, value: "parent-native-id" } } : {}) });
@@ -126,6 +126,27 @@ describe("authored Claude floor versus native inheritance", () => {
       const command = await f.launch("legacy restore", resolved);
       expect(command).toContain(current === "floor" ? "--permission-mode acceptEdits" : "--dangerously-skip-permissions");
       if (current === "full_bypass") expect(command).not.toContain("--permission-mode");
+    });
+  it.each(["authored", "stored", "none", "named", "policy auto", "bypass"].flatMap(choice =>
+    ["claude-fable-5-1", "off"].flatMap(advisor => paths.map(kind => ({ choice, advisor, kind })))))(
+    "$advisor advisor and $choice permission selection coexist on $kind", async ({ choice, advisor, kind }) => {
+      const f = fixture();
+      const posture = choice === "policy auto" ? "auto" : choice === "bypass" ? "full_bypass" : "floor";
+      f.policy("member", choice === "none" ? "none" : choice === "policy auto" ? "builtin:auto" : choice === "bypass" ? "builtin:yolo" : "builtin:locked", posture);
+      if (choice === "stored" || choice === "named") f.store.write(f.node.id,
+        { runtime: "claude-code", mode: choice === "stored" ? "floor" : "auto" }, "operator", "combined selection");
+      const command = await f.launch(kind, posture, advisor);
+      expect(command.match(/--settings/g)).toHaveLength(1);
+      expect(command).toContain(JSON.stringify({ advisorModel: advisor === "off" ? "" : advisor }));
+      expect(command).toContain("claude-opus-5-5"); expect(command).toContain("xhigh");
+      if (choice === "none") expect(command).not.toMatch(/--permission-mode|--dangerously-skip-permissions/);
+      else if (choice === "bypass") {
+        expect(command).toContain("--dangerously-skip-permissions");
+        expect(command).not.toContain("--permission-mode");
+      } else expect(command).toContain(`--permission-mode ${choice === "named" || choice === "policy auto" ? "auto" : "acceptEdits"}`);
+      expect(f.prepare).toHaveBeenCalledTimes(choice === "named" || choice === "policy auto" ? 1 : 0);
+      if (kind === "resume" || kind === "legacy restore") expect(command).toContain("saved-native-id");
+      if (kind === "fork") expect(command).toContain("parent-native-id");
     });
   it("a rig's deliberate none keeps the native default", async () => {
     const f = fixture(); f.policy("rig", "none");

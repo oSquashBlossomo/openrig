@@ -23,7 +23,7 @@ const modes = [
   "launcher-shim", "launcher-shim-mixed-token", "launcher-shim-siblings",
   "launcher-shim-match", "launcher-shim-match-after", "launcher-shim-child-differs",
   "launcher-shim-child-differs-after", "launcher-shim-child-unparsed",
-  "launcher-shim-shims-differ", "launcher-shim-child-two-sessions", "settings-single",
+  "launcher-shim-shims-differ", "launcher-shim-child-two-sessions", "settings-single", "settings-managed",
   "effort-separated", "effort-equals", "unknown-value-flag",
 ];
 // The real process behind a spawning shim carries its own argv.
@@ -58,7 +58,7 @@ it.each(modes)("selector and ordinary transport: %s", async (mode) => {
           executableName: "sh", command: "/bin/sh /fixture/launch", startedAt },
         { pid: 102, ppid: 101, pgid: mode === "background" ? 999 : 101, tpgid: 101,
           executableName: ["versioned", "versioned-comm-only", "other-semver", "versioned-direct-pane"].includes(mode) ? "2.1.285" : "claude",
-          command: `${executable} --permission-mode auto ${mode === "settings-single" ? "--settings /fixture/settings.json " : ""}${mode === "missing-token" ? "" : `--session-id ${mode.startsWith("wrong-token") || mode === "launcher-shim-shims-differ" ? "different" : token}`} --name ${name}`, startedAt },
+          command: `${executable} --permission-mode auto ${mode === "settings-single" ? "--settings /fixture/settings.json " : mode === "settings-managed" ? '--settings {"advisorModel":"claude-fable-5-1"} ' : ""}${mode === "missing-token" ? "" : `--session-id ${mode.startsWith("wrong-token") || mode === "launcher-shim-shims-differ" ? "different" : token}`} --name ${name}`, startedAt },
       ]),
     ];
     const extraFlag: Record<string, string> = {
@@ -128,7 +128,7 @@ it.each(modes)("selector and ordinary transport: %s", async (mode) => {
       "missing-token", "unavailable", "background", "other-semver", "missing-metadata",
       "versioned-argv-only", "versioned-comm-only", "launcher-shim",
       "launcher-shim-match", "launcher-shim-match-after", "launcher-shim-child-unparsed",
-      "launcher-shim-child-two-sessions", "settings-single",
+      "launcher-shim-child-two-sessions", "settings-single", "settings-managed",
       "wrong-token", "wrong-token-post-read-error", "wrong-token-post-read-empty", "launcher-shim-shims-differ",
       "effort-separated", "effort-equals", "unknown-value-flag",
     ].includes(mode);
@@ -139,7 +139,7 @@ it.each(modes)("selector and ordinary transport: %s", async (mode) => {
     expect(observation !== null).toBe([
       "npm-name", "versioned", "pane-command-unavailable", "versioned-direct-pane", "missing-metadata",
       "ambiguous-pane", "changed-binding", "onboarding", "changed-after-paste",
-      "effort-separated", "effort-equals", "settings-single",
+      "effort-separated", "effort-equals", "settings-managed",
     ].includes(mode));
     if (expectedSend && ["unavailable", "unknown-both", "missing-token", "missing-metadata", "background", "other-semver", "versioned-argv-only", "versioned-comm-only", "launcher-shim", "launcher-shim-child-unparsed", "launcher-shim-child-two-sessions", "unknown-value-flag"].includes(mode)) {
       expect(sent.warning).toContain("without verified native identity");
@@ -149,8 +149,9 @@ it.each(modes)("selector and ordinary transport: %s", async (mode) => {
     if (mode.startsWith("wrong-token") || mode === "launcher-shim-shims-differ") {
       expect(sent.warning).toContain("without verified native identity");
     }
-    // A well-formed settings value is accepted by both strict and delivery identity readers.
-    if (mode.startsWith("launcher-shim-match") || mode === "settings-single") expect(sent.warning ?? "").not.toContain("without verified native identity");
+    // Ordinary delivery accepts a settings path; strict selection above requires
+    // known inline settings so an unread file cannot certify the launch identity.
+    if (mode.startsWith("launcher-shim-match") || mode.startsWith("settings-")) expect(sent.warning ?? "").not.toContain("without verified native identity");
     if (mode.startsWith("effort-")) expect(sent.warning ?? "").not.toContain("without verified native identity");
     if (mode.startsWith("launcher-shim-child-differs")) expect(sent.error).toContain("name different conversations");
     if (mode === "launcher-shim-mixed-token") expect(sent.error).toContain("name different conversations");

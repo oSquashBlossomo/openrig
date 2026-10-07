@@ -44,11 +44,12 @@ export function excludeNewGeneratedFiles(cwd: string, createdFiles: string[]): s
     return warnings; // Non-Git workspaces are supported.
   }
   try {
+    const canonicalCwd = fs.realpathSync(cwd);
     const [exclude, common] = git(root, ["rev-parse", "--path-format=absolute", "--git-path", "info/exclude", "--git-common-dir"]).trimEnd().split("\n");
     if (!exclude || !common) throw new Error("Git did not return exclusion and common metadata paths");
     const metadataIdentity = (file: string) => fs.existsSync(file) ? fs.realpathSync(file)
       : path.join(fs.realpathSync(path.dirname(file)), path.basename(file));
-    const coreDirectory = path.join(path.relative(root, fs.realpathSync(cwd)), ".codex/plugins/openrig-core");
+    const coreDirectory = path.join(path.relative(root, canonicalCwd), ".codex/plugins/openrig-core");
     const ignoresCase = (dir: string) => git(dir, ["config", "--type=bool", "--get", "core.ignorecase"], undefined, true).trim() === "true";
     // One bounded listing per worktree, including ignored files only at relevant paths.
     const inventory = (dir: string, ignoreCase: boolean, paths = [coreDirectory]) => git(dir, ["ls-files", "--cached", "--others", "-t", "-z", "--",
@@ -66,7 +67,7 @@ export function excludeNewGeneratedFiles(cwd: string, createdFiles: string[]): s
       const relative = path.relative(root, canonical);
       if (/[\r\n]/.test(relative)) { warn(file, "Git exclude cannot represent this filename on one line"); continue; }
       if (own.some(item => item.tracked && item.name === relative) || ignored.has(file)) continue;
-      if (!path.relative(path.resolve(cwd), canonical).split(path.sep).join("/").startsWith(".codex/plugins/openrig-core/")) {
+      if (!path.relative(canonicalCwd, canonical).split(path.sep).join("/").startsWith(".codex/plugins/openrig-core/")) {
         const message = `${file} was created by OpenRig and is untracked. If you do not want to commit it, add this line to ${exclude}: ${patternFor(relative)} (shared by linked worktrees).`;
         warnings.push(message);
         console.warn(`[openrig] ${message}`);

@@ -640,13 +640,17 @@ export class TerminalSessionBroker {
       this.tickPending = true;
       void this.enqueueDisplay(async () => {
         if (this.torndown) return;
-        if (Date.now() - this.lastGeometryRead >= this.geometryMs) {
+        const displayDue = Date.now() - this.lastGeometryRead >= this.geometryMs;
+        if (displayDue) {
           this.lastGeometryRead = Date.now();
           const cursor = await this.tmux.getPaneCursorPosition(this.sessionName);
           if (!validCursor(cursor)) throw geometryError(cursor);
           this.applyGeometry(cursor);
         }
         this.readTail();
+        // Busy repaints share the geometry cadence; raw output keeps its faster
+        // tail cadence. A tail-only tick is not a successful display recovery.
+        if (!displayDue) return;
         if (this.pendingRepaints.size) {
           const screen = await this.readScreen();
           this.applyGeometry(screen.cursor);

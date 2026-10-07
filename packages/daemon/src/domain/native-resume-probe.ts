@@ -10,9 +10,9 @@ export interface NativeResumeProbeInput {
   runtime: string | null;
   paneCommand: string | null;
   paneContent: string | null;
-  /** Only the managed adapter supplies this after exact, stable native-process proof. */
+  /** Supplied only after exact, stable managed Claude identity proof. */
   claudeAutoIdentityVerified?: boolean;
-  /** Only an exact --resume process-lineage proof may use the visible composer as readiness. */
+  /** Exact managed conversation identity may use the visible composer as readiness. */
   claudeResumeIdentityVerified?: boolean;
 }
 

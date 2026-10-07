@@ -105,26 +105,39 @@ function codexResumeToken(args: string[]): string | null | undefined {
 
 // Managed fresh/resume launches name the current Claude identity explicitly.
 // A fork's --resume names its parent, so it cannot prove the new occupant.
+function managedLaunchSettings(value: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+    const entries = Object.entries(parsed);
+    return entries.length > 0 && entries.every(([key, setting]) => {
+      if (key === "advisorModel") return typeof setting === "string";
+      if (key === "skipDangerousModePermissionPrompt") return setting === true;
+      if (key !== "permissions" || !setting || typeof setting !== "object" || Array.isArray(setting)) return false;
+      const permissions = Object.entries(setting);
+      return permissions.length === 1 && permissions[0]![0] === "allow"
+        && Array.isArray(permissions[0]![1]) && permissions[0]![1].every((rule: unknown) => typeof rule === "string");
+    });
+  } catch { return false; }
+}
+
 function claudeSessionToken(args: string[]): string | null {
   let token: string | null = null;
   const seen = new Set<string>();
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]!;
     if (index === 0 && /^\(\d+\.\d+\.\d+[^)]*\)$/.test(arg)) continue;
-    if (arg === "--settings" || arg.startsWith("--settings=")) {
-      // Launch-only settings (an inline JSON object or a file) never name the session.
-      const value = arg === "--settings" ? args[++index] : arg.slice("--settings=".length);
-      if (!value || value.startsWith("-")) return null;
-      continue;
-    }
-    const option = arg.match(/^--(permission-mode|model|name|effort)(?:=(.*))?$/);
+    const option = arg.match(/^--(permission-mode|model|name|effort|settings)(?:=(.*))?$/);
     if (option) {
       const key = option[1]!;
       const value = option[2] ?? args[++index];
       if (seen.has(key) || !value || value.startsWith("-")) return null;
-      // Values are not validated here: the effort level never names the conversation,
-      // and specs may carry levels newer than this list. Duplicates stay indeterminate.
+      // Effort values never name the conversation and may be newer than the
+      // levels known to OpenRig. Duplicate options stay indeterminate.
       seen.add(key);
+      // Only the inline launch settings we emit are understood here; a file or
+      // unknown setting is not evidence of an unchanged native identity.
+      if (key === "settings" && !managedLaunchSettings(value)) return null;
       continue;
     }
     if (arg === "--dangerously-skip-permissions") continue;
@@ -137,8 +150,8 @@ function claudeSessionToken(args: string[]): string | null {
   return token;
 }
 
-// Delivery-only reading of a Claude argv. Like the strict selector, it accepts
-// launch-only --settings. null: the argv parsed and names no session.
+// Delivery-only reading also accepts settings files; the strict selector above
+// only permits known inline launch settings. null: the argv parsed and names no session.
 // "unparsed": an argument was not recognised, so the argv proves nothing.
 function claudeSessionIdentity(args: string[]): string | null | { unparsed: true } {
   const unparsed = { unparsed: true } as const;

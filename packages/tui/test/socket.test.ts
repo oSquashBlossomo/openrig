@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -13,6 +13,7 @@ let open: ControlSocket | null = null;
 afterEach(async () => {
   if (open) await open.close();
   open = null;
+  vi.unstubAllEnvs();
 });
 
 function shortSockPath(): string {
@@ -93,8 +94,11 @@ describe("control-socket adapter (spike-adopted; arch boundary constraint)", () 
   });
 
   it("defaults the socket home to $OPENRIG_HOME/run (herdr-style convention) and stays under the limit", () => {
+    const home = path.join(path.parse(os.tmpdir()).root, "openrig-fixture");
+    vi.stubEnv("OPENRIG_HOME", home);
+    vi.stubEnv("OPENRIG_TUI_SOCKET", "");
     const p = defaultSocketPath("tui-1");
-    expect(p).toMatch(/[/\\]run[/\\]tui-tui-1\.sock$/);
+    expect(p).toBe(path.join(home, "run", "tui-tui-1.sock"));
     expect(Buffer.byteLength(p)).toBeLessThanOrEqual(MAX_SOCKET_PATH_BYTES);
   });
 });

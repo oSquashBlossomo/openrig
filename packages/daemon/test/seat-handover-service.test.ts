@@ -139,7 +139,7 @@ describe("SeatHandoverService", () => {
 
   it.each(["authored floor", "stored floor", "none", "absent", "explicit auto"])(
     "Claude handover retains the %s permission distinction at the real successor boundary", async choice => {
-      const { rig, node } = seedSeat({ runtime: "claude-code" });
+      const { rig, node } = seedSeat({ runtime: "claude-code", advisorModel: "claude-fable-5-1" });
       if (choice !== "absent") {
         rigRepo.setRigPermissionPolicy(rig.id, "builtin:locked");
         rigRepo.setRigPolicyProvenance(rig.id, { origin: "builtin", launchPosture: "floor", resolvedTarget: null, declaringDir: null });
@@ -156,6 +156,7 @@ describe("SeatHandoverService", () => {
       expect(launchHarness).toHaveBeenCalledTimes(1);
       const launched = launchHarness.mock.calls[0]![0];
       expect(launched.launchPosture).toBe("floor");
+      expect(launched.advisorModel).toBe("claude-fable-5-1");
       expect(launched.permissionMode).toBe(choice === "explicit auto" ? "auto" : undefined);
       expect(launched.claudePermissionFloor).toBe(choice === "authored floor" || choice === "stored floor");
     });
@@ -420,12 +421,12 @@ describe("SeatHandoverService", () => {
     expect.soft(deliveries.filter((delivery) => delivery.targetSession === retiredSession)).toEqual([]);
   });
 
-  it("kernel handover recomputes operational authority from the persisted rig", async () => {
+  it("kernel handover preserves inherited permissions", async () => {
     seedSeat({ runtime: "codex", rigName: "kernel" });
     const result = await service.handover({ seatRef: "dev-impl@kernel", reason: "context-wall",
       source: "fresh", operator: "operator@kernel" });
     expect(result.ok).toBe(true);
-    expect(launchHarness.mock.calls[0]![0]).toMatchObject({ kernelAuthority: true, launchPosture: "full_bypass" });
+    expect(launchHarness.mock.calls[0]![0]).toMatchObject({ kernelAuthority: false, launchPosture: "floor" });
   });
 
   it("keeps dry-run side-effect free", async () => {

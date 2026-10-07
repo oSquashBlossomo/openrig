@@ -19,7 +19,8 @@ even-numbered releases are untested.
 Codex's `-s workspace-write`, with approval policy from your native configuration,
 or Claude Code's `acceptEdits`, which still leaves commands subject to native
 rules and prompts. A selected native Claude default from user, project or local
-settings is inherited; the kernel's own seats get a wider operational default. Codex's
+settings is inherited; kernel
+seats follow these same rules. Codex's
 sandbox normally blocks network access, including the local OpenRig daemon, so
 before that plain launch OpenRig asks Codex for its own configuration and adds
 network access inside the sandbox only when Codex answers that no configuration

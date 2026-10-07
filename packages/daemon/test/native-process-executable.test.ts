@@ -18,8 +18,8 @@ describe("OS executable path witness", () => {
   });
   it("uses one bounded macOS invocation with numeric argv for the entire sample", async () => {
     setPlatform("darwin");
-    execute.mockResolvedValue({ stdout: JSON.stringify([[12, "/a/2.1.289"], [13, null]]) });
-    expect([...await readNativeExecutablePaths([12, 13, 12, 0, -1, NaN, 1.5])]).toEqual([[12, "/a/2.1.289"]]);
+    execute.mockResolvedValue({ stdout: JSON.stringify([[12, "/a/2.1.289"], [13, "/b/2.1.288"]]) });
+    expect([...await readNativeExecutablePaths([12, 13, 12, 0, -1, NaN, 1.5])]).toEqual([[12, "/a/2.1.289"], [13, "/b/2.1.288"]]);
     expect(execute).toHaveBeenCalledTimes(1);
     const [file, args, options] = execute.mock.calls[0]!;
     expect(file).toBe("/usr/bin/osascript");
@@ -27,6 +27,35 @@ describe("OS executable path witness", () => {
     expect(args.slice(4)).toEqual(["12", "13"]);
     expect(args[3]).toContain("proc_pidpath");
     expect(options).toMatchObject({ timeout: 2000, maxBuffer: 1048576 });
+  });
+  it("recovers an unlinked native executable from its leading text mapping only when proc_pidpath has no witness", async () => {
+    setPlatform("darwin");
+    const binary = "/fixture home/.local/share/claude/versions/2.1.289";
+    execute.mockResolvedValueOnce({ stdout: JSON.stringify([[12, "/primary/claude"], [13, null]]) })
+      .mockResolvedValueOnce({ stdout: `p13\nn${binary}\nn/usr/lib/dyld\np12\nn/untrusted/override\n` });
+    expect([...await readNativeExecutablePaths([12, 13])]).toEqual([[12, "/primary/claude"], [13, binary]]);
+    expect(execute.mock.calls[1]).toEqual(["/usr/sbin/lsof", ["-a", "-p", "13", "-d", "txt", "-Fpn"],
+      expect.objectContaining({ timeout: 2000, maxBuffer: 1048576 })]);
+    expect(readlink).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["nonleading", "p12\nn/usr/lib/dyld\nn/fixture/.local/share/claude/versions/2.1.289\n"],
+    ["competing native mappings", "p12\nn/fixture/.local/share/claude/versions/2.1.289\nn/other/.local/share/claude/versions/2.1.290\n"],
+    ["wrong PID", "p99\nn/fixture/.local/share/claude/versions/2.1.289\n"],
+    ["unrelated executable", "p12\nn/tmp/2.1.289\n"],
+    ["parent traversal", "p12\nn/fixture/../.local/share/claude/versions/2.1.289\n"],
+    ["relative path", "p12\nnfixture/.local/share/claude/versions/2.1.289\n"],
+    ["deleted suffix", "p12\nn/fixture/.local/share/claude/versions/2.1.289 (deleted)\n"],
+    ["NUL path", "p12\nn/fixture/\0/.local/share/claude/versions/2.1.289\n"],
+  ])("keeps %s fallback evidence non-positive", async (_name, stdout) => {
+    setPlatform("darwin");
+    execute.mockResolvedValueOnce({ stdout: JSON.stringify([[12, null]]) }).mockResolvedValueOnce({ stdout });
+    expect((await readNativeExecutablePaths([12])).size).toBe(0);
+  });
+  it("keeps missing evidence non-positive when the fallback is unavailable or times out", async () => {
+    setPlatform("darwin");
+    execute.mockResolvedValueOnce({ stdout: JSON.stringify([[12, null]]) }).mockRejectedValueOnce(new Error("timeout/denied"));
+    expect((await readNativeExecutablePaths([12])).size).toBe(0);
   });
   it.each(["unavailable", "malformed", "invalid paths"])("does not invent a witness on %s", async (mode) => {
     setPlatform("darwin");

@@ -40,8 +40,37 @@ Source labels and restrictions on remote writes retain their existing meaning.
 
 If the page loads but requests fail, distinguish `untrusted_host`,
 `browser_origin_refused`, authentication failure and disconnected Tailscale.
-The terminal applies its own origin/authentication guard. An HTTPS proxy needs
-the exact HTTPS origin allowance even when the underlying daemon uses HTTP.
+The daemon's shared browser boundary validates the terminal upgrade's host and
+origin; terminal-token authentication also applies when configured. An HTTPS
+proxy needs the exact HTTPS origin allowance even when the daemon uses HTTP.
+
+## Live terminal controls and recovery
+
+Graph, 3D, agent details and the Terminal grid use the same live terminal.
+The key strip provides Ctrl+C, Escape, Tab, arrow keys and Enter when a browser
+intercepts a shortcut or the software keyboard lacks it. Controls become active
+only after the selected session supplies its native geometry. Opening or fitting
+a viewer does not resize that session's native pane.
+
+Connecting and reconnecting states are visible. Each connection has 15 seconds
+to become ready; four consecutive unsuccessful attempts stop with a **Retry**
+button. A network return, restored browser page or return after at least 30
+seconds in the background replaces the connection and rechecks admission.
+The daemon also detects unresponsive WebSocket viewers with ping/pong heartbeats.
+These steps replace the browser connection, not the agent process.
+
+Input is paused during recovery and is never queued for later replay. After a
+disconnect, inspect the terminal before resending a command whose result is
+uncertain. If Retry continues to fail through an HTTPS proxy, check the exact
+origin allowance above: browsers do not expose the reason an upgrade was refused.
+
+A clipboard paste is sent as one literal text input, keeping its newlines; it
+does not press Enter after each line. One paste or keystroke batch is limited to
+256 KiB of encoded input (UTF-8, so non-ASCII text reaches the limit with fewer
+characters). Larger input is refused with a visible warning before anything is
+sent. If the daemon closes the connection because its input buffer overflowed,
+the viewer does not reconnect automatically and warns that some input may
+already have reached the terminal: inspect it before retrying or resending.
 
 ## Connection recovery
 
