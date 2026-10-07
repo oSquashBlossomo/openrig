@@ -17,7 +17,13 @@ permissions:
   issues: read
 
 concurrency:
-  group: claude-review-${{ inputs.pull_request_number || github.event.pull_request.number }}
+  # Ordinary edits skip the job; isolate them before workflow concurrency can
+  # cancel either a running review or its pending replacement.
+  group: >-
+    claude-review-${{ github.event_name == 'pull_request_target' &&
+    github.event.action == 'edited' && !github.event.changes.base.ref &&
+    format('skipped-edit-{0}', github.run_id) ||
+    inputs.pull_request_number || github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:

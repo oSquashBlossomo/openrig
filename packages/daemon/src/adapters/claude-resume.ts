@@ -63,6 +63,7 @@ export class ClaudeResumeAdapter {
     effort?: string | null,
     nonInterruptive?: boolean,
     kernelAuthority?: boolean,
+    claudePermissionFloor?: boolean,
     // Trailing: positional callers that stop earlier keep their meaning.
     advisorModel?: string | null,
   ): Promise<ResumeResult> {
@@ -86,7 +87,7 @@ export class ClaudeResumeAdapter {
     const launchSettings = claudeLaunchSettingsArgs(operationalLaunchArgs("claude-code", choice), advisorModel);
     const advisorArgs = launchSettings.advisor;
     const advisorArg = advisorArgs.length ? ` --settings ${shellQuote(advisorArgs[1]!)}` : "";
-    const posture = claudePostureFlag(process.env, resolvedPosture, selectedPermissionMode, cwd);
+    const posture = claudePostureFlag(process.env, resolvedPosture, selectedPermissionMode, cwd, claudePermissionFloor);
     const appliedLaunch = observeClaudePermission(posture);
     const permissionMode = posture + launchSettings.operational.map(arg => ` ${shellQuote(arg)}`).join("");
     const cmd = managed ? managed.command(["--permission-mode", selectedPermissionMode!, ...launchSettings.operational, ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []), ...advisorArgs, "--resume", resumeToken!])
