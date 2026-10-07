@@ -686,6 +686,10 @@ description: Custom member policy
           "model",
           undefined,
           node.id,
+          undefined,
+          false,
+          false,
+          true, // Static authored floor; the selected native mode remains undefined.
         );
       } finally {
         rmSync(dir, { recursive: true, force: true });

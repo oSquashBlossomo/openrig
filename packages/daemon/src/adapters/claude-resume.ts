@@ -62,6 +62,7 @@ export class ClaudeResumeAdapter {
     effort?: string | null,
     nonInterruptive?: boolean,
     kernelAuthority?: boolean,
+    claudePermissionFloor?: boolean,
   ): Promise<ResumeResult> {
     if (!this.canResume(resumeType, resumeToken)) {
       return { ok: false, code: "no_resume", message: "Claude resume not available" };
@@ -80,7 +81,7 @@ export class ClaudeResumeAdapter {
       } catch (error) { return { ok: false, code: "permission_selection_refused", message: (error as Error).message }; }
     }
     const choice = { kernelAuthority, nonInterruptive, launchPosture: resolvedPosture, permissionMode: selectedPermissionMode };
-    const posture = claudePostureFlag(process.env, resolvedPosture, selectedPermissionMode, cwd);
+    const posture = claudePostureFlag(process.env, resolvedPosture, selectedPermissionMode, cwd, claudePermissionFloor);
     const appliedLaunch = observeClaudePermission(posture);
     const permissionMode = posture + operationalLaunchArg("claude-code", choice);
     const cmd = managed ? managed.command(["--permission-mode", selectedPermissionMode!, ...operationalLaunchArgs("claude-code", choice), ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []), "--resume", resumeToken!])

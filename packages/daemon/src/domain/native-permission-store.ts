@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import type { NodeBinding } from "./runtime-adapter.js";
 import { permissionBindingOverride, type NativePermissionSelection } from "./native-permission-selection.js";
-import { builtinLaunchPosture } from "./permission-policy/policy-ref.js";
+import { builtinLaunchPosture, validatePermissionPolicyRef } from "./permission-policy/policy-ref.js";
 
 export interface StoredNativePermissionSelection extends NativePermissionSelection {
   actor: string;
@@ -43,25 +43,35 @@ export class NativePermissionStore {
   }
 
   /** One decision shared by fresh/continue, legacy restore and same-seat handover. */
-  launchOverride(nodeId: string, runtime: string, resolvedPosture?: NodeBinding["launchPosture"]): Pick<NodeBinding, "launchPosture" | "permissionMode" | "kernelAuthority"> {
+  launchOverride(nodeId: string, runtime: string, resolvedPosture?: NodeBinding["launchPosture"]): Pick<NodeBinding, "launchPosture" | "permissionMode" | "kernelAuthority" | "claudePermissionFloor"> {
     const selection = this.read(nodeId);
     if (selection && selection.runtime !== runtime) {
       throw new Error("Seat runtime changed since permission selection; explicitly select again or inherit.");
     }
     if (!selection && this.hasKernelDefault(nodeId, runtime)) {
-      return { kernelAuthority: true, launchPosture: runtime === "codex" ? "full_bypass" : "floor" };
+      return { kernelAuthority: true, claudePermissionFloor: false, launchPosture: runtime === "codex" ? "full_bypass" : "floor" };
     }
     if (!selection && runtime === "claude-code" && resolvedPosture === "floor") {
       // Lifecycle bindings also use floor for honest absence, to suppress ambient
-      // YOLO. Only an authored policy selects a native mode. Use the caller's
+      // YOLO. Only an authored policy selects the static floor. Use the caller's
       // current posture: restore may have re-derived a changed custom policy.
-      const row = this.db.prepare(`SELECT COALESCE(n.policy_origin, r.rig_policy_origin) AS origin
-        FROM nodes n JOIN rigs r ON r.id = n.rig_id WHERE n.id = ?`).get(nodeId) as { origin: string | null } | undefined;
-      if (row?.origin === "builtin" || row?.origin === "custom") {
-        return { kernelAuthority: false, permissionMode: "acceptEdits" };
+      const row = this.db.prepare(`SELECT n.permission_policy AS memberRef, r.permission_policy AS rigRef,
+        COALESCE(n.policy_origin, r.rig_policy_origin) AS origin
+        FROM nodes n JOIN rigs r ON r.id = n.rig_id WHERE n.id = ?`).get(nodeId) as {
+          memberRef: string | null; rigRef: string | null; origin: string | null;
+        } | undefined;
+      // 055/056 refs can predate 057/058 provenance, which was not backfilled.
+      // A raw member none still masks the rig. Never resolve relative files here.
+      const ref = row?.memberRef ?? row?.rigRef;
+      if (ref != null) {
+        const error = validatePermissionPolicyRef(ref, "Stored permission policy");
+        if (error) throw new Error(error);
+      }
+      if (ref !== "none" && (ref != null || row?.origin === "builtin" || row?.origin === "custom")) {
+        return { kernelAuthority: false, claudePermissionFloor: true };
       }
     }
-    return { kernelAuthority: false, ...permissionBindingOverride(selection) };
+    return { kernelAuthority: false, claudePermissionFloor: false, ...permissionBindingOverride(selection) };
   }
 
   read(nodeId: string): StoredNativePermissionSelection | null {

@@ -156,8 +156,8 @@ describe("SeatHandoverService", () => {
       expect(launchHarness).toHaveBeenCalledTimes(1);
       const launched = launchHarness.mock.calls[0]![0];
       expect(launched.launchPosture).toBe("floor");
-      expect(launched.permissionMode).toBe(choice === "explicit auto" ? "auto"
-        : choice === "authored floor" || choice === "stored floor" ? "acceptEdits" : undefined);
+      expect(launched.permissionMode).toBe(choice === "explicit auto" ? "auto" : undefined);
+      expect(launched.claudePermissionFloor).toBe(choice === "authored floor" || choice === "stored floor");
     });
 
   function seedDiscovery(opts?: { id?: string; tmuxSession?: string; tmuxPane?: string; runtimeHint?: "codex" | "claude-code" | "terminal" | "unknown" }) {

@@ -82,7 +82,7 @@ describe("authored Claude floor versus native inheritance", () => {
     "a member locked floor overrides $scope native mode on $kind", async ({ scope, kind }) => {
       const f = fixture(scope, "bypassPermissions"); f.policy("member", "builtin:locked");
       expect(await f.launch(kind)).toContain("--permission-mode acceptEdits");
-      expect(f.prepare).toHaveBeenCalledWith(expect.objectContaining({ nodeId: f.node.id }), "acceptEdits");
+      expect(f.prepare).not.toHaveBeenCalled();
     });
   it.each(paths)("an unselected synthetic floor preserves native auto on %s", async kind => {
     const f = fixture();
@@ -139,5 +139,29 @@ describe("authored Claude floor versus native inheritance", () => {
       return prepare(sql);
     });
     expect(() => f.store.apply(f.binding, "claude-code")).toThrow("policy provenance unavailable");
+  });
+  it.each(["member", "rig"] as const)("legacy %s raw ref without provenance still selects its resolved floor", async scope => {
+    const f = fixture();
+    if (scope === "member") f.db.prepare("UPDATE nodes SET permission_policy='builtin:locked' WHERE id=?").run(f.node.id);
+    else f.repo.setRigPermissionPolicy(f.rig.id, "policies/floor.md");
+    expect(await f.launch("legacy restore")).toContain("--permission-mode acceptEdits");
+  });
+  it("legacy member none without provenance masks a rig authored floor", async () => {
+    const f = fixture(); f.policy("rig", "builtin:locked");
+    f.db.prepare("UPDATE nodes SET permission_policy='none' WHERE id=?").run(f.node.id);
+    expect(await f.launch("fresh")).not.toMatch(/--permission-mode|--dangerously-skip-permissions/);
+  });
+  it.each([["floor", "full_bypass"], ["full_bypass", "floor"]] as const)(
+    "legacy member custom %s→%s uses the caller's current posture over the rig policy", async (prior, current) => {
+      const f = fixture(); f.policy("rig", "builtin:locked");
+      f.db.prepare("UPDATE nodes SET permission_policy='policies/member.md', policy_launch_posture=? WHERE id=?").run(prior, f.node.id);
+      const command = await f.launch("legacy restore", current);
+      expect(command).toContain(current === "floor" ? "--permission-mode acceptEdits" : "--dangerously-skip-permissions");
+      if (current === "full_bypass") expect(command).not.toContain("--permission-mode");
+    });
+  it("an invalid legacy ref is refused without resolving a relative policy file", () => {
+    const f = fixture();
+    f.db.prepare("UPDATE nodes SET permission_policy='../outside.md' WHERE id=?").run(f.node.id);
+    expect(() => f.store.apply(f.binding, "claude-code")).toThrow(/Stored permission policy/);
   });
 });
