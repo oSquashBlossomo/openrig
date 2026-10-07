@@ -149,9 +149,12 @@ It never changes permissions or native settings files. `rig up
 uses explicit per-seat selections and clears stale internal authority markers.
 Fresh start, continue, restore and handover preserve the same authored policies
 and native/profile defaults as other rigs. Naming a rig `kernel` grants no extra
-permissions. Claude's selected native auto default remains authoritative when
+permissions. Claude's selected user, project or local native default remains authoritative when
 no explicit mode overrides it; Codex retains its named profile or workspace-write
 floor. Explicit non-interruptive mode still applies to full-bypass launches.
+If a native settings file cannot be read or parsed, an inherited Claude launch
+also defers to Claude, which handles its own settings error. OpenRig records the
+deliberate deferral without claiming to know the effective native permission mode.
 
 ### ClaudeCodeAdapter (`claude-code-adapter.ts:55`)
 
