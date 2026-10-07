@@ -966,7 +966,7 @@ export class QueueRepository {
   private deliverWakeIntentAfterCommit(outboxId: string): void {
     queueMicrotask(() => {
       void this.deliverWakeIntent(outboxId).catch((err) => {
-        console.error(`Auto-unpark wake delivery failed for ${outboxId}:`, err);
+        console.error(`Queue wake delivery failed for ${outboxId}:`, err);
       });
     });
   }
@@ -1401,7 +1401,21 @@ export class QueueRepository {
       throw destinationValidationError("destination_session", input.destinationSession, this.loadHumanRegistryFn);
     }
 
-    const txn = this.db.transaction(() => this.createInTransactionalContext(input));
+    let wakeStaged = false;
+    const txn = this.db.transaction(() => {
+      const created = this.createInTransactionalContext(input);
+      if (this.outbox && input.nudge !== false) {
+        try {
+          // A savepoint removes any partial intent when staging fails, while
+          // preserving ordinary create's existing acceptance of the task.
+          this.db.transaction(() => this.stageWakeIntent(created.qitemId, input.sourceSession, input.destinationSession, input.identityProvenance ?? null, input.nudge))();
+          wakeStaged = true;
+        } catch (err) {
+          this.recordNudgeAttempt(created.qitemId, `failed:wake not retained: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      return created;
+    });
     let id: string;
     let persistedEvent: PersistedEvent;
     try {
@@ -1450,7 +1464,15 @@ export class QueueRepository {
       throw err;
     }
     this.eventBus.notifySubscribers(persistedEvent);
-    await this.maybeNudge(id, input.destinationSession, input.nudge, input.sourceSession);
+    // The receipt acknowledges persistence, not terminal delivery. The intent
+    // survives a crash before the scheduled wake if staging succeeded. A staging
+    // failure is recorded on the row; callers without an outbox retain their
+    // existing best-effort path without claiming durability.
+    if (this.outbox) {
+      if (wakeStaged) this.deliverWakeIntentAfterCommit(`${WAKE_INTENT_PREFIX}${id}`);
+    } else {
+      await this.maybeNudge(id, input.destinationSession, input.nudge, input.sourceSession);
+    }
     return this.getByIdOrThrow(id);
   }
 
@@ -1791,9 +1813,9 @@ export class QueueRepository {
       this.eventBus.notifySubscribers(e.payload as import("./types.js").PersistedEvent);
     }
 
-    // W1-b: deliver the just-committed wake intent (marking it), or the pre-W1
-    // best-effort nudge when no intent store is attached. Post-commit only.
-    await this.deliverWakeForSuccessor(newId, input.toSession, input.nudge, input.fromSession);
+    // Closure and successor are persisted. Delivery is separate and recoverable
+    // from the committed intent; a slow terminal must not hold the receipt.
+    if (input.nudge !== false) this.deliverWakeIntentAfterCommit(`${WAKE_INTENT_PREFIX}${newId}`);
 
     return {
       closed: this.getByIdOrThrow(source.qitemId),
@@ -1963,9 +1985,8 @@ export class QueueRepository {
       this.eventBus.notifySubscribers(e.payload as import("./types.js").PersistedEvent);
     }
 
-    // W1-b: deliver the just-committed wake intent (marking it), or the pre-W1
-    // best-effort nudge when no intent store is attached. Post-commit only.
-    await this.deliverWakeForSuccessor(newId, input.toSession, input.nudge, input.fromSession);
+    // Return the persisted closure and successor without awaiting terminal delivery.
+    if (input.nudge !== false) this.deliverWakeIntentAfterCommit(`${WAKE_INTENT_PREFIX}${newId}`);
 
     return {
       closed: this.getByIdOrThrow(source.qitemId),
@@ -2600,7 +2621,7 @@ export class QueueRepository {
         if (!blocker) {
           throw new QueueRepositoryError(
             "blocker_not_found",
-            `blocked_on names a qitem that does not exist: ${effectiveBlockedOn}. A park must name a real, live blocker — a nonexistent blocker can never complete, so the row could never unpark.`,
+            `blocked_on names a qitem that does not exist on this daemon: ${effectiveBlockedOn}. A qitem absent from this daemon cannot be a live blocker here. If it is stored on another host, use a typed gate such as external:<host>/<id> with --wake-watchdog or --wake-after.`,
             // F1 (error-honesty): the rejected value is named rejectedBlocker — an error payload
             // never carries the success-shaped blockedOn field (the field-filtered-misread class).
             { rejectedBlocker: effectiveBlockedOn },

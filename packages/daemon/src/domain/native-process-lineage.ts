@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { isShellForeground } from "./shell-classifier.js";
 import { runAsyncSite } from "./sync-site-wrap.js";
+import { readNativeExecutablePaths } from "./native-process-executable.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -12,7 +13,7 @@ export interface NativeProcessRow {
   pgid?: number;
   tpgid?: number;
   executableName?: string;
-  /** OS text-executable mapping for a Claude process with a rewritten title. */
+  /** OS executable path, not argv[0], for otherwise unresolved Claude rows. */
   executablePath?: string;
   startedAt?: string;
 }
@@ -42,14 +43,20 @@ function claudeExecutable(token: string, selectedExecutable?: string): boolean {
 
 function claudeProcess(row: NativeProcessRow, selectedExecutable?: string): boolean {
   const argv0 = tokens(row.command)[0] ?? "";
-  const osName = executableName(row.executableName ?? "");
-  if (claudeExecutable(argv0, selectedExecutable) && osName === executableName(argv0)) return true;
-  // Claude's native binary can rename argv[0] to `claude` while ucomm retains
-  // its version. A numeric label alone is never positive executable identity.
-  return argv0 === "claude" && row.executablePath !== undefined
+  if (!claudeExecutable(argv0, selectedExecutable)) return false;
+  if (executableName(row.executableName ?? "") === executableName(argv0)) return true;
+  // Native Claude can retain its versioned OS name while rewriting argv[0] to
+  // claude. A version only selects candidates for an OS path read; it is not proof.
+  return needsClaudeExecutablePath(row) && !!row.executablePath
     && claudeExecutable(row.executablePath, selectedExecutable)
-    && executableName(row.executablePath) === osName
-    && /^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(osName);
+    && executableName(row.executablePath) === executableName(row.executableName ?? "");
+}
+
+function needsClaudeExecutablePath(row: NativeProcessRow): boolean {
+  const argv0 = tokens(row.command)[0] ?? "";
+  return claudeExecutable(argv0)
+    && executableName(row.executableName ?? "") !== executableName(argv0)
+    && /^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(row.executableName ?? "");
 }
 
 function commandUsesExpectedToken(command: string, runtime: NativeRuntime, expectedToken: string): boolean {
@@ -103,8 +110,13 @@ function claudeSessionToken(args: string[]): string | null {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]!;
     if (index === 0 && /^\(\d+\.\d+\.\d+[^)]*\)$/.test(arg)) continue;
-    if (["--permission-mode", "--model", "--name"].includes(arg)) { index += 1; continue; }
-    if (/^--(?:permission-mode|model|name)=/.test(arg) || arg === "--dangerously-skip-permissions") continue;
+    if (arg === "--settings") {
+      const value = args[++index];
+      if (!value || value.startsWith("-")) return null;
+      continue;
+    }
+    if (["--permission-mode", "--model", "--name", "--effort"].includes(arg)) { index += 1; continue; }
+    if (/^--(?:permission-mode|model|name|settings|effort)=/.test(arg) || arg === "--dangerously-skip-permissions") continue;
     const identity = arg.match(/^--(?:session-id|resume)(?:=(.*))?$/);
     if (!identity) return null; // Unknown argv is not positive identity proof.
     const value = identity[1] ?? args[++index];
@@ -114,8 +126,8 @@ function claudeSessionToken(args: string[]): string | null {
   return token;
 }
 
-// Delivery-only reading of a Claude argv, which also accepts --settings (the
-// strict selector above does not). null: the argv parsed and names no session.
+// Delivery-only reading of a Claude argv. Like the strict selector, it accepts
+// launch-only --settings. null: the argv parsed and names no session.
 // "unparsed": an argument was not recognised, so the argv proves nothing.
 function claudeSessionIdentity(args: string[]): string | null | { unparsed: true } {
   const unparsed = { unparsed: true } as const;
@@ -123,12 +135,12 @@ function claudeSessionIdentity(args: string[]): string | null | { unparsed: true
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]!;
     if (index === 0 && /^\(\d+\.\d+\.\d+[^)]*\)$/.test(arg)) continue;
-    if (["--permission-mode", "--model", "--name", "--settings"].includes(arg)) {
+    if (["--permission-mode", "--model", "--name", "--settings", "--effort"].includes(arg)) {
       const value = args[++index];
       if (!value || value.startsWith("-")) return unparsed;
       continue;
     }
-    if (/^--(?:permission-mode|model|name|settings)=/.test(arg) || arg === "--dangerously-skip-permissions") continue;
+    if (/^--(?:permission-mode|model|name|settings|effort)=/.test(arg) || arg === "--dangerously-skip-permissions") continue;
     const identity = arg.match(/^--(?:session-id|resume)(?:=(.*))?$/);
     if (!identity) return unparsed; // Unknown argv is not positive identity proof.
     const value = identity[1] ?? args[++index];
@@ -186,35 +198,10 @@ export async function listNativeProcesses(): Promise<NativeProcessRow[]> {
       const match = line.trim().match(/^(\d+)\s+(\d+)\s+(-?\d+)\s+(-?\d+)\s+(.+?)\s+(\w{3}\s+\w{3}\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.+)$/);
       return match ? [{ pid: Number(match[1]), ppid: Number(match[2]), pgid: Number(match[3]), tpgid: Number(match[4]), executableName: match[5]!, startedAt: match[6]!, command: match[7]! }] : [];
     });
-    if (process.platform === "darwin") {
-      const renamed = rows.filter(row => tokens(row.command)[0] === "claude"
-        && /^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(row.executableName ?? ""));
-      if (renamed.length > 0) {
-        try {
-          // One bounded OS census for all renamed candidates. Missing evidence
-          // leaves the ps rows intact, but cannot positively identify Claude.
-          const { stdout } = await execFileAsync("lsof", ["-a", "-p", renamed.map(row => row.pid).join(","), "-d", "txt", "-Fpn"],
-            { encoding: "utf8", timeout: 2_000, maxBuffer: 1024 * 1024 });
-          const paths = new Map<number, string[]>();
-          let pid: number | null = null;
-          for (const line of stdout.split("\n")) {
-            if (/^p\d+$/.test(line)) {
-              pid = Number(line.slice(1));
-              if (!paths.has(pid)) paths.set(pid, []);
-            } else if (pid !== null && line.startsWith("n")) paths.get(pid)!.push(line.slice(1));
-          }
-          for (const row of renamed) {
-            const mapped = paths.get(row.pid) ?? [];
-            const nativePaths = [...new Set(mapped.filter(path => claudeExecutable(path)
-              && path.includes("/.local/share/claude/versions/")))];
-            // The executable is the leading text mapping in the native lsof
-            // shape. Also reject competing native mappings; never pick a
-            // convenient matching library or a second installation.
-            if (nativePaths.length === 1 && mapped[0] === nativePaths[0]
-              && executableName(nativePaths[0]!) === row.executableName) row.executablePath = nativePaths[0]!;
-          }
-        } catch { /* Unavailable OS proof is not positive identity. */ }
-      }
+    const candidates = rows.filter(needsClaudeExecutablePath);
+    if (candidates.length > 0) {
+      const paths = await readNativeExecutablePaths(candidates.map(row => row.pid));
+      for (const row of candidates) row.executablePath = paths.get(row.pid);
     }
     return rows;
   } catch { return []; }
@@ -246,7 +233,7 @@ function nativeProcessCandidates(rows: NativeProcessRow[], panePid: number, runt
     }
   }
   return matches.map(({ process, chain }) => ({ panePid, process,
-    fingerprint: JSON.stringify(chain.map(row => [row.pid, row.ppid, row.startedAt, row.pgid, row.tpgid, row.executableName, row.executablePath, row.command])) }));
+    fingerprint: JSON.stringify(chain.map(row => [row.pid, row.ppid, row.startedAt, row.pgid, row.tpgid, row.executableName, row.command, row.executablePath])) }));
 }
 
 function selectNativeProcess(rows: NativeProcessRow[], panePid: number, expectedToken?: string | null, requireResume = false, runtime: NativeRuntime = "codex", selectedExecutable?: string): NativeProcessObservation | null {

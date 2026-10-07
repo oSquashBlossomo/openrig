@@ -1,3 +1,4 @@
+import { operationalLaunchArgs, operationalLaunchArg } from "./kernel-authority.js";
 import nodePath from "node:path";
 import fs from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
@@ -118,6 +119,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
 
   async project(plan: ProjectionPlan, binding: NodeBinding): Promise<ProjectionResult> {
     const projected: string[] = [];
+    const warnings: string[] = [];
     const skipped: string[] = [];
     const failed: Array<{ effectiveId: string; error: string }> = [];
 
@@ -128,7 +130,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       }
 
       try {
-        const didProject = this.projectEntry(entry, binding.cwd, binding.claudeManagedBlockFile ?? DEFAULT_CLAUDE_MANAGED_BLOCK_FILE);
+        const didProject = this.projectEntry(entry, binding.cwd, binding.claudeManagedBlockFile ?? DEFAULT_CLAUDE_MANAGED_BLOCK_FILE, warnings);
         if (didProject) {
           projected.push(entry.effectiveId);
         } else {
@@ -164,10 +166,10 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       }
     }
 
-    return { projected, skipped, failed };
+    return { projected, skipped, failed, ...(warnings.length ? { warnings } : {}) };
   }
 
-  async deliverStartup(files: ResolvedStartupFile[], binding: NodeBinding): Promise<StartupDeliveryResult> {
+  async deliverStartup(files: ResolvedStartupFile[], binding: NodeBinding, sendInteractiveText?: (text: string) => Promise<void>): Promise<StartupDeliveryResult> {
     try { this.ensureManagedBootstrap(binding); } catch (err) {
       console.error(`[openrig] claude bootstrap warning: ${(err as Error).message}`);
     }
@@ -178,6 +180,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       console.error(`[openrig] context collector provisioning warning: ${(err as Error).message}`);
     }
 
+    const warnings: string[] = [];
     let delivered = 0;
     const failed: Array<{ path: string; error: string }> = [];
 
@@ -189,7 +192,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
         switch (hint) {
           case "guidance_merge": {
             const targetPath = nodePath.join(binding.cwd, binding.claudeManagedBlockFile ?? DEFAULT_CLAUDE_MANAGED_BLOCK_FILE);
-            const merged = this.mergeGuidance(targetPath, file.path, content);
+            const merged = this.mergeGuidance(targetPath, file.path, content, warnings);
             if (!merged) continue; // rig-role skip: do not count as delivered
             break;
           }
@@ -205,6 +208,10 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
           }
           case "send_text": {
             if (binding.tmuxSession) {
+              if (sendInteractiveText) {
+                await sendInteractiveText(content);
+                break;
+              }
               const textResult = await this.tmux.sendText(binding.tmuxSession, content);
               if (!textResult.ok) throw new Error(textResult.message);
               await this.sleep(200);
@@ -222,7 +229,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       }
     }
 
-    return { delivered, failed };
+    return { delivered, failed, ...(warnings.length ? { warnings } : {}) };
   }
 
   async launchHarness(
@@ -251,8 +258,9 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
           session: binding.tmuxSession, pane: binding.tmuxPane, generation: binding.launchGeneration }, binding.permissionMode);
       } catch (error) { return { ok: false, error: (error as Error).message }; }
     }
-    const permissionMode = claudePostureFlag(process.env, binding.launchPosture, binding.permissionMode);
-    const appliedLaunch = observeClaudePermission(permissionMode);
+    const posture = claudePostureFlag(process.env, binding.launchPosture, binding.permissionMode);
+    const appliedLaunch = observeClaudePermission(posture);
+    const permissionMode = posture + operationalLaunchArg(this.runtime, binding);
     // OPR.0.5.3.1: classic-renderer env prefix (default on) → native scrollback for every
     // managed launch path (fresh/resume/fork). "" when overridden off → byte-identical command.
     const rendererPrefix = claudeClassicRendererEnvPrefix(process.env);
@@ -282,9 +290,12 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       if (!parentId) {
         return { ok: false, error: "claude-code fork: forkSource.value is required (parent native_id)" };
       }
-      const cmd = managed ? managed.command(["--permission-mode", binding.permissionMode!, ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []),
+      const cmd = managed ? managed.command(["--permission-mode", binding.permissionMode!, ...operationalLaunchArgs(this.runtime, binding), ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []),
         "--resume", parentId, "--fork-session", "--name", opts.name])
-        : `${rendererPrefix}claude ${permissionMode}${modelArg}${effortArg} --resume ${parentId} --fork-session --name ${opts.name}`;
+        // The non-managed command text is parsed by the pane shell, so the
+        // parent id needs the same quoting as --model/--effort above (and as
+        // the codex fork path) — a hostile id must not leave --resume.
+        : `${rendererPrefix}claude ${permissionMode}${modelArg}${effortArg} --resume ${shellQuote(parentId)} --fork-session --name ${opts.name}`;
       const textResult = managed ? await this.tmux.sendShellCommand(binding.tmuxSession, cmd, managed.assertCurrent)
         : this.seatLaunchEnvironment
           ? await this.tmux.sendShellCommand(binding.tmuxSession, await this.seatLaunchEnvironment.command(binding.tmuxSession, cmd, { nodeId: binding.nodeId, generation: binding.launchGeneration, runtime: this.runtime }), undefined, { sourceInPane: true })
@@ -312,7 +323,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     }
 
     const generatedSessionId = opts.resumeToken ? null : this.sessionIdFactory();
-    const cmd = managed ? managed.command(["--permission-mode", binding.permissionMode!, ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []),
+    const cmd = managed ? managed.command(["--permission-mode", binding.permissionMode!, ...operationalLaunchArgs(this.runtime, binding), ...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : []),
       ...(opts.resumeToken ? ["--resume", opts.resumeToken] : ["--session-id", generatedSessionId!]), "--name", opts.name]) : opts.resumeToken
       ? `${rendererPrefix}claude ${permissionMode}${modelArg}${effortArg} --resume ${opts.resumeToken} --name ${opts.name}`
       : `${rendererPrefix}claude ${permissionMode}${modelArg}${effortArg} --session-id ${generatedSessionId} --name ${opts.name}`;
@@ -337,10 +348,9 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       return { ok: true, resumeToken: opts.resumeToken, resumeType: "claude_id", appliedLaunch };
     }
 
-    // Belt-and-suspenders: prefer an immediately discoverable persisted session,
-    // but fall back to the UUID we assigned explicitly at launch time.
-    const token = this.captureResumeToken(opts.name, managed?.configDir);
-    return { ok: true, resumeToken: token ?? generatedSessionId ?? undefined, resumeType: "claude_id", appliedLaunch };
+    // Fresh launches already have an explicit --session-id. A same-name file
+    // can belong to another seat sharing the Claude config directory.
+    return { ok: true, resumeToken: generatedSessionId!, resumeType: "claude_id", appliedLaunch };
   }
 
   async checkReady(binding: NodeBinding): Promise<ReadinessResult> {
@@ -482,7 +492,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     return { ok: false, error: "Claude resume failed: timed out waiting for Claude to become active" };
   }
 
-  private projectEntry(entry: ProjectionEntry, cwd: string, managedBlockFile: ClaudeManagedBlockFile): boolean {
+  private projectEntry(entry: ProjectionEntry, cwd: string, managedBlockFile: ClaudeManagedBlockFile, warnings: string[]): boolean {
     if (entry.category === "runtime_resource" && this.applyRuntimeResource(entry, cwd)) {
       return true;
     }
@@ -490,7 +500,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     if (entry.category === "guidance" && entry.mergeStrategy === "managed_block") {
       const targetPath = nodePath.join(cwd, managedBlockFile);
       const content = this.fs.readFile(entry.absolutePath);
-      return this.mergeGuidance(targetPath, entry.effectiveId, content);
+      return this.mergeGuidance(targetPath, entry.effectiveId, content, warnings);
     }
 
     // HG-1.3 plugin runtime applicability filter (per DESIGN.md §5.1):
@@ -611,7 +621,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
    * ProjectionResult and StartupDeliveryResult report honest counts instead
    * of claiming a merge that never landed.
    */
-  private mergeGuidance(targetPath: string, blockId: string, content: string): boolean {
+  private mergeGuidance(targetPath: string, blockId: string, content: string, warnings: string[]): boolean {
     // The `rig-role` managed block is authored per seat but delivered through a
     // projection path that pairs (target-file × spec) without seat correlation,
     // so multiple pod-mates' role bodies collide into one CLAUDE.md. The fix
@@ -625,6 +635,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       return false;
     }
     mergeManagedBlock(this.fs, targetPath, blockId, content, {
+      warnings,
       replaceBlockIds: blockId === "openrig-start.md" ? ["using-openrig.md"] : [],
     });
     return true;

@@ -7,9 +7,9 @@ name: Portability report
 # line only; authors see the matched text when they run the report locally or on push.
 # See scripts/portability-report.mjs.
 
+# Any base branch, so stacked PRs report only the lines they add over their parent.
 on:
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read

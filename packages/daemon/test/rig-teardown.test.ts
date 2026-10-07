@@ -84,6 +84,16 @@ describe("RigTeardownOrchestrator", () => {
   }
 
   // T1: Kills tmux sessions
+  it.each([true, false])("reports service project retention with live sessions=%s", async (live) => {
+    const rigId = live ? seedRig().rigId : rigRepo.createRig("archived").id;
+    const kept = "kept project shared: still used by rig successor (rig-2)";
+    const td = new RigTeardownOrchestrator({
+      db, rigRepo, sessionRegistry, tmuxAdapter: mockTmux(), snapshotCapture: mockSnapshotCapture(db), eventBus,
+      serviceOrchestrator: { teardown: async () => ({ ok: true, kept }) } as never,
+    });
+    expect((await td.teardown(rigId)).errors).toContain(kept);
+  });
+
   it("teardown kills tmux sessions", async () => {
     const { rigId } = seedRig();
     const tmux = mockTmux();
@@ -225,6 +235,60 @@ describe("RigTeardownOrchestrator", () => {
     // Only the new session should be killed
     expect(tmux.killSession).toHaveBeenCalledWith("r11-new");
     expect(tmux.killSession).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["claude-code", "CLAUDE.md"], ["claude-code", "CLAUDE.local.md"], ["codex", "AGENTS.md"],
+  ])("preserves %s guidance when a sibling sharing %s cannot stop", async (runtime, fileName) => {
+    const { rigId, nodeId, sessionId } = seedRigWithNode({ runtime, cwd: tmpDir });
+    if (fileName === "CLAUDE.local.md") rigRepo.setRigClaudeManagedBlockFile(rigId, fileName);
+    const sibling = rigRepo.addNode(rigId, "survivor", { runtime, cwd: tmpDir });
+    const survivingSession = sessionRegistry.registerSession(sibling.id, "survivor@test-rig");
+    sessionRegistry.updateStatus(survivingSession.id, "running");
+    const guidance = path.join(tmpDir, fileName);
+    const content = "Operator notes\n<!-- BEGIN OpenRig MANAGED BLOCK: role -->\nworking guidance\n<!-- END OpenRig MANAGED BLOCK: role -->\n";
+    fs.writeFileSync(guidance, content);
+    const tmux = mockTmux();
+    tmux.killSession = vi.fn(async target => target === "survivor@test-rig"
+      ? { ok: false, code: "kill_failed", message: "tmux error" } : { ok: true });
+
+    const result = await buildTeardown(tmux).teardown(rigId, { delete: true });
+
+    expect(result).toMatchObject({ sessionsKilled: 1, deleted: false, deleteBlocked: true });
+    expect(sessionRegistry.getSessionsForRig(rigId).find(s => s.id === sessionId)?.status).toBe("exited");
+    expect(sessionRegistry.getSessionsForRig(rigId).find(s => s.id === survivingSession.id)?.status).toBe("running");
+    expect(fs.readFileSync(guidance, "utf-8")).toBe(content);
+    expect(sessionRegistry.getBindingForNode(nodeId)).toBeNull();
+
+    // A later successful shutdown releases the file for ordinary cleanup.
+    tmux.killSession = vi.fn(async () => ({ ok: true }));
+    await buildTeardown(tmux).teardown(rigId);
+    expect(fs.readFileSync(guidance, "utf-8")).toBe("Operator notes\n");
+  });
+
+  it.each(["kill_failed", "transport_unavailable"] as const)("keeps guidance when termination is unconfirmed: %s", async failure => {
+    const { rigId, sessionId } = seedRigWithNode({ runtime: "codex", cwd: tmpDir });
+    const guidance = path.join(tmpDir, "AGENTS.md");
+    const content = "<!-- BEGIN OpenRig MANAGED BLOCK: role -->\nworking guidance\n<!-- END OpenRig MANAGED BLOCK: role -->\n";
+    fs.writeFileSync(guidance, content);
+    const tmux = mockTmux({ ok: false, code: "kill_failed", message: "tmux error" });
+    if (failure === "transport_unavailable") tmux.probeSession = vi.fn(async () => ({ state: "transport_unavailable", cause: "socket unavailable" }));
+    await buildTeardown(tmux).teardown(rigId);
+    expect(sessionRegistry.getSessionsForRig(rigId).find(s => s.id === sessionId)?.status).toBe("running");
+    expect(fs.readFileSync(guidance, "utf-8")).toBe(content);
+  });
+
+  it("preserves another rig's shared guidance during ordinary teardown", async () => {
+    const { rigId } = seedRigWithNode({ runtime: "codex", cwd: tmpDir });
+    const other = rigRepo.createRig("other-rig");
+    const otherNode = rigRepo.addNode(other.id, "dev", { runtime: "codex", cwd: tmpDir });
+    const session = sessionRegistry.registerSession(otherNode.id, "dev@other-rig");
+    sessionRegistry.updateStatus(session.id, "running");
+    const guidance = path.join(tmpDir, "AGENTS.md");
+    const content = "<!-- BEGIN OpenRig MANAGED BLOCK: role -->\nshared guidance\n<!-- END OpenRig MANAGED BLOCK: role -->\n";
+    fs.writeFileSync(guidance, content);
+    await buildTeardown().teardown(rigId);
+    expect(fs.readFileSync(guidance, "utf-8")).toBe(content);
   });
 
   // T12: Kill failure + --delete -> blocked

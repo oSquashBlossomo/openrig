@@ -79,8 +79,15 @@ export async function rebindAndVerifyPaneIdentity(input: {
     && (input.runtime === "claude-code" || input.runtime === "codex");
   const claudeWrapper = pid !== null && input.runtime === "claude-code"
     && runtimeMatch === "mismatch" && isShellForeground(normalizedCommand);
-  const claudeNativeVerification = claudeWrapper || (input.runtime === "claude-code"
-    && expectedResumeToken !== null && runtimeMatch === "match");
+  // A native install may report its version as the pane label. This selects
+  // exact process verification; the label itself is never identity evidence.
+  const claudeVersionLabel = pid !== null && input.runtime === "claude-code"
+    && input.requireExactResumeLineage !== true
+    && /^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(normalizedCommand);
+  // Numeric and literal Claude labels with a known token need the same exact proof as wrappers.
+  const claudeTokenProof = input.runtime === "claude-code"
+    && expectedResumeToken !== null && runtimeMatch === "match";
+  const claudeProcessProof = claudeWrapper || claudeVersionLabel || claudeTokenProof;
   if (input.runtime === "codex") {
     // A shell/Node label describes the wrapper, not the native occupant.
     runtimeMatch = "match";
@@ -89,15 +96,14 @@ export async function rebindAndVerifyPaneIdentity(input: {
       requireResume: input.requireExactResumeLineage === true });
     const currentPanes = await input.tmux.listPanes(input.sessionName).catch(() => []);
     if (native?.panePid === pid && currentPanes.length === 1 && currentPanes[0]?.id === pane.id) lineageMatch = native.process;
-  } else if (claudeNativeVerification) {
-    // Numeric and literal Claude labels need the same exact proof as wrappers.
+  } else if (claudeProcessProof) {
     // A known token always requires exact proof. Only non-strict, tokenless
-    // callers may use runtime occupancy; this never proves resume continuity.
+    // shell wrappers may use runtime occupancy; this never proves resume continuity.
     runtimeMatch = "match";
     const observation = { target: pane.id, tmux: input.tmux, listProcesses: input.listProcesses };
     const native = expectedResumeToken !== null
       ? await verifyClaudePaneProcess({ ...observation, expectedToken: expectedResumeToken })
-      : input.requireExactResumeLineage ? null : await verifyClaudePaneRuntime(observation);
+      : claudeWrapper && !input.requireExactResumeLineage ? await verifyClaudePaneRuntime(observation) : null;
     const currentPanes = await input.tmux.listPanes(input.sessionName).catch(() => []);
     const currentPid = await input.tmux.getPanePid(pane.id).catch(() => null);
     if (native?.panePid === pid && currentPid === pid && currentPanes.length === 1 && currentPanes[0]?.id === pane.id) lineageMatch = native.process;
@@ -113,7 +119,7 @@ export async function rebindAndVerifyPaneIdentity(input: {
       // Missing process evidence is ambiguity, never positive identity.
     }
   }
-  const runtimeAmbiguous = input.runtime === "codex" || claudeNativeVerification ? lineageMatch === null : runtimeMatch === "match" && (strictNativeLineage
+  const runtimeAmbiguous = input.runtime === "codex" || claudeProcessProof ? lineageMatch === null : runtimeMatch === "match" && (strictNativeLineage
     ? lineageMatch === null
     : input.runtime === "claude-code" && !normalizedCommand.includes("claude"));
   const verdict: SeatIdentityVerdict = {
@@ -222,6 +228,8 @@ interface ClearAttentionDeps {
   >;
 }
 
+const IDENTITY_RECOVERY_GUIDANCE = "--reason cannot bypass this attention class. If the recorded native token needs correction and you know the actual token, use rig seat set-resume-token <session> --token-stdin --reason <explanation>, then rerun rig seat clear-attention <session> to check the live evidence. Setting a token or stopping/relaunching the seat alone does not prove continuity.";
+
 const POSITIVE_STATES = new Set(["running", "idle"]);
 type DerivedAttentionOutcome = {
   status: "failed" | "attention_required";
@@ -268,7 +276,7 @@ export class SeatAttentionReconciler {
         return {
           ok: false,
           code: "not_demonstrably_responsive",
-          detail: "Uncleared attention class restore_outcome: strict restore reconciler is unavailable",
+          detail: `Uncleared attention class restore_outcome (full restore): strict restore reconciler is unavailable. ${IDENTITY_RECOVERY_GUIDANCE}`,
         };
       }
       const restored = await reconcile(session.rigId, session.nodeId);
@@ -276,7 +284,7 @@ export class SeatAttentionReconciler {
         return {
           ok: false,
           code: "not_demonstrably_responsive",
-          detail: `Uncleared attention class restore_outcome: ${restored.code}: ${restored.detail}`,
+          detail: `Uncleared attention class restore_outcome (full restore): ${restored.code}: ${restored.detail}. ${IDENTITY_RECOVERY_GUIDANCE}`,
         };
       }
 
@@ -323,7 +331,7 @@ export class SeatAttentionReconciler {
         return {
           ok: false,
           code: "not_demonstrably_responsive",
-          detail: "Uncleared attention class pane_identity: tmux identity verifier is unavailable",
+          detail: `Uncleared attention class pane_identity: tmux identity verifier is unavailable. ${IDENTITY_RECOVERY_GUIDANCE}`,
         };
       }
       const identity = await rebindAndVerifyPaneIdentity({
@@ -340,7 +348,7 @@ export class SeatAttentionReconciler {
         return {
           ok: false,
           code: "not_demonstrably_responsive",
-          detail: `Uncleared attention class pane_identity: ${identity.detail}`,
+          detail: `Uncleared attention class pane_identity: ${identity.detail}. ${IDENTITY_RECOVERY_GUIDANCE}`,
         };
       }
       return this.performEvidenceClear(
@@ -456,9 +464,12 @@ export class SeatAttentionReconciler {
     return {
       ok: false,
       code: "not_demonstrably_responsive",
-      detail: activity
+      detail: `Uncleared attention class ${[
+        ...(startupClassActive ? ["startup_status"] : []),
+        ...(derivedOutcome ? ["restore_outcome (subset restore)"] : []),
+      ].join(" and ")}: ${activity
         ? `Latest activity: state='${activity.state}', stale=${activity.stale ?? false}, reason='${activity.reason}' -- not positive evidence; send-verify also not confirmed`
-        : "No recent agent activity found; send-verify also not confirmed",
+        : "No recent agent activity found; send-verify also not confirmed"}. --reason can acknowledge this attention; acknowledgment does not prove resumed continuity.`,
     };
   }
 

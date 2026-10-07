@@ -20,7 +20,7 @@ Not setting this up today? Get the next walkthrough and occasional OpenRig updat
 
 ## Install and first run
 
-Requires Node.js 22 or 24 and tmux, on macOS or Linux. On a Mac with Apple silicon, use Node.js 22 ([compatibility history](docs/releases/v0.5.15.md#known-compatibility-limitation)). Native Windows is not supported yet, and WSL2 has not been tested. Launching a rig writes provider hooks and workspace trust settings. Before running the commands below, read [what OpenRig changes on your machine](#what-openrig-changes-on-your-machine) and back up the relevant files.
+Requires Node.js 22 or 24 and tmux, on macOS or Linux. On Linux, the distribution's own Node.js can be older (Ubuntu 24.04's is 18); install a supported version with [nvm](https://github.com/nvm-sh/nvm) (`nvm install 22`) or NodeSource. On a Mac with Apple silicon, use Node.js 22 ([compatibility history](docs/releases/v0.5.15.md#known-compatibility-limitation)). Native Windows is not supported yet, and WSL2 has not been tested. Launching a rig writes provider hooks and workspace trust settings. Before running the commands below, read [what OpenRig changes on your machine](#what-openrig-changes-on-your-machine) and back up the relevant files.
 
 ```bash
 npm install -g @openrig/cli
@@ -29,7 +29,9 @@ rig setup --dry-run
 
 To install with Bun instead, run `bun add -g @openrig/cli`. OpenRig still runs on Node.js, so install Node.js 22 as well. Bun may block this package's postinstall script, in which case the Node.js and SQLite check described under [what OpenRig changes on your machine](#what-openrig-changes-on-your-machine) does not run at install time.
 
-Choose the working account you already have: **Claude Code, Codex, or both**. Reuse an explicit choice; no second subscription is required. `rig setup --dry-run` previews the broader setup, but applying `rig setup` checks both harnesses and cmux. It is optional for the [selected-provider path](docs/reference/getting-started.md#choose-your-providers).
+npm 11 and later can skip that postinstall script and print `npm warn install-scripts` naming `@openrig/cli`. That's expected: the CLI still works, and only the Node.js and SQLite check was skipped. To run it yourself, use `node "$(npm root -g)/@openrig/cli/scripts/check-abi.mjs"`; `rig doctor` checks the Node.js version only.
+
+Choose the working account you already have: **Claude Code, Codex, or both**. Reuse an explicit choice; no second subscription is required. `rig setup --dry-run` previews the broader setup, but applying `rig setup` checks both harnesses and installs a missing one, and on macOS cmux too. It is optional for the [selected-provider path](docs/reference/getting-started.md#choose-your-providers).
 
 Before launching, your agent asks once: **“Allow your agents to run OpenRig commands without repeated permission prompts?” Yes — recommended / No — keep prompts.** This covers every `rig` command, including starting/stopping agents and configuration, at personal project scope unless you explicitly choose user-wide sessions. It is not global YOLO or permission to invent work. On Yes, the agent [adds and verifies native rules](docs/reference/getting-started.md#have-your-agent-configure-permissions); No or no answer leaves settings unchanged. An existing explicit choice is reused. Say “Undo the OpenRig command allowances added by this setup” to remove only its additions.
 
@@ -38,37 +40,42 @@ Check `tmux -V` and only your selected CLI/login: `claude --version` plus
 sign in once with `claude auth login` or `codex login`; do not install or log in
 to an unused provider.
 
-| Team | Starter | Models |
-| --- | --- | --- |
-| Two Codex agents | `first-project` | Both `gpt-6-astra` (unchanged) |
-| Two Claude agents | `first-project-claude` | Configured native Claude default |
-| Claude owner + Codex checker | `first-project-mixed` | Claude default + `gpt-6-astra` |
+The kernel's operator helps you pick a first team. It asks what you want to build,
+recommends one of three, and fits it to the providers you have.
 
-All three use the same owner/checker roles and task. Show the selected runtime,
-configured model and command before launch; confirm the account supports the
-model instead of silently falling back. The kernel starts automatically and
-selects from available authenticated providers independently of these two project
-agents. A missing unused provider is not a setup requirement.
+| Team | Agents | For |
+| --- | --- | --- |
+| `starter` | A builder (`dev-build`, Claude Code) and a reviewer (`dev-review`, Codex) | One bounded change |
+| `workshop` | A lead, a builder, QA and a reviewer | Ongoing work in one repository; a rig bundle the operator installs from its pinned listing |
+| `factory` | Seven: a lead, an advisor, build, QA, design and two independent reviewers | Sustained product work |
+
+As shipped, `starter` uses both Claude Code and Codex. With only one of them, ask
+the kernel operator to adapt it: it writes a copy of the team for your providers
+under the same name. `first-project` is starter's old name and still starts it.
+Show the selected runtime, configured model and command before launch; confirm the
+account supports the model instead of silently falling back. The kernel starts
+automatically and selects from available authenticated providers independently of
+these teams. A missing unused provider is not a setup requirement.
 
 ```bash
 cd /path/to/your/repository
-starter=first-project  # or first-project-claude or first-project-mixed
-rig specs preview "$starter" --kind rig
-rig up "$starter" --cwd . --plan
-rig up "$starter" --cwd .
-rig tui --shared
+rig specs preview starter --kind rig
+rig up starter --cwd . --plan
+rig up starter --cwd .
 ```
+
+After installation, your agent should [open a **new kernel conversation space**](docs/reference/getting-started.md#open-the-kernel-conversations): `rig terminal open saved:kernel --provider herdr`, then cmux or a plain terminal if unavailable. The default view needs no YAML edit. The agent tells you before opening it and keeps its own terminal and your existing spaces intact. The guide also gives the manual and SSH commands.
 
 The kernel provides separate operational support and the shared dashboard. To detach without stopping the dashboard, press Ctrl-b then d; `rig tui --shared` returns to that view. Plain `rig tui` opens an independent view. Closing a viewing terminal does not mean you should relaunch the team.
 
-Check project-seat readiness with `rig ps --nodes --rig "$starter"` and resolve any authentication, trust or permission prompt before assigning work. Then give the owner one bounded outcome from your repository:
+Check project-seat readiness with `rig ps --nodes --rig starter` and resolve any authentication, trust or permission prompt before assigning work. If a seat stopped at such a prompt before its startup context arrived, `rig ps` shows the `rig seat continue <seat>` command that delivers it once the prompt is answered. Then give the builder one bounded outcome from your repository:
 
 ```bash
-rig send "dev-owner@$starter" 'Implement <one useful change>. Track the task in the queue and return its ID. Keep it local, verify the behavior, ask dev-check in this rig to check the exact candidate, and record the result and how I can try it.'
-rig queue list --destination "dev-owner@$starter" --limit 1000
+rig send dev-build@starter 'Implement <one useful change>. Track the task in the queue and return its ID. Keep it local, verify the behavior, ask dev-review in this rig to check the exact candidate, and record the result and how I can try it.'
+rig queue list --destination dev-build@starter --limit 1000
 ```
 
-Sending a message does not itself create a queue item; the owner records the task. Read the final artifact and the review of its exact candidate, then return to the same owner for the next change. [The guided first-use path](docs/reference/getting-started.md) covers readiness, a useful task, a reviewed result, Herdr/cmux terminals and recovery.
+Sending a message does not itself create a queue item; the builder records the task. Read the final artifact and the review of its exact candidate, then return to the same builder for the next change. [The guided first-use path](docs/reference/getting-started.md) covers readiness, a useful task, a reviewed result, Herdr/cmux terminals and recovery.
 
 Not setting this up today? Get the next walkthrough and occasional OpenRig updates → https://openrig.dev/follow
 
@@ -91,10 +98,11 @@ using a published package, since repository guidance can be ahead of npm.
 
 | When | What changes and why |
 | --- | --- |
-| **npm installation** | Installs the CLI, bundled components and dependencies under your npm prefix (with Bun, under Bun's global directory). OpenRig's postinstall checks the Node.js version and that the SQLite module loads; Bun may block this script. It does not run daemon or provider setup. |
+| **npm installation** | Installs the CLI (`rig` and `openrig-tui`), bundled components and dependencies under your npm prefix (with Bun, under Bun's global directory). OpenRig's postinstall checks the Node.js version and that the SQLite module loads; Bun may block this script. It does not run daemon or provider setup. |
 | **`rig setup`** | Attempts missing tools and writes an OpenRig block in `~/.tmux.conf` for mouse support and scrollback. On macOS it can install cmux and enable its automation socket control in `~/.config/cmux/settings.json`; cmux defaults `automation.socketControlMode` to `cmuxOnly`, which only accepts processes started inside cmux and so blocks OpenRig's control, so setup switches it to `automation`. `--full` adds workstation tools. `--dry-run` shows setup's plan without applying it. |
 | **Daemon startup** | Creates/updates instance state under `OPENRIG_HOME` (normally `~/.openrig`), including its database and managed plugin resources. Seeds the `openrig-skills` discovery skill in `~/.claude/skills` and `~/.agents/skills`, subject to existing version ownership. With `runtime.codex.hooks_enabled` enabled (the default), writes Codex hook configuration and trust records as described below—even before a rig launches. |
-| **Rig/seat launch and attachment** | Creates tmux sessions, supplies seat identity and daemon connection environment, and projects selected guidance, skills, plugins and runtime resources into the workspace. Managed startup pre-trusts the workspace. Claude context collection can also be provisioned for attached sessions and refreshed during monitoring. |
+| **Rig/seat launch and attachment** | Creates tmux sessions, supplies seat identity and daemon connection environment, and projects selected guidance, skills, plugins and runtime resources into the workspace. Managed startup pre-trusts the workspace. Claude context collection can also be provisioned for attached sessions and refreshed during monitoring. In a Git repository, newly created files under `.codex/plugins/openrig-core/` are added to the repository's Git `info/exclude` inside an `# BEGIN OpenRig generated files` block; new `AGENTS.md`, `CLAUDE.md` and `CLAUDE.local.md` files stay visible with a warning. |
+| **Bundle install** (`rig bundle install`, or `rig up` with a `.rigbundle` or GitHub link) | Writes the bundle's files into the install target: `--target`, or the current directory for `rig up` and for a GitHub link. `rig bundle install` with a local archive needs `--target`. Routes its declared skills, plugins and context packs into your libraries. A GitHub link's archive is kept under `OPENRIG_HOME/bundle-imports/`, and installs are recorded in `OPENRIG_HOME/bundle-audit.jsonl`. A bundle that carries a project creates it under `workspace.projects_root` and records it, with the rig's association, in the workspace catalog. |
 | **Explicit permission configuration** | The built-in bootstrap does **not** add `rig` command allow rules. Agent-guided setup recommends Yes and requires your actual answer before the agent [adds rules at your chosen scope](docs/reference/getting-started.md#have-your-agent-configure-permissions). No/no answer preserves settings; existing choices and stricter rules remain relevant. Broader access is separate. |
 
 The provider files are separate from instance state. Here `~` means the daemon
@@ -103,7 +111,8 @@ user's home; changing `OPENRIG_HOME` alone does not isolate provider configurati
 - **Claude Code:** startup writes workspace trust and onboarding completion.
   With an explicit permission mode, it uses the launch-selected `HOME/.claude.json`,
   or `<CLAUDE_CONFIG_DIR>/.claude.json` when that variable is set. Classic startup
-  retains the daemon's `~/.claude.json` path. In the workspace, `.claude/settings.local.json` receives
+  writes `HOME/.claude.json`, and also `<CLAUDE_CONFIG_DIR>/.claude.json` when the
+  daemon has that variable set. In the workspace, `.claude/settings.local.json` receives
   the context collector's `statusLine` command and selected activity hooks;
   helper scripts live under `.openrig/`. Selected settings/MCP resources can also
   change that settings file and `.mcp.json`. The shared settings resource sets
@@ -131,14 +140,33 @@ Managed launches supply `HOME`, `CODEX_HOME` and `OPENRIG_*` identity/connection
 variables. Claude uses `--permission-mode acceptEdits` and defaults to the classic
 renderer for terminal scrollback. Codex uses `-s workspace-write` unless a named
 profile governs its sandbox; the default does not force an approval-policy flag.
+On that plain launch OpenRig first asks Codex for its own configuration and adds
+`-c sandbox_workspace_write.network_access=true` only when Codex answers that no
+configuration layer sets network access and no managed requirement could restrict
+it, so the seat can reach the local daemon. If Codex can't be asked or doesn't
+answer in time, the launch is left unchanged.
 Fresh Codex launches also add writable access to the workspace's `.git` and the
 pod's shared queue-state directory with `--add-dir`; the shared root comes from
 `OPENRIG_SHARED_DOCS_ROOT` or `~/.openrig/shared-docs`.
+Seats of the rig named `kernel` launch with an operational default instead,
+unless a permission policy, a per-seat choice or (for Codex) a named profile
+applies: Claude in `acceptEdits` with a per-launch allow list for its file tools
+and operational commands (including reads under your home folder), and Codex with
+`-s danger-full-access -a never`. Neither writes a permission file.
 YOLO is **off by default**. An explicitly selected full-bypass policy selects
 Claude's `--dangerously-skip-permissions` or Codex's
 `-s danger-full-access -a never`. The legacy environment-only `OPENRIG_YOLO=1`
-path still selects only Codex's sandbox; a resolved policy overrides that
-environment setting.
+path, with no policy attached, selects Claude's bypass flag, Pi's `--approve` and
+Codex's `-s danger-full-access` without `-a never`; a resolved policy overrides
+that environment setting. The `builtin:auto` policy launches Claude with
+`--permission-mode auto`; Codex and Pi seats launch as they do without a policy (a
+named Codex profile still governs its sandbox, and Pi keeps its configured
+resource trust).
+`--non-interruptive` on `rig up` or `rig bundle install` additionally passes
+per-launch flags to full-bypass seats so Claude's bypass warning and Codex's
+full-access and GPT-5.1 migration notices don't stop startup; it writes nothing to
+their settings files and is saved on the rig. See
+[non-interruptive mode](docs/reference/non-interruptive-mode.md).
 
 Permission mode controls native execution permissions; work posture is separate
 project guidance. Use `rig policy permissions list|show|current|apply` for rig
@@ -177,29 +205,22 @@ OpenRig is a multi-agent harness — it manages the system that coding agents fo
 
 Every agent runs in a tmux session you can attach to, inspect, and work with directly.
 
-## Starter Rigs
+## Teams
 
-Use `first-project`, `first-project-claude`, or `first-project-mixed` for the
-same focused first-use path on your selected providers. `product-team` is an optional
-larger product-development example:
+Three teams grow with you, and the kernel operator helps you pick one:
 
-```bash
-rig specs preview product-team --kind rig
-rig up product-team
-```
-
-Use it when you want a larger product squad: two orchestrators, implementation, QA, design, and two independent reviewers.
-
-For a smaller starter, use `conveyor`:
+- **`starter`**: a builder and a reviewer for one bounded change.
+- **`workshop`**: a lead, a builder, QA and a reviewer for ongoing work in one repository. It's a rig bundle, installed from its pinned listing.
+- **`factory`**: seven agents (a lead, an advisor, build, QA, design and two independent reviewers) for sustained product work. You bring ideas to the advisor, and the lead runs the team.
 
 ```bash
-rig specs preview conveyor --kind rig
-rig up conveyor
+rig specs preview factory --kind rig
+rig up factory
 ```
 
-`conveyor` is a four-seat starter mixing Claude Code and Codex. It shows a handoff path through intake, planning, build, and review; `first-project` remains the smaller two-seat starting point.
+Specialist teams: `code-review` (two independent reviews), `research` (an analyst and a synthesizer) and `pm` (a product lead, a researcher and a builder for prototypes).
 
-Also ships: `implementation-pair`, `adversarial-review`, `research-team`, and `secrets-manager` (HashiCorp Vault managed by a specialist agent).
+Also built in: `secrets-manager`, a HashiCorp Vault instance run by a specialist agent.
 
 Browse the library:
 
@@ -237,7 +258,7 @@ The TUI shows the team's coordination state; herdr and cmux show the actual agen
 With herdr installed and connected, open the starter's terminals together:
 
 ```bash
-rig terminal open first-project --provider herdr
+rig terminal open starter --provider herdr
 ```
 
 For cmux, use `--provider cmux`. In the TUI, a rig's detail view has a `term ▸ rig <name>` link that opens every running seat of that rig in the default terminal provider; with herdr that is up to 16 seats per tab, in a workspace named after the rig. The underlying sessions remain accessible through tmux. See the [terminal workspace guide](docs/reference/getting-started.md#share-the-dashboard-and-return-to-it) for setup and returning to an existing view.
@@ -246,12 +267,12 @@ For cmux, use `--provider cmux`. In the TUI, a rig's detail view has a `term ▸
 
 - **RigSpec**: Declarative multi-agent harness definition in YAML. Pods, members, edges, continuity policies, culture file.
 - **AgentSpec**: Reusable agent blueprint with skills, guidance, hooks, profiles, and startup contracts.
-- **Seat**: A stable role and address in a rig, such as `dev-owner@first-project`. The conversation occupying it can change while its identity and authored context remain.
+- **Seat**: A stable role and address in a rig, such as `dev-build@starter`. The conversation occupying it can change while its identity and authored context remain.
 - **Pod**: A group of related seats with shared guidance and context. Each agent still has its own context window.
 - **Discovery**: `rig discover` fingerprints existing tmux sessions. `rig adopt` brings them under management.
-- **Snapshot/Restore**: `rig down --snapshot` captures full state. `rig up <name>` restores from latest snapshot. Restore reports per-node outcomes (resumed, fresh, or failed).
-- **RigBundle**: Portable archive with vendored AgentSpecs and SHA-256 integrity. Share topologies across machines.
-- **Culture**: CULTURE.md sets coordination norms for the group. Research rigs get exploratory culture. Implementation rigs get conservative, trust-but-verify culture.
+- **Snapshot/Restore**: `rig down --snapshot` captures full state. `rig up <name>` restores from latest snapshot. Restore reports per-node outcomes: resumed, fresh-primed, awaiting-decision (the original conversation can't resume; choose `--fresh`), attention_required, or failed.
+- **RigBundle**: Portable archive with vendored AgentSpecs and SHA-256 integrity. Share topologies across machines. `rig up`, `rig bundle create`, `inspect` and `install` also take a GitHub folder link, `rig bundle check` checks a folder before you share it, and `rig bundle inspect` shows what a bundle will do before you install it. See [publishing a rig bundle](docs/reference/publishing-a-rig-bundle.md).
+- **Culture**: A rig's `CULTURE.md` (its `culture_file`) sets coordination norms for the group, on top of OpenRig's default culture, which every seat receives.
 
 ## Agent-Managed Software
 
@@ -267,7 +288,7 @@ Requires Docker for service-backed rigs.
 
 ## Upgrading an existing instance
 
-For an existing installation, follow the [upgrade procedure](skills/_canonical/core/openrig-upgrade/SKILL.md) and the [0.5.14 release notes](docs/releases/v0.5.14.md). Preserve live seats during the upgrade; `rig down` is not an upgrade step. Upgrading to 0.6.0 also requires Node.js 22 or 24: see [Moving off Node 20](#moving-off-node-20) and the [0.6.0 release notes](docs/releases/v0.6.0.md).
+For an existing installation, follow the [upgrade procedure](skills/_canonical/core/openrig-upgrade/SKILL.md) and the [0.5.14 release notes](docs/releases/v0.5.14.md); notes for later releases are in [CHANGELOG.md](CHANGELOG.md). Preserve live seats during the upgrade; `rig down` is not an upgrade step. Upgrading to 0.6.0 also requires Node.js 22 or 24: see [Moving off Node 20](#moving-off-node-20) and the [0.6.0 release notes](docs/releases/v0.6.0.md).
 
 ### Moving off Node 20
 
@@ -347,7 +368,7 @@ Optional:
 
 ## Setup and Troubleshooting
 
-- `rig setup` attempts core machine preparation: tmux, cmux, Claude Code, Codex, and tmux defaults. It reports what it tried and what actually succeeded. If something fails, it gives the local agent enough context to finish the job.
+- `rig setup` attempts core machine preparation: tmux, Claude Code, Codex and tmux defaults, plus cmux on macOS. cmux is optional and macOS-only; elsewhere setup skips it and `rig doctor` only warns that it's missing. It reports what it tried and what actually succeeded. If something fails, it gives the local agent enough context to finish the job.
 - `rig setup --full` attempts a broader operator workstation setup (jq, gh) on top of core.
 - `rig doctor` inspects current system health and helps diagnose problems after setup. Use it when something stops working or after machine changes.
 

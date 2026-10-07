@@ -1,3 +1,4 @@
+import { operationalLaunchArg } from "./kernel-authority.js";
 import nodePath from "node:path";
 import fs from "node:fs";
 import { createHash } from "node:crypto";
@@ -23,11 +24,12 @@ import {
   readCodexThreadIdFromCandidateHomes,
   type ResolveHomeDirByPid,
 } from "../domain/codex-thread-id.js";
-import { assessNativeResumeProbe, buildCodexResumeCore, type NativeResumeProbeResult } from "../domain/native-resume-probe.js";
+import { assessNativeResumeProbe, buildCodexResumeCore, hasCodexUpdateHeader, type NativeResumeProbeResult } from "../domain/native-resume-probe.js";
 import { unknownDaemonSupportMessage, type CodexDaemonSupportDetector } from "../domain/codex-daemon-support.js";
 import { codexNetworkDefaultArg, type CodexNetworkDefaultReader } from "../domain/codex-network-default.js";
 import { resolveCodexGitAddDirs, type CodexGitAddDirResolver } from "../domain/codex-git-add-dirs.js";
 import { mergeManagedBlock } from "../domain/managed-blocks.js";
+import { excludeNewGeneratedFiles } from "../domain/generated-file-hygiene.js";
 import { parseSessionName } from "../domain/session-name.js";
 import { shellQuote } from "./shell-quote.js";
 import { runSyncSite } from "../domain/sync-site-wrap.js";
@@ -260,6 +262,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
 
   async project(plan: ProjectionPlan, binding: NodeBinding): Promise<ProjectionResult> {
     const projected: string[] = [];
+    const warnings: string[] = [];
     const skipped: string[] = [];
     const failed: Array<{ effectiveId: string; error: string }> = [];
 
@@ -270,7 +273,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       }
 
       try {
-        const didProject = this.projectEntry(entry, binding.cwd);
+        const didProject = this.projectEntry(entry, binding.cwd, warnings);
         if (didProject) {
           projected.push(entry.effectiveId);
         } else {
@@ -281,7 +284,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       }
     }
 
-    return { projected, skipped, failed };
+    return { projected, skipped, failed, ...(warnings.length ? { warnings } : {}) };
   }
 
   async deliverStartup(files: ResolvedStartupFile[], binding: NodeBinding): Promise<StartupDeliveryResult> {
@@ -289,6 +292,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       console.error(`[openrig] codex bootstrap warning: ${(err as Error).message}`);
     }
 
+    const warnings: string[] = [];
     let delivered = 0;
     const failed: Array<{ path: string; error: string }> = [];
 
@@ -300,7 +304,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
         switch (hint) {
           case "guidance_merge": {
             const targetPath = nodePath.join(binding.cwd, "AGENTS.md");
-            const merged = this.mergeGuidance(targetPath, file.path, content);
+            const merged = this.mergeGuidance(targetPath, file.path, content, warnings);
             if (!merged) continue; // rig-role skip: do not count as delivered
             break;
           }
@@ -329,7 +333,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       }
     }
 
-    return { delivered, failed };
+    return { delivered, failed, ...(warnings.length ? { warnings } : {}) };
   }
 
   async launchHarness(
@@ -351,8 +355,9 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     const effortArg = effort ? ` -c ${shellQuote(`model_reasoning_effort="${effort}"`)}` : "";
     const profile = binding.codexConfigProfile?.trim();
     const profileArg = profile ? ` -p ${shellQuote(profile)}` : "";
-    const postureArg = codexPostureArg(profileArg, process.env, binding.launchPosture);
-    const appliedLaunch = observeCodexSandbox(postureArg);
+    const posture = codexPostureArg(profileArg, process.env, binding.launchPosture);
+    const appliedLaunch = observeCodexSandbox(posture);
+    const postureArg = posture + operationalLaunchArg(this.runtime, binding);
 
     // OPR.0.3.4.7 — profile-LOAD probe before launch/resume. A legacy
     // [profiles.<name>] table or invalid TOML must fail BEFORE the opaque
@@ -560,7 +565,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     this.provisionWorkspaceTrust(binding.cwd ?? null);
   }
 
-  private projectEntry(entry: ProjectionEntry, cwd: string): boolean {
+  private projectEntry(entry: ProjectionEntry, cwd: string, warnings: string[]): boolean {
     if (entry.category === "runtime_resource" && this.applyRuntimeResource(entry)) {
       return true;
     }
@@ -568,7 +573,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     if (entry.category === "guidance" && entry.mergeStrategy === "managed_block") {
       const targetPath = nodePath.join(cwd, "AGENTS.md");
       const content = this.fs.readFile(entry.absolutePath);
-      return this.mergeGuidance(targetPath, entry.effectiveId, content);
+      return this.mergeGuidance(targetPath, entry.effectiveId, content, warnings);
     }
 
     // HG-1.3 plugin runtime applicability filter (per DESIGN.md §5.1):
@@ -594,30 +599,39 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       }
     }
 
-    if (isDir && this.fs.listFiles) {
-      for (const file of this.fs.listFiles(entry.absolutePath)) {
-        const src = nodePath.join(entry.absolutePath, file);
-        const dest = nodePath.join(targetDir, file);
-        const content = this.fs.readFile(src);
-        // Reconcile mode even when the content write is skipped: a byte-identical dest
-        // projected earlier may still carry the wrong (default) mode.
-        if (this.fs.exists(dest) && hashContent(content) === hashContent(this.fs.readFile(dest))) {
+    const createdFiles: string[] = [];
+    try {
+      if (isDir && this.fs.listFiles) {
+        for (const file of this.fs.listFiles(entry.absolutePath)) {
+          const src = nodePath.join(entry.absolutePath, file);
+          const dest = nodePath.join(targetDir, file);
+          const content = this.fs.readFile(src);
+          // Reconcile mode even when the content write is skipped: a byte-identical dest
+          // projected earlier may still carry the wrong (default) mode.
+          if (this.fs.exists(dest) && hashContent(content) === hashContent(this.fs.readFile(dest))) {
+            this.preserveMode(src, dest);
+            continue;
+          }
+          const existed = this.fs.exists(dest);
+          this.fs.mkdirp(nodePath.dirname(dest));
+          this.fs.writeFile(dest, content);
+          if (!existed) createdFiles.push(dest);
           this.preserveMode(src, dest);
-          continue;
         }
-        this.fs.mkdirp(nodePath.dirname(dest));
-        this.fs.writeFile(dest, content);
-        this.preserveMode(src, dest);
-      }
-    } else {
-      const content = this.fs.readFile(entry.absolutePath);
-      const destFile = nodePath.join(targetDir, nodePath.basename(entry.absolutePath));
-      if (this.fs.exists(destFile) && hashContent(content) === hashContent(this.fs.readFile(destFile))) {
+      } else {
+        const content = this.fs.readFile(entry.absolutePath);
+        const destFile = nodePath.join(targetDir, nodePath.basename(entry.absolutePath));
+        if (this.fs.exists(destFile) && hashContent(content) === hashContent(this.fs.readFile(destFile))) {
+          this.preserveMode(entry.absolutePath, destFile);
+          return true;
+        }
+        const existed = this.fs.exists(destFile);
+        this.fs.writeFile(destFile, content);
+        if (!existed) createdFiles.push(destFile);
         this.preserveMode(entry.absolutePath, destFile);
-        return true;
       }
-      this.fs.writeFile(destFile, content);
-      this.preserveMode(entry.absolutePath, destFile);
+    } finally {
+      if (entry.category === "plugin") warnings.push(...excludeNewGeneratedFiles(cwd, createdFiles));
     }
     return true;
   }
@@ -682,7 +696,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
    * propagate the skip signal so ProjectionResult and StartupDeliveryResult
    * report honest counts.
    */
-  private mergeGuidance(targetPath: string, blockId: string, content: string): boolean {
+  private mergeGuidance(targetPath: string, blockId: string, content: string, warnings: string[]): boolean {
     // Mirrors Claude Code adapter: the `rig-role` managed block collides across
     // pod-mates because the regenerator pairs (target-file × spec) without
     // seat correlation. Per-seat role content is delivered through `send_text`
@@ -695,6 +709,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       return false;
     }
     mergeManagedBlock(this.fs, targetPath, blockId, content, {
+      warnings,
       replaceBlockIds: blockId === "openrig-start.md" ? ["using-openrig.md"] : [],
     });
     return true;
@@ -1545,6 +1560,6 @@ function commandLooksLikeCodex(command: string): boolean {
 }
 
 function isSkippableCodexUpdatePrompt(paneContent: string): boolean {
-  return paneContent.includes("Update available!")
+  return hasCodexUpdateHeader(paneContent)
     && /^\s*[›>]?\s*3\. Skip until next version\s*$/m.test(paneContent);
 }
