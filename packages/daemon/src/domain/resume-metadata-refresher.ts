@@ -1,5 +1,4 @@
 import os from "node:os";
-import fs from "node:fs";
 import nodePath from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -19,7 +18,7 @@ import {
 import { runAsyncSite } from "./sync-site-wrap.js";
 import { isClaudeSidecarFromEarlierProcess, type ResumeTokenCaptureDeps } from "./resume-token-capture.js";
 import { observeClaudePaneRuntime, type NativeProcessLister } from "./native-process-lineage.js";
-import { validateResumeToken } from "./resume-token-validation.js";
+import { readClaudeProcessSession } from "./claude-session-identity.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -232,23 +231,11 @@ export class ResumeMetadataRefresher {
       const input = { target: session.sessionName, tmux: this.tmuxAdapter, listProcesses: this.listClaudeProcesses };
       const first = await observeClaudePaneRuntime(input);
       if (!first) return undefined;
-      const started = Date.parse(first.process.startedAt ?? "");
-      if (!Number.isFinite(started)) return undefined;
       const configDir = nodePath.resolve(session.cwd ?? process.cwd(), this.claudeConfigDir);
-      const file = nodePath.join(configDir, "sessions", `${first.process.pid}.json`);
-      const fd = fs.openSync(file, "r");
-      let record: { name?: unknown; sessionId?: unknown };
-      try {
-        const stat = fs.fstatSync(fd);
-        // A leftover file for a reused PID is not current-process evidence.
-        if (!stat.isFile() || stat.size > 64 * 1024 || stat.mtimeMs < started) return undefined;
-        record = JSON.parse(fs.readFileSync(fd, "utf8"));
-      } finally { fs.closeSync(fd); }
-      if (record?.name !== session.sessionName) return undefined;
-      const valid = validateResumeToken("claude-code", record.sessionId);
-      if (!valid.ok) return undefined;
+      const token = readClaudeProcessSession({ process: first.process, sessionName: session.sessionName, configDir });
+      if (!token) return undefined;
       const final = await observeClaudePaneRuntime(input);
-      return final?.fingerprint === first.fingerprint ? valid.token : undefined;
+      return final?.fingerprint === first.fingerprint ? token : undefined;
     } catch { return undefined; }
   }
 
