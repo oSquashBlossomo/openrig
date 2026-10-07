@@ -1058,6 +1058,7 @@ export class SeatLifecycleService {
         newGeneration: input.newGeneration,
         model: input.model,
         effort: input.effort ?? null,
+        advisorModel: input.advisorModel ?? null,
         startupPolicyHash: input.startupPolicyHash,
         reason: input.reason.trim(),
         operator: input.operator ?? null,

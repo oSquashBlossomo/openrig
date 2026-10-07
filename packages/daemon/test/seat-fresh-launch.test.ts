@@ -693,6 +693,7 @@ describe("SeatLifecycleService.launchFresh", () => {
 
   it("compensates a hard startup failure to zero live session and binding while retaining audit tenure", async () => {
     const seat = seedSeat({ clean: true });
+    rigRepo.setNodeAdvisorModel(seat.node.id, "claude-fable-5-1");
     harnessResult = { ok: false, error: "binary missing" };
     adapter.project = async () => ({ projected: [], skipped: [], failed: [], warnings: ["Earlier projection warning"] });
     const result = await service.launchFresh({ seatRef: "dev.impl", fresh: true, reason: "hard failure proof" });
@@ -704,6 +705,8 @@ describe("SeatLifecycleService.launchFresh", () => {
     expect(sessions[0]).toMatchObject({ status: "exited", startupStatus: "failed" });
     expect(sessionRegistry.currentOccupantTenure(seat.node.id)?.kind).toBe("fresh");
     expect(db.prepare("SELECT COUNT(*) AS c FROM events WHERE type = 'seat.fresh_launch_failed'").get()).toEqual({ c: 1 });
+    const failed = db.prepare("SELECT payload FROM events WHERE type = 'seat.fresh_launch_failed'").get() as { payload: string };
+    expect(JSON.parse(failed.payload)).toMatchObject({ advisorModel: "claude-fable-5-1" });
   });
 
   // #261: a fresh launch delivers stored built-in startup files from the RUNNING install;
