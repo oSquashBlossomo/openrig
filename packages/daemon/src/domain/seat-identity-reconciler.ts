@@ -1,4 +1,5 @@
-import { observeClaudePaneProcess, observeClaudePaneRuntime, observeCodexPaneProcess, listNativeProcesses, type NativeProcessLister, type NativeProcessObservation } from "./native-process-lineage.js";
+import { observeClaudePaneRuntime, observeCodexPaneProcess, listNativeProcesses, type NativeProcessLister, type NativeProcessObservation } from "./native-process-lineage.js";
+import { observeClaudeCurrentSession } from "./claude-session-identity.js";
 import { isShellForeground } from "./shell-classifier.js";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
@@ -66,6 +67,7 @@ export function classifyPaneRuntimeMatch(
 
 interface RunningSeatRow {
   node_id: string;
+  cwd: string | null;
   runtime: string | null;
   session_name: string;
   tmux_pane: string | null;
@@ -112,7 +114,7 @@ export class SeatIdentityReconciler {
 
   private runningSeats(): RunningSeatRow[] {
     return this.db.prepare(`
-      SELECT n.id as node_id, n.runtime as runtime,
+      SELECT n.id as node_id, n.runtime as runtime, n.cwd as cwd,
              s.session_name as session_name, b.tmux_pane as tmux_pane, s.resume_token as resume_token
       FROM nodes n
       JOIN sessions s ON s.node_id = n.id
@@ -216,8 +218,8 @@ export class SeatIdentityReconciler {
         },
       });
       return Promise.all(nativeSeats.map((seat) => (seat.runtime === "codex" ? observeCodexPaneProcess
-        : seat.resume_token !== null && seat.resume_token !== undefined ? observeClaudePaneProcess : observeClaudePaneRuntime)({
-        target: seat.tmux_pane!, tmux, expectedToken: seat.resume_token,
+        : seat.resume_token !== null && seat.resume_token !== undefined ? observeClaudeCurrentSession : observeClaudePaneRuntime)({
+        target: seat.tmux_pane!, tmux, expectedToken: seat.resume_token, sessionName: seat.session_name, cwd: seat.cwd,
         listProcesses: () => snapshot ??= this.listProcesses(),
       })));
     };
