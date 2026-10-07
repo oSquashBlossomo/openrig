@@ -169,10 +169,11 @@ function printHuman(status: SeatStatusResponse): void {
       if (source === "system_default") return "OpenRig default";
       return source;
     };
+    const configuredMode = p.effective?.effectiveMode === "inherit" ? "inherit native settings" : p.effective?.effectiveMode;
     const modeStr = p.desired?.mode
       ? `${p.desired.mode} (explicit)`
       : p.effective
-      ? `${p.effective.effectiveMode} (${formatSource(p.effective.source)}${p.effective.fallbackReason ? `; ${p.effective.fallbackReason}` : ""})`
+      ? `${configuredMode} (${formatSource(p.effective.source)}${p.effective.fallbackReason ? `; ${p.effective.fallbackReason}` : ""})`
       : p.selectionState;
     console.log(`Permission mode for future launches: ${modeStr}`);
     console.log(`Last launch arguments: ${p.lastLaunchArguments?.value ?? "unknown"}${p.lastLaunchArguments?.approvalPolicy ? `; approval=${p.lastLaunchArguments.approvalPolicy}` : ""}`);

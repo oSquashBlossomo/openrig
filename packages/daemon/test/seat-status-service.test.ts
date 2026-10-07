@@ -4,6 +4,9 @@ import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { SeatStatusService } from "../src/domain/seat-status-service.js";
+import { NativePermissionStore } from "../src/domain/native-permission-store.js";
+import { AppliedLaunchObservationStore } from "../src/domain/applied-launch-observation-store.js";
+import { observeClaudePermission } from "../src/domain/permission-drift.js";
 import { PodRepository } from "../src/domain/pod-repository.js";
 
 describe("SeatStatusService", () => {
@@ -47,6 +50,52 @@ describe("SeatStatusService", () => {
       previous_occupant: null,
       handover_at: null,
     });
+  });
+
+  it.each(["absent", "synthetic floor", "member none", "rig none", "rig none with stale auto", "legacy none over yolo", "legacy none over auto", "none with stale auto"])(
+    "status route reports native inheritance for Claude %s separately from prior launch arguments", async choice => {
+      const setup = createTestApp(db);
+      const rig = rigRepo.createRig("permission-status");
+      const node = rigRepo.addNode(rig.id, "worker", { runtime: "claude-code", cwd: "/private-fixture" });
+      sessionRegistry.registerSession(node.id, "worker@permission-status");
+      if (choice.includes("over")) {
+        const posture = choice.endsWith("auto") ? "auto" : "full_bypass";
+        rigRepo.setRigPermissionPolicy(rig.id, posture === "auto" ? "builtin:auto" : "builtin:yolo");
+        rigRepo.setRigPolicyProvenance(rig.id, { origin: "builtin", launchPosture: posture, resolvedTarget: null, declaringDir: null });
+      }
+      const rigNone = choice.startsWith("rig none");
+      if (choice === "synthetic floor") db.prepare("UPDATE nodes SET policy_launch_posture='floor' WHERE id=?").run(node.id);
+      if (choice !== "absent" && choice !== "synthetic floor" && !rigNone) {
+        db.prepare("UPDATE nodes SET permission_policy='none' WHERE id=?").run(node.id);
+        if (choice === "member none" || choice === "none with stale auto") rigRepo.setNodePolicyProvenance(node.id,
+          { origin: "deliberate_none", launchPosture: choice === "member none" ? "floor" : "auto", resolvedTarget: null, declaringDir: null });
+      }
+      if (rigNone) rigRepo.setRigPermissionPolicy(rig.id, "none");
+      if (choice === "rig none with stale auto") rigRepo.setRigPolicyProvenance(rig.id,
+        { origin: "deliberate_none", launchPosture: "auto", resolvedTarget: null, declaringDir: null });
+      const generation = sessionRegistry.currentOccupantTenure(node.id)!.generationUuid;
+      expect(new AppliedLaunchObservationStore(db).recordGeneration(generation, observeClaudePermission("--permission-mode acceptEdits"))).toBe(true);
+      const before = db.prepare("SELECT total_changes() AS n").get();
+      const response = await setup.app.request("/api/seat/status/worker%40permission-status");
+      expect(response.status).toBe(200);
+      const status = await response.json();
+      expect(status.permissions).toMatchObject({ selectionState: "inherit", desired: null, nativeEffect: "unverified",
+        effective: { effectiveMode: "inherit", launchPosture: "floor" },
+        lastLaunchArguments: { value: "acceptEdits", generationUuid: generation } });
+      expect(status.permissions.effective.permissionMode).toBeUndefined();
+      expect(db.prepare("SELECT total_changes() AS n").get()).toEqual(before);
+    });
+
+  it.each(["authored", "stored", "named"])("status preserves the %s Claude selection without claiming a native effect", choice => {
+    const rig = rigRepo.createRig("permission-status");
+    const node = rigRepo.addNode(rig.id, "worker", { runtime: "claude-code", permissionPolicy: "builtin:locked" });
+    rigRepo.setNodePolicyProvenance(node.id, { origin: "builtin", launchPosture: "floor", resolvedTarget: null, declaringDir: null });
+    if (choice !== "authored") new NativePermissionStore(db).write(node.id, { runtime: "claude-code", mode: choice === "stored" ? "floor" : "auto" }, "operator", "selected");
+    const result = service.getStatus("worker@permission-status");
+    expect(result.ok).toBe(true); if (!result.ok) throw new Error(result.message);
+    expect(result.status.permissions).toMatchObject({ nativeEffect: "unverified", effective: {
+      effectiveMode: choice === "authored" ? "acceptEdits" : choice === "stored" ? "floor" : "auto",
+      source: choice === "authored" ? "member_spec" : "explicit" } });
   });
 
   it("returns populated handover axes and provenance fields", () => {
