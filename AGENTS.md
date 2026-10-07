@@ -13,8 +13,10 @@ work. A source checkout does not replace the installed OpenRig fleet.
 
 GitHub Issues record requirements and acceptance criteria. Link implementation
 PRs with `Closes #N`; keep the project status current. Keep authorship and
-review independent. Fable handles orchestration, Astra architecture, Sol
-implementation and review, and Opus design/frontend and complementary review.
+review independent. Astra handles architecture and backend work; GPT-6.1 Sol
+handles routine implementation and independent review. Opus handles frontend
+work and orchestration, with at most three Opus agents running in parallel.
+Fable is the selected native advisor for configured Opus orchestration seats.
 Do not alter user-wide native permission or model defaults to match CI.
 
 ## Code Review Rules

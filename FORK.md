@@ -4,9 +4,10 @@
 - Project: https://github.com/users/oSquashBlossomo/projects/5
 - Upstream: https://github.com/mvschwarz/openrig
 
-The fork starts from upstream 0.6.3. The separate local operations installation
-uses 0.5.16. Source development and GitHub setup do not authorize upgrading that
-running installation or replaying its version-gated patches onto newer source.
+The checkout and installed runtime can be different revisions. Before an upgrade,
+record the source commit, installed `rig --version`, and running daemon revision.
+Follow the release procedure below; apply compatibility patches only to versions
+their guards explicitly support.
 
 ## Web GUI development
 
