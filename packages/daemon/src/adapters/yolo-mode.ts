@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 // OPR.0.4.8.2 — OpenRig YOLO mode (opt-in, DEFAULT OFF).
 //
@@ -38,12 +38,13 @@ export function yoloEnabled(
 // full RESOURCE TRUST (--approve), which is not a permission policy. ──
 
 /** Claude launch posture flag: explicit selection, full bypass, or the usability floor.
- * An explicitly selected native auto default omits the floor flag so Claude keeps
- * its own project/managed settings precedence. No native settings are written. */
+ * Native defaults omit the fallback flag so Claude keeps its own settings
+ * precedence. Unreadable settings are also left to Claude. No files are written. */
 export function claudePostureFlag(
   env: NodeJS.ProcessEnv = process.env,
   resolvedPosture?: ResolvedLaunchPosture,
   permissionMode?: string,
+  cwd = process.cwd(),
 ): string {
   if (permissionMode !== undefined) {
     if (!/^[A-Za-z][A-Za-z0-9]*$/.test(permissionMode)) throw new Error("Invalid Claude permission mode");
@@ -52,12 +53,16 @@ export function claudePostureFlag(
   // A policy-selected auto posture is explicit, so it outranks the native settings default below.
   if (resolvedPosture === "auto") return "--permission-mode auto";
   if (yoloEnabled(env, resolvedPosture)) return "--dangerously-skip-permissions";
-  const settingsPath = join(env.CLAUDE_CONFIG_DIR || join(env.HOME || homedir(), ".claude"), "settings.json");
-  try {
-    const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
-    if (settings?.permissions?.defaultMode === "auto") return "";
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  const configDir = resolve(cwd, env.CLAUDE_CONFIG_DIR ?? join(env.HOME || homedir(), ".claude"));
+  // Presence is enough: the harness owns the merge and managed-policy precedence.
+  // Relative native config selections are resolved where the seat launches.
+  for (const settingsPath of [join(configDir, "settings.json"), join(cwd, ".claude", "settings.json"), join(cwd, ".claude", "settings.local.json")]) {
+    try {
+      const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+      if (typeof settings?.permissions?.defaultMode === "string" && settings.permissions.defaultMode.trim()) return "";
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return "";
+    }
   }
   return "--permission-mode acceptEdits";
 }

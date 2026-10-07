@@ -12,6 +12,7 @@ import { SeatIdentityStore } from "./seat-identity-store.js";
 import { defaultListProcesses } from "./resume-metadata-refresher.js";
 import { verifyClaudePaneProcess, verifyClaudePaneRuntime, verifyCodexPaneProcess, type NativeProcessRow, type NativeProcessLister, findExactNativeResumeProcess } from "./native-process-lineage.js";
 import { isShellForeground } from "./shell-classifier.js";
+import { verifyClaudeCurrentSession } from "./claude-session-identity.js";
 
 type PaneIdentityTmux = Pick<TmuxAdapter, "listPanes" | "getPanePid" | "getPaneCommand">;
 type ProcessRow = NativeProcessRow;
@@ -102,7 +103,10 @@ export async function rebindAndVerifyPaneIdentity(input: {
     runtimeMatch = "match";
     const observation = { target: pane.id, tmux: input.tmux, listProcesses: input.listProcesses };
     const native = expectedResumeToken !== null
-      ? await verifyClaudePaneProcess({ ...observation, expectedToken: expectedResumeToken })
+      ? input.requireExactResumeLineage
+        ? await verifyClaudePaneProcess({ ...observation, expectedToken: expectedResumeToken })
+        : await verifyClaudeCurrentSession({ ...observation, expectedToken: expectedResumeToken, sessionName: input.sessionName,
+          cwd: (input.db.prepare("SELECT cwd FROM nodes WHERE id = ?").get(input.nodeId) as { cwd: string | null } | undefined)?.cwd })
       : claudeWrapper && !input.requireExactResumeLineage ? await verifyClaudePaneRuntime(observation) : null;
     const currentPanes = await input.tmux.listPanes(input.sessionName).catch(() => []);
     const currentPid = await input.tmux.getPanePid(pane.id).catch(() => null);

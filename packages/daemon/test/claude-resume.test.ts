@@ -439,6 +439,26 @@ describe("ClaudeResumeAdapter", () => {
     });
 
     it.each([
+      ["restored draft", true], ["Try editing a file", true],
+      ["restored draft", false], ["Try editing a file", false],
+    ] as const)("verifies auto composer text %s against exact resume identity (%s)", async (composer, matches) => {
+      const tmux = mockTmux({
+        getPanePid: async () => 1234,
+        getPaneCommand: async () => "2.1.283",
+        capturePaneContent: async () => `Restored conversation\n❯ ${composer}\n⏵⏵ auto mode on (shift+tab to cycle)`,
+      });
+      const adapter = new ClaudeResumeAdapter(tmux, {
+        pollMs: 0, maxWaitMs: 0, sleep: async () => {},
+        listProcesses: async () => [
+          { pid: 1234, ppid: 1, pgid: 1234, tpgid: 1235, command: "bash", executableName: "bash", startedAt: "Sat Jan  1 12:00:00 2000" },
+          { pid: 1235, ppid: 1234, pgid: 1235, tpgid: 1235, command: `claude --resume ${matches ? "resume-id" : "other-id"}`, executableName: "claude", startedAt: "Sat Jan  1 12:00:00 2000" },
+        ],
+      });
+      expect(await adapter.resume("worker", "claude_id", "resume-id", "/repo"))
+        .toMatchObject(matches ? { ok: true } : { ok: false, code: "attention_required" });
+    });
+
+    it.each([
       ["2.1.283", "attention_required"],
       ["sh", "retry_fresh"],
     ] as const)("does not accept the prompt behind %s when the native process carries another resume token", async (paneCommand, expectedCode) => {
