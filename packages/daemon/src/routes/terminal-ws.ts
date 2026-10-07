@@ -12,11 +12,20 @@ import {
 const MAX_QUEUED_TERMINAL_FRAMES = 32;
 const MAX_QUEUED_TERMINAL_FRAME_BYTES = 256 * 1024;
 
-function isScrollFrame(data: string): boolean {
+function coalescePendingFrames(previous: string, next: string): string | undefined {
   try {
-    const msg = JSON.parse(data) as Record<string, unknown> | null;
-    return msg?.type === "scroll" && typeof msg.offset === "number" && Number.isFinite(msg.offset);
-  } catch { return false; }
+    const a = JSON.parse(previous) as Record<string, unknown> | null;
+    const b = JSON.parse(next) as Record<string, unknown> | null;
+    if (a?.type === "scroll" && b?.type === "scroll"
+      && typeof a.offset === "number" && Number.isFinite(a.offset)
+      && typeof b.offset === "number" && Number.isFinite(b.offset)) return next;
+    // xterm may send one frame per character. Keep ordinary pending text in one
+    // literal paste; keys, scroll and embedded controls remain ordering barriers.
+    if (a?.type === "text" && b?.type === "text" && typeof a.text === "string" && typeof b.text === "string"
+      && !/[\x00-\x1f\x7f]/.test(a.text) && !/[\x00-\x1f\x7f]/.test(b.text))
+      return JSON.stringify({ type: "text", text: a.text + b.text });
+  } catch { /* malformed frames are never combined */ }
+  return undefined;
 }
 
 /** Terminal bearer authentication; server.ts applies the shared browser boundary before this route. */
@@ -159,18 +168,18 @@ export function registerTerminalWs(
 
         async onMessage(evt: { data: unknown }, ws: { close(code: number, reason: string): void }) {
           if (closed) return;
-          const data = typeof evt.data === "string" ? evt.data : "";
+          let data = typeof evt.data === "string" ? evt.data : "";
           if (!data) return;
-          const bytes = Buffer.byteLength(data, "utf8");
-          // Wheel events carry absolute offsets and may outrun a native capture.
-          // Only the last adjacent pending scroll matters. Never coalesce across
-          // text/keys: those frames must retain their exact place in the FIFO.
+          let bytes = Buffer.byteLength(data, "utf8");
+          // Coalesce only adjacent compatible frames, before enforcing both
+          // queue bounds. An oversized incoming frame cannot evade the byte cap.
           const last = queuedFrames.at(-1);
-          const replaceScroll = bytes <= MAX_QUEUED_TERMINAL_FRAME_BYTES
-            && last !== undefined && isScrollFrame(data) && isScrollFrame(last);
-          const replacedBytes = replaceScroll ? Buffer.byteLength(last!, "utf8") : 0;
+          const combined = bytes <= MAX_QUEUED_TERMINAL_FRAME_BYTES && last !== undefined
+            ? coalescePendingFrames(last, data) : undefined;
+          const replacedBytes = combined !== undefined ? Buffer.byteLength(last!, "utf8") : 0;
+          if (combined !== undefined) { data = combined; bytes = Buffer.byteLength(data, "utf8"); }
           if (
-            queuedFrames.length - Number(replaceScroll) >= MAX_QUEUED_TERMINAL_FRAMES
+            queuedFrames.length - Number(combined !== undefined) >= MAX_QUEUED_TERMINAL_FRAMES
             || queuedFrameBytes - replacedBytes + bytes > MAX_QUEUED_TERMINAL_FRAME_BYTES
           ) {
             closed = true;
@@ -178,7 +187,7 @@ export function registerTerminalWs(
             try { ws.close(1009, "terminal input exceeded buffer limit"); } catch { /* already closed */ }
             return;
           }
-          if (replaceScroll) {
+          if (combined !== undefined) {
             queuedFrames.pop();
             queuedFrameBytes -= replacedBytes;
           }

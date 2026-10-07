@@ -559,13 +559,13 @@ describe("terminal WebSocket send-at-open buffering (initialText race)", () => {
     ws.close();
   }, 10000);
 
-  it("caps pre-attach buffering instead of accepting unbounded early frames", async () => {
+  it("caps nonmergeable pre-attach frames instead of accepting unbounded early input", async () => {
     sentTexts.length = 0;
     const ws = new WebSocket(`ws://127.0.0.1:${EARLY_PORT}/api/terminal/early-overflow?protocol=2&token=${EARLY_TOKEN}`);
     const closed = new Promise<{ code: number }>((resolve) => { ws.onclose = (evt) => resolve({ code: evt.code }); });
     ws.onopen = () => {
       for (let i = 0; i < 40; i++) {
-        ws.send(JSON.stringify({ type: "text", text: `early-${i}` }));
+        ws.send(JSON.stringify({ type: "keys", keys: ["Enter"] }));
       }
     };
     const evt = await closed;

@@ -23,7 +23,7 @@ it.each(["text", "submit"] as const)("preserves arrival order when new %s input 
     sendKeys: async (_name, keys) => { writes.push(...keys); return { ok: true }; },
     sendText: async (_name, text) => {
       writes.push(text);
-      if (text === "first") await blocked;
+      if (text.startsWith("first")) await blocked;
       return { ok: true };
     },
   };
@@ -42,13 +42,13 @@ it.each(["text", "submit"] as const)("preserves arrival order when new %s input 
   try {
     await handlers.onMessage(frame("first"), ws);
     await handlers.onMessage(frame("second"), ws);
-    await vi.waitFor(() => expect(writes).toEqual(["first"]));
+    await vi.waitFor(() => expect(writes).toEqual(["firstsecond"]));
     latest = handlers.onMessage(kind === "submit"
       ? { data: JSON.stringify({ type: "keys", keys: ["Enter"] }) }
       : frame("third"), ws);
     release();
     await Promise.all([opening, latest]);
-    expect(writes).toEqual(["first", "second", kind === "submit" ? "Enter" : "third"]);
+    expect(writes).toEqual(["firstsecond", kind === "submit" ? "Enter" : "third"]);
     expect(ws.close).not.toHaveBeenCalled();
   } finally {
     release();
@@ -83,7 +83,7 @@ async function liveFixture() {
     sendText: async (_name, text) => {
       writes.push(text);
       actions.push(`text:${text}`);
-      if (text === "first" && blockFirstWrite) await firstWrite.promise;
+      if (text.startsWith("first") && blockFirstWrite) await firstWrite.promise;
       return { ok: true };
     },
   };
@@ -126,11 +126,11 @@ it.each(["text", "submit"] as const)("finishes a live scroll repaint before %s i
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(f.writes).toEqual([]); // no echo may race the captured return-to-live screen
     f.capture.resolve();
-    await vi.waitFor(() => expect(f.writes).toEqual(["first"]));
+    await vi.waitFor(() => expect(f.writes).toEqual([kind === "submit" ? "first" : "firstsecond"]));
     latest = f.handlers.onMessage(f.frame({ type: "text", text: "third" }), f.ws);
     f.firstWrite.resolve();
     await Promise.all([f.returning, first, second, latest]);
-    expect(f.writes).toEqual(["first", kind === "submit" ? "Enter" : "second", "third"]);
+    expect(f.writes).toEqual(kind === "submit" ? ["first", "Enter", "third"] : ["firstsecond", "third"]);
     expect(f.ws.close).not.toHaveBeenCalled();
   } finally {
     await f.cleanup();
@@ -141,12 +141,43 @@ it.each(["text", "submit"] as const)("finishes a live scroll repaint before %s i
 it.each(["frames", "utf8-bytes"] as const)("bounds %s queued behind a live repaint and discards overflowed input", async bound => {
   const f = await liveFixture();
   try {
-    const texts = bound === "frames" ? Array.from({ length: 33 }, (_, i) => `queued-${i}`) : ["é".repeat(80_000), "é".repeat(60_000)];
-    for (const text of texts) await f.handlers.onMessage(f.frame({ type: "text", text }), f.ws);
+    const messages = bound === "frames"
+      ? Array.from({ length: 33 }, () => ({ type: "keys", keys: ["Enter"] }))
+      : ["é".repeat(80_000), "é".repeat(60_000)].map(text => ({ type: "text", text }));
+    for (const message of messages) await f.handlers.onMessage(f.frame(message), f.ws);
     expect(f.ws.close).toHaveBeenCalledWith(1009, expect.stringContaining("buffer limit"));
     f.capture.resolve();
     await f.returning;
     expect(f.writes).toEqual([]);
+  } finally { await f.cleanup(); }
+});
+
+it("admits character bursts behind native work without losing Unicode or crossing key and scroll barriers", async () => {
+  const f = await liveFixture();
+  f.actions.length = 0;
+  const text = "Ordinary typing keeps every quote ' and \" plus ;$()\\, café and 🪻. ".repeat(3);
+  try {
+    for (const character of text) await f.handlers.onMessage(f.frame({ type: "text", text: character }), f.ws);
+    await f.handlers.onMessage(f.frame({ type: "keys", keys: ["Enter"] }), f.ws);
+    for (const character of "after Enter") await f.handlers.onMessage(f.frame({ type: "text", text: character }), f.ws);
+    await f.handlers.onMessage(f.frame({ type: "scroll", offset: 5 }), f.ws);
+    for (const character of "after scroll") await f.handlers.onMessage(f.frame({ type: "text", text: character }), f.ws);
+    expect(f.ws.close).not.toHaveBeenCalled();
+    f.capture.resolve();
+    await f.returning;
+    expect(f.actions).toEqual([`text:${text}`, "keys:Enter", "text:after Enter", "history:29", "text:after scroll"]);
+  } finally { await f.cleanup(); }
+});
+
+it("keeps literal control-containing text as a separate paste boundary", async () => {
+  const f = await liveFixture();
+  try {
+    for (const text of ["before", "\n", "after", "\x1b[?999h", "tail"])
+      await f.handlers.onMessage(f.frame({ type: "text", text }), f.ws);
+    f.capture.resolve();
+    await f.returning;
+    expect(f.writes).toEqual(["before", "\n", "after", "\x1b[?999h", "tail"]);
+    expect(f.ws.close).not.toHaveBeenCalled();
   } finally { await f.cleanup(); }
 });
 
