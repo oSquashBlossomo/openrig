@@ -126,8 +126,9 @@ describe("Claude advisor launch identity", () => {
     expect((await proof(`--settings '{"advisorModel":"claude-fable-5-1"}'`))?.process.pid).toBe(10);
     expect((await proof(`--settings '{"advisorModel":""}'`))?.process.pid).toBe(10);
     expect((await proof(`--settings '{"permissions":{"allow":["Bash(rig:*)"]},"advisorModel":"claude-fable-5-1"}'`))?.process.pid).toBe(10);
+    expect((await proof(`--settings '{"skipDangerousModePermissionPrompt":true,"advisorModel":"claude-fable-5-1"}'`))?.process.pid).toBe(10);
   });
-  it.each([`--effort invalid`, `--effort high --effort xhigh`, `--fork-session`, `--settings`])("rejects indeterminate or conflicting native options: %s", async options => {
+  it.each([`--settings '{"permissions":{"defaultMode":"auto"}}'`, `--settings broken`, `--settings /inert/settings.json`, `--settings '{"advisorModel":true}'`, `--settings '{"advisorModel":"x","extra":1}'`, `--settings '{"skipDangerousModePermissionPrompt":false}'`, `--settings '{"permissions":{"allow":[true]}}'`, `--settings '{"advisorModel":"x"}' --settings '{"advisorModel":"y"}'`, `--effort invalid`, `--effort high --effort xhigh`, `--fork-session`, `--settings`])("rejects indeterminate or conflicting native options: %s", async options => {
     expect(await proof(options)).toBeNull();
   });
 });

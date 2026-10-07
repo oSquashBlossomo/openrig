@@ -151,7 +151,7 @@ describe("kernel operational launch default", () => {
   it("launch-only settings do not obscure exact Claude process identity; unrelated args still fail", async () => {
     const root = { pid: 10, ppid: 1, pgid: 10, tpgid: 10, executableName: "claude", startedAt: "start" };
     const input = { target: "seat", tmux: { getPanePid: async () => 10 }, expectedToken: "native-id" };
-    for (const settings of ['--settings \'{"permissions":{"allow":["Bash(rig:*)"]}}\'', "--settings=/inert/settings.json"]) {
+    for (const settings of ['--settings \'{"permissions":{"allow":["Bash(rig:*)"]}}\'', '--settings={"permissions":{"allow":["Bash(rig:*)"]}}']) {
       const command = `claude --permission-mode acceptEdits ${settings} --session-id native-id`;
       expect(await observeClaudePaneProcess({ ...input, listProcesses: async () => [{ ...root, command }] })).not.toBeNull();
       expect(await observeClaudePaneProcess({ ...input, listProcesses: async () => [{ ...root, command: command + " --unknown" }] })).toBeNull();
