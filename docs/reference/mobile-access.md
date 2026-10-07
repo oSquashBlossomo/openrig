@@ -64,6 +64,14 @@ disconnect, inspect the terminal before resending a command whose result is
 uncertain. If Retry continues to fail through an HTTPS proxy, check the exact
 origin allowance above: browsers do not expose the reason an upgrade was refused.
 
+A clipboard paste is sent as one literal text input, keeping its newlines; it
+does not press Enter after each line. One paste or keystroke batch is limited to
+256 KiB of encoded input (UTF-8, so non-ASCII text reaches the limit with fewer
+characters). Larger input is refused with a visible warning before anything is
+sent. If the daemon closes the connection because its input buffer overflowed,
+the viewer does not reconnect automatically and warns that some input may
+already have reached the terminal: inspect it before retrying or resending.
+
 ## Connection recovery
 
 The GUI reads current workflow state when its event connection opens or

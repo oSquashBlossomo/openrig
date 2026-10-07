@@ -78,6 +78,14 @@ const MAX_CONNECT_ATTEMPTS = 4;
 // socket; returning replaces it (as do `online` and a bfcache restore).
 const WAKE_RECONNECT_AFTER_HIDDEN_MS = 30_000;
 const CONNECT_FAILED = `live connection could not be established after ${MAX_CONNECT_ATTEMPTS} attempts. The browser does not report why; check that the daemon is running and reachable from this page, and that this page's origin is allowed to open terminals.`;
+// The daemon's per-viewer queue limit (encoded UTF-8 JSON frames, see
+// terminal-ws.ts). One input event over it is refused here before any frame is
+// sent; a server close 1009 means the queue overflowed after some delivery.
+const MAX_INPUT_EVENT_BYTES = 256 * 1024;
+const INPUT_TOO_LARGE = "Input not sent: it exceeds the terminal's 256 KiB limit (encoded). Nothing from it reached the terminal; send it in smaller parts.";
+const INPUT_OVERFLOWED = "terminal input exceeded the 256 KiB buffer limit and the connection was closed. Some input may already have reached the terminal: inspect it before sending anything again. Retry reconnects without resending.";
+const encoder = new TextEncoder();
+const encodedBytes = (frames: string[]) => frames.reduce((n, f) => n + encoder.encode(f).byteLength, 0);
 
 // Explicit key controls for when the shortcut never reaches the page (a
 // browser that intercepts Ctrl+C) or there is no such key (phone/iPad soft
@@ -284,6 +292,8 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
   const setError = useCallback((message: string | null) => setErrorState(message === null ? null : { identity, message }), [identity]);
   // Transport state shown outside the xterm host (null = live and verified).
   const [status, setStatus] = useState<string | null>(null);
+  // A local input refusal; the connection stays usable.
+  const [inputWarning, setInputWarning] = useState<string | null>(null);
   const [retryEpoch, setRetryEpoch] = useState(0);
   // Consecutive sockets that ended before native geometry.
   const failedAttemptsRef = useRef(0);
@@ -312,26 +322,27 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
     }
   }, []);
 
-  // The one input path (typing and key controls). Input is live only on the
-  // current socket after it delivered native geometry; anything earlier is
-  // dropped, never queued or replayed.
-  const sendInput = useCallback((data: string) => {
+  // The one input path (typing, key controls and clipboard paste). Input is
+  // live only on the current socket after it delivered native geometry;
+  // anything earlier is dropped, never queued or replayed. A paste is one
+  // literal text frame; typed data maps CR to Enter and controls to keys.
+  const sendInput = useCallback((data: string, paste = false) => {
     const wsc = wsRef.current;
     if (!wsc || wsc.readyState !== WebSocket.OPEN || !geometryRef.current) return;
+    const frames = (paste ? [{ type: "text", text: data } as WsMessage] : mapXtermInput(data)).map((msg) => JSON.stringify(msg));
+    // OPR.0.4.0.39: typing returns to the live bottom before sending input;
+    // that frame counts toward the same budget.
+    if (scrollOffsetRef.current > 0) frames.unshift(JSON.stringify({ type: "scroll", offset: 0 }));
+    if (encodedBytes(frames) > MAX_INPUT_EVENT_BYTES) { setInputWarning(INPUT_TOO_LARGE); return; }
+    setInputWarning(null);
     // xterm's own scroller can consume a native wheel into local history
     // without reaching the broker wheel handler; key controls must return
     // there too (typing already does via xterm's scrollOnUserInput). No
     // smooth scrolling is configured, so this is immediate.
     (termRef.current as { scrollToBottom(): void } | null)?.scrollToBottom();
-    // OPR.0.4.0.39: typing returns to the live bottom before sending input.
-    if (scrollOffsetRef.current > 0) {
-      scrollOffsetRef.current = 0;
-      sendScroll(0);
-    }
-    for (const msg of mapXtermInput(data)) {
-      wsc.send(JSON.stringify(msg));
-    }
-  }, [sendScroll]);
+    scrollOffsetRef.current = 0;
+    for (const frame of frames) wsc.send(frame);
+  }, []);
 
   // OPR.0.4.0.39 (selection fix): size the xterm to its container by FONT SIZE (not a
   // CSS transform, which breaks xterm's mouse/selection coords - #6023). Reads only
@@ -463,7 +474,9 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
       // OPR.0.4.4.20 delta-C: one text frame, once per mount, no Enter frame.
       if (initialText && !initialTextSentRef.current) {
         initialTextSentRef.current = true;
-        ws.send(JSON.stringify({ type: "text", text: initialText }));
+        const frame = JSON.stringify({ type: "text", text: initialText });
+        if (encodedBytes([frame]) > MAX_INPUT_EVENT_BYTES) setInputWarning(INPUT_TOO_LARGE);
+        else ws.send(frame);
       }
     };
 
@@ -525,7 +538,9 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
 
     ws.onclose = (evt) => {
       if (generationRef.current !== gen || protocolFailed || wsRef.current !== ws) return;
-      const definitive = evt.code === 1008 || evt.code === 1011 || evt.code === 1001;
+      // 1009: the daemon's input queue overflowed. Part of the input may have
+      // been delivered, so never reconnect (or replay) automatically.
+      const definitive = evt.code === 1008 || evt.code === 1011 || evt.code === 1001 || evt.code === 1009;
       if (definitive) {
         if (!end()) return;
         disposeTerminal();
@@ -534,7 +549,8 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
         // health positively reports the control plane unhealthy. Every specific
         // broker/session reason (session not found / pipe-pane failed / tmux
         // session terminated) is preserved verbatim.
-        const message = evt.reason === GENERIC_BROKER_UNAVAILABLE && controlPlaneUnhealthyRef.current
+        const message = evt.code === 1009 ? INPUT_OVERFLOWED
+          : evt.reason === GENERIC_BROKER_UNAVAILABLE && controlPlaneUnhealthyRef.current
           ? DAEMON_CONTROL_PLANE_UNHEALTHY
           : evt.reason || "Terminal unavailable: session not found on this daemon";
         setError(message);
@@ -618,7 +634,20 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
     setStatus("Connecting to the live terminal…");
     setGeometryReady(false);
     setNativeGeometry(null);
+    setInputWarning(null);
     let cleanedUp = false;
+    // xterm turns every pasted newline into CR, which the input mapper sends
+    // as Enter: a multi-line paste would submit line by line. Take explicit
+    // pastes before xterm does (capture phase) and send the clipboard text as
+    // one literal frame; tmux paste-buffer keeps LF and brackets it once.
+    const host = containerRef.current;
+    const onPaste = (event: ClipboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const text = event.clipboardData?.getData("text/plain");
+      if (text) sendInput(text.replace(/\r\n?/g, "\n"), true);
+    };
+    host.addEventListener("paste", onPaste, true);
 
     (async () => {
       try {
@@ -648,7 +677,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
         trackPromptScroll(scrollTerminalViewportToPrompt(containerRef.current!));
         termRef.current = term;
 
-        term.onData(sendInput);
+        term.onData((data) => sendInput(data));
 
         // OPR.0.4.0.39: wheel = scroll back through tmux history (server-side).
         // Up increases the offset (paints an older capture-pane window); down
@@ -696,6 +725,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
 
     return () => {
       cleanedUp = true;
+      host.removeEventListener("paste", onPaste, true);
       mountedRef.current = false;
       generationRef.current++;
       if (reconnectTimerRef.current) { clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = null; }
@@ -830,7 +860,17 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
     </div>
   );
 
-  if (fit === "natural") return <>{statusLine}{liveTerminal}{keyBar}</>;
+  const inputWarningLine = inputWarning ? (
+    <div
+      data-testid={`focused-terminal-input-warning-${sessionName}`}
+      role="alert"
+      className="sticky left-0 max-w-full shrink-0 px-2 py-1 font-mono text-[11px] leading-snug text-amber-200 bg-stone-900/90"
+    >
+      {inputWarning}
+    </div>
+  ) : null;
+
+  if (fit === "natural") return <>{statusLine}{liveTerminal}{inputWarningLine}{keyBar}</>;
 
   const geometryLabel = nativeGeometry ? `, native ${nativeGeometry.cols} by ${nativeGeometry.rows}` : "";
   // The key bar sits outside the scroll owner, so it is never panned away and
@@ -853,6 +893,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
         {statusLine}
         {liveTerminal}
       </div>
+      {inputWarningLine}
       {keyBar}
     </div>
   );
