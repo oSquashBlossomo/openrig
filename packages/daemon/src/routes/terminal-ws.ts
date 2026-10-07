@@ -1,6 +1,7 @@
 import type { Hono } from "hono";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import { constantTimeEqual } from "../middleware/auth-bearer-token.js";
+import { startTerminalHeartbeat, type TerminalHeartbeatSocket } from "../terminal/terminal-heartbeat.js";
 import {
   TerminalBrokerRegistry,
   type BrokerTmux,
@@ -8,8 +9,15 @@ import {
   type TerminalSubscriber,
 } from "../terminal/TerminalSessionBroker.js";
 
-const MAX_EARLY_TERMINAL_FRAMES = 32;
-const MAX_EARLY_TERMINAL_FRAME_BYTES = 256 * 1024;
+const MAX_QUEUED_TERMINAL_FRAMES = 32;
+const MAX_QUEUED_TERMINAL_FRAME_BYTES = 256 * 1024;
+
+function isScrollFrame(data: string): boolean {
+  try {
+    const msg = JSON.parse(data) as Record<string, unknown> | null;
+    return msg?.type === "scroll" && typeof msg.offset === "number" && Number.isFinite(msg.offset);
+  } catch { return false; }
+}
 
 /** Terminal bearer authentication; server.ts applies the shared browser boundary before this route. */
 export function terminalAuthMiddleware(opts: { bearerToken: string | null }) {
@@ -42,7 +50,7 @@ export function registerTerminalWs(
 export function registerTerminalWs(
   app: Hono,
   upgradeWebSocket: (createHandler: (c: unknown) => unknown) => unknown,
-  opts: { bearerToken: string | null; livenessIntervalMs?: number },
+  opts: { bearerToken: string | null; livenessIntervalMs?: number; heartbeatIntervalMs?: number },
 ): void {
   const terminalAuth = terminalAuthMiddleware(opts);
 
@@ -67,6 +75,7 @@ export function registerTerminalWs(
       const sessionName = c.req.param("sessionName")!;
       let broker: TerminalSessionBroker | null = null;
       let subscriber: TerminalSubscriber | null = null;
+      let stopHeartbeat: (() => void) | undefined;
       // The WebSocket can close DURING the async attach (before the broker
       // reference resolves). Without this flag, onClose would find broker===null
       // and skip detach, leaving a phantom subscriber + a leaked pipe once attach
@@ -77,8 +86,16 @@ export function registerTerminalWs(
       // land here while onOpen is still awaiting attach. Buffer those frames and
       // drain them once the broker resolves; dropping them loses the one
       // pre-populated CHAT frame every time attach is slower than the client.
-      const earlyFrames: string[] = [];
-      let earlyFrameBytes = 0;
+      const queuedFrames: string[] = [];
+      let queuedFrameBytes = 0;
+      // Keep this connection's scroll and input frames in arrival order after
+      // admission too. Typing must not race its own return-to-live capture and
+      // make the broker refuse a screen made busy by that same input's echo.
+      let drainingFrames = true;
+      const clearQueuedFrames = () => {
+        queuedFrames.length = 0;
+        queuedFrameBytes = 0;
+      };
 
       const handleFrame = async (data: string): Promise<void> => {
         if (!broker) return;
@@ -98,13 +115,24 @@ export function registerTerminalWs(
         } catch { /* ignore malformed frames */ }
       };
 
+      const drainFrames = async (): Promise<void> => {
+        try {
+          while (queuedFrames.length > 0 && !closed) {
+            const next = queuedFrames.shift()!;
+            queuedFrameBytes -= Buffer.byteLength(next, "utf8");
+            await handleFrame(next);
+          }
+        } finally { drainingFrames = false; }
+      };
+
       return {
-        async onOpen(_evt: unknown, ws: { send(data: string): void; close(code: number, reason: string): void }) {
+        async onOpen(_evt: unknown, ws: { send(data: string): void; close(code: number, reason: string): void; raw?: TerminalHeartbeatSocket }) {
           if (c.req.query("protocol") !== "2") {
             ws.close(1008, "terminal protocol update required; reload the web UI"); return;
           }
           const tmux = c.get("tmuxAdapter") as TmuxAdapter | undefined;
           if (!tmux) { ws.close(1011, "tmux adapter unavailable"); return; }
+          if (ws.raw) stopHeartbeat = startTerminalHeartbeat(ws.raw, { intervalMs: opts.heartbeatIntervalMs });
           // Adapt the WebSocket to a broker subscriber. The broker owns the pipe,
           // the seed, the fanout, honest session-death close, and cleanup.
           const sub: TerminalSubscriber = {
@@ -115,8 +143,7 @@ export function registerTerminalWs(
               // WebSocket onClose is asynchronous: reject input immediately so
               // this viewer cannot drain queued frames into a surviving broker.
               closed = true;
-              earlyFrames.length = 0;
-              earlyFrameBytes = 0;
+              clearQueuedFrames();
               try { ws.close(code, reason); } catch { /* already closed */ }
             },
           };
@@ -127,36 +154,45 @@ export function registerTerminalWs(
           // broker does not retain a dead subscriber (detach is idempotent).
           if (closed) { b.detach(sub); return; }
           // Drain any frames that arrived while attach was in flight, in order.
-          while (earlyFrames.length > 0 && !closed) {
-            const next = earlyFrames.shift()!;
-            earlyFrameBytes -= Buffer.byteLength(next, "utf8");
-            await handleFrame(next);
-          }
+          await drainFrames();
         },
 
         async onMessage(evt: { data: unknown }, ws: { close(code: number, reason: string): void }) {
           if (closed) return;
           const data = typeof evt.data === "string" ? evt.data : "";
           if (!data) return;
-          if (!broker) {
-            const bytes = Buffer.byteLength(data, "utf8");
-            if (
-              earlyFrames.length >= MAX_EARLY_TERMINAL_FRAMES
-              || earlyFrameBytes + bytes > MAX_EARLY_TERMINAL_FRAME_BYTES
-            ) {
-              closed = true;
-              try { ws.close(1009, "terminal input before ready exceeded buffer limit"); } catch { /* already closed */ }
-              return;
-            }
-            earlyFrames.push(data);
-            earlyFrameBytes += bytes;
+          const bytes = Buffer.byteLength(data, "utf8");
+          // Wheel events carry absolute offsets and may outrun a native capture.
+          // Only the last adjacent pending scroll matters. Never coalesce across
+          // text/keys: those frames must retain their exact place in the FIFO.
+          const last = queuedFrames.at(-1);
+          const replaceScroll = bytes <= MAX_QUEUED_TERMINAL_FRAME_BYTES
+            && last !== undefined && isScrollFrame(data) && isScrollFrame(last);
+          const replacedBytes = replaceScroll ? Buffer.byteLength(last!, "utf8") : 0;
+          if (
+            queuedFrames.length - Number(replaceScroll) >= MAX_QUEUED_TERMINAL_FRAMES
+            || queuedFrameBytes - replacedBytes + bytes > MAX_QUEUED_TERMINAL_FRAME_BYTES
+          ) {
+            closed = true;
+            clearQueuedFrames();
+            try { ws.close(1009, "terminal input exceeded buffer limit"); } catch { /* already closed */ }
             return;
           }
-          await handleFrame(data);
+          if (replaceScroll) {
+            queuedFrames.pop();
+            queuedFrameBytes -= replacedBytes;
+          }
+          queuedFrames.push(data);
+          queuedFrameBytes += bytes;
+          if (!broker || drainingFrames) return;
+          drainingFrames = true;
+          await drainFrames();
         },
 
         async onClose() {
           closed = true;
+          clearQueuedFrames();
+          stopHeartbeat?.();
           if (broker && subscriber) {
             broker.detach(subscriber);
           }
