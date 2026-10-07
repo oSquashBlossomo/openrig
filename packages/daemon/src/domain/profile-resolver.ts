@@ -146,7 +146,10 @@ export function resolveNodeConfig(ctx: ResolutionContext): ResolutionResult {
     ?? profile.preferences?.model
     ?? spec.defaults?.model;
 
-  const advisorModel = member.advisorModel ?? profile.preferences?.advisorModel ?? spec.defaults?.advisorModel;
+  // A shared AgentSpec default applies only to Claude members, like model; a member-level value
+  // on another runtime is still an authoring error.
+  const advisorModel = member.advisorModel
+    ?? (runtime === "claude-code" ? profile.preferences?.advisorModel ?? spec.defaults?.advisorModel : undefined);
   if (advisorModel !== undefined && (runtime !== "claude-code" || !/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(advisorModel) || ["on", "inherit"].includes(advisorModel))) {
     return { ok: false, errors: ["advisor_model requires a Claude seat and an explicit model id or off"] };
   }
