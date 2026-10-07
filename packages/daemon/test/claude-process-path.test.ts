@@ -19,9 +19,10 @@ beforeEach(() => {
 });
 afterEach(() => { Object.defineProperty(process, "platform", { value: platform, configurable: true }); });
 
-function census(paths: unknown, ps = rows) {
+function census(paths: unknown, ps = rows, mappings?: string) {
   execute.mockImplementation(async (file: string) => {
     if (file === "ps") return { stdout: ps.join("\n") };
+    if (file === "/usr/sbin/lsof" && mappings !== undefined) return { stdout: mappings };
     if (file !== "/usr/bin/osascript") throw new Error(`Unexpected executable: ${file}`);
     if (paths instanceof Error) throw paths;
     return { stdout: JSON.stringify(paths) };
@@ -58,6 +59,23 @@ describe("Darwin Claude executable-path census", () => {
   it("refuses a version-named process whose OS executable is unrelated", async () => {
     census([[21, "/tmp/2.1.288"]]);
     expect((await listNativeProcesses()).find(row => row.pid === 21)?.executablePath).toBe("/tmp/2.1.288");
+    expect(await verify()).toBeNull();
+  });
+
+  it("proves an unchanged renamed Claude from its genuine text mapping after its executable path is unlinked", async () => {
+    census([[21, null]], rows, `p21\nn${binary}\nn/usr/lib/dyld\n`);
+    expect((await listNativeProcesses()).find(row => row.pid === 21)?.executablePath).toBe(binary);
+    expect((await verify())?.process.pid).toBe(21);
+  });
+
+  it("does not replace an observed unrelated executable with a convenient native text mapping", async () => {
+    census([[21, "/tmp/2.1.288"]], rows, `p21\nn${binary}\n`);
+    expect(await verify()).toBeNull();
+    expect(execute.mock.calls.some(([file]) => file === "/usr/sbin/lsof")).toBe(false);
+  });
+
+  it("refuses a fallback native path whose version does not match the OS executable name", async () => {
+    census([[21, null]], rows, "p21\nn/fixture/.local/share/claude/versions/2.1.289\n");
     expect(await verify()).toBeNull();
   });
 

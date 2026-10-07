@@ -36,11 +36,38 @@ export async function readNativeExecutablePaths(requested: number[]): Promise<Ma
     } else return result;
     if (!Array.isArray(entries)) return result;
     const requestedPids = new Set(pids);
+    const missingPaths = new Set<number>();
     for (const entry of entries) {
       if (!Array.isArray(entry) || !requestedPids.has(entry[0])) continue;
       const path = entry[1];
+      if (path === null) missingPaths.add(entry[0]);
       if (typeof path === "string" && path.startsWith("/") && !path.includes("\0")
         && !path.split("/").some(part => part === "." || part === "..")) result.set(entry[0], path);
+    }
+    const missing = [...missingPaths].filter(pid => !result.has(pid));
+    if (process.platform === "darwin" && missing.length > 0) {
+      // An updater can unlink a still-running versioned binary: proc_pidpath
+      // returns no path, while its executable text mapping remains observable.
+      // Preserve the installed collector's leading/unique native-mapping rule;
+      // never replace an observed primary path or infer identity from a label.
+      const { stdout } = await execFileAsync("/usr/sbin/lsof", ["-a", "-p", missing.join(","), "-d", "txt", "-Fpn"], {
+        encoding: "utf-8", timeout: 2000, maxBuffer: 1024 * 1024,
+      });
+      const mapped = new Map<number, string[]>();
+      const wanted = new Set(missing);
+      let pid: number | null = null;
+      for (const line of stdout.split("\n")) {
+        if (/^p\d+$/.test(line)) {
+          pid = wanted.has(Number(line.slice(1))) ? Number(line.slice(1)) : null;
+          if (pid !== null && !mapped.has(pid)) mapped.set(pid, []);
+        } else if (pid !== null && line.startsWith("n")) mapped.get(pid)!.push(line.slice(1));
+      }
+      for (const [pid, paths] of mapped) {
+        const native = [...new Set(paths.filter(path => path.startsWith("/") && !path.includes("\0")
+          && !path.split("/").some(part => part === "." || part === "..")
+          && /\/\.local\/share\/claude\/versions\/\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(path)))];
+        if (native.length === 1 && paths[0] === native[0]) result.set(pid, native[0]!);
+      }
     }
   } catch { /* A missing OS witness is unknown, not positive identity. */ }
   return result;
