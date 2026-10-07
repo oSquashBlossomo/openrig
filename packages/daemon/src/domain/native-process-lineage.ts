@@ -132,8 +132,9 @@ function claudeSessionToken(args: string[]): string | null {
       const key = option[1]!;
       const value = option[2] ?? args[++index];
       if (seen.has(key) || !value || value.startsWith("-")) return null;
+      // Effort values never name the conversation and may be newer than the
+      // levels known to OpenRig. Duplicate options stay indeterminate.
       seen.add(key);
-      if (key === "effort" && !["low", "medium", "high", "xhigh", "max"].includes(value)) return null;
       // Only the inline launch settings we emit are understood here; a file or
       // unknown setting is not evidence of an unchanged native identity.
       if (key === "settings" && !managedLaunchSettings(value)) return null;
@@ -162,7 +163,7 @@ function claudeSessionIdentity(args: string[]): string | null | { unparsed: true
     const effort = arg.match(/^--effort(?:=(.*))?$/);
     if (effort) {
       const value = effort[1] ?? args[++index];
-      if (effortSeen || !value || !["low", "medium", "high", "xhigh", "max"].includes(value)) return unparsed;
+      if (effortSeen || !value || value.startsWith("-")) return unparsed;
       effortSeen = true;
       continue;
     }

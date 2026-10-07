@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { findExactNativeResumeProcess, observeClaudePaneStartedAt, verifyClaudePaneProcess, verifyCodexPaneProcess, type NativeProcessRow } from "../src/domain/native-process-lineage.js";
+import { findExactNativeResumeProcess, observeClaudeDelivery, observeClaudePaneStartedAt, verifyClaudePaneProcess, verifyCodexPaneProcess, type NativeProcessRow } from "../src/domain/native-process-lineage.js";
 
 const token = "00000000-0000-7000-8000-000000000001";
 const startedAt = "Sat Jan  1 12:00:00 2000";
@@ -130,5 +130,11 @@ describe("Claude advisor launch identity", () => {
   });
   it.each([`--settings '{"permissions":{"defaultMode":"auto"}}'`, `--settings broken`, `--settings /inert/settings.json`, `--settings '{"advisorModel":true}'`, `--settings '{"advisorModel":"x","extra":1}'`, `--settings '{"skipDangerousModePermissionPrompt":false}'`, `--settings '{"permissions":{"allow":[true]}}'`, `--settings '{"advisorModel":"x"}' --settings '{"advisorModel":"y"}'`, `--effort invalid`, `--effort high --effort xhigh`, `--fork-session`, `--settings`])("rejects indeterminate or conflicting native options: %s", async options => {
     expect(await proof(options)).toBeNull();
+  });
+  it.each(["ultracode", "High"])("does not validate a single effort level (%s) while proving or observing identity", async effort => {
+    const rows: NativeProcessRow[] = [{ pid: 10, ppid: 1, pgid: 10, tpgid: 10, executableName: "claude", startedAt, command: `claude --effort ${effort} --resume ${token}` }];
+    const input = { target: "%1", tmux: { getPanePid: async () => 10 }, listProcesses: () => rows, expectedToken: token };
+    expect((await verifyClaudePaneProcess(input))?.process.pid).toBe(10);
+    expect((await observeClaudeDelivery(input)).state).toBe("verified");
   });
 });
