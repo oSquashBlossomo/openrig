@@ -689,7 +689,6 @@ description: Custom member policy
           undefined,
           false,
           false,
-          undefined, // Advisor keeps its existing positional slot.
           true, // Static authored floor; the selected native mode remains undefined.
         );
       } finally {

@@ -63,9 +63,9 @@ export class ClaudeResumeAdapter {
     effort?: string | null,
     nonInterruptive?: boolean,
     kernelAuthority?: boolean,
+    claudePermissionFloor?: boolean,
     // Trailing: positional callers that stop earlier keep their meaning.
     advisorModel?: string | null,
-    claudePermissionFloor?: boolean,
   ): Promise<ResumeResult> {
     if (!this.canResume(resumeType, resumeToken)) {
       return { ok: false, code: "no_resume", message: "Claude resume not available" };

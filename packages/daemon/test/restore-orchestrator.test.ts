@@ -441,6 +441,7 @@ describe("RestoreOrchestrator", () => {
       "high",
       false,
       false,
+      false,
       "claude-fable-5-1",
     );
 

@@ -103,7 +103,7 @@ describe.skipIf(process.platform === "win32")("seat launch environment after she
         const adapter = new ClaudeResumeAdapter(f.tmux, { seatLaunchEnvironment: f.launch, claudeManagedLaunch: managed });
         vi.spyOn(adapter as any, "verifyResume").mockResolvedValue({ ok: true });
         result = await adapter.resume("seat@rig", "claude_id", "old-id", f.binding.cwd,
-          selected.launchPosture, null, selected.permissionMode, node.id, undefined, undefined, undefined, undefined, selected.claudePermissionFloor);
+          selected.launchPosture, null, selected.permissionMode, node.id, undefined, undefined, undefined, selected.claudePermissionFloor);
       } else {
         const adapter = new ClaudeCodeAdapter({ tmux: f.tmux, fsOps: f.fsOps, seatLaunchEnvironment: f.launch, claudeManagedLaunch: managed, sleep: async () => {} });
         vi.spyOn(adapter as any, "verifyResumeLaunch").mockResolvedValue({ ok: true });

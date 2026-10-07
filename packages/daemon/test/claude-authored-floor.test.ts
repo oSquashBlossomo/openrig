@@ -127,18 +127,24 @@ describe("authored Claude floor versus native inheritance", () => {
       expect(command).toContain(current === "floor" ? "--permission-mode acceptEdits" : "--dangerously-skip-permissions");
       if (current === "full_bypass") expect(command).not.toContain("--permission-mode");
     });
-  it.each(["authored", "stored", "none", "named"].flatMap(choice => paths.map(kind => ({ choice, kind }))))(
-    "advisor and $choice permission selection coexist on $kind", async ({ choice, kind }) => {
-      const f = fixture(); f.policy("member", choice === "none" ? "none" : "builtin:locked");
+  it.each(["authored", "stored", "none", "named", "policy auto", "bypass"].flatMap(choice =>
+    ["claude-fable-5-1", "off"].flatMap(advisor => paths.map(kind => ({ choice, advisor, kind })))))(
+    "$advisor advisor and $choice permission selection coexist on $kind", async ({ choice, advisor, kind }) => {
+      const f = fixture();
+      const posture = choice === "policy auto" ? "auto" : choice === "bypass" ? "full_bypass" : "floor";
+      f.policy("member", choice === "none" ? "none" : choice === "policy auto" ? "builtin:auto" : choice === "bypass" ? "builtin:yolo" : "builtin:locked", posture);
       if (choice === "stored" || choice === "named") f.store.write(f.node.id,
         { runtime: "claude-code", mode: choice === "stored" ? "floor" : "auto" }, "operator", "combined selection");
-      const command = await f.launch(kind, "floor", "claude-fable-5-1");
+      const command = await f.launch(kind, posture, advisor);
       expect(command.match(/--settings/g)).toHaveLength(1);
-      expect(command).toContain(JSON.stringify({ advisorModel: "claude-fable-5-1" }));
+      expect(command).toContain(JSON.stringify({ advisorModel: advisor === "off" ? "" : advisor }));
       expect(command).toContain("claude-opus-5-5"); expect(command).toContain("xhigh");
       if (choice === "none") expect(command).not.toMatch(/--permission-mode|--dangerously-skip-permissions/);
-      else expect(command).toContain(`--permission-mode ${choice === "named" ? "auto" : "acceptEdits"}`);
-      expect(f.prepare).toHaveBeenCalledTimes(choice === "named" ? 1 : 0);
+      else if (choice === "bypass") {
+        expect(command).toContain("--dangerously-skip-permissions");
+        expect(command).not.toContain("--permission-mode");
+      } else expect(command).toContain(`--permission-mode ${choice === "named" || choice === "policy auto" ? "auto" : "acceptEdits"}`);
+      expect(f.prepare).toHaveBeenCalledTimes(choice === "named" || choice === "policy auto" ? 1 : 0);
       if (kind === "resume" || kind === "legacy restore") expect(command).toContain("saved-native-id");
       if (kind === "fork") expect(command).toContain("parent-native-id");
     });
