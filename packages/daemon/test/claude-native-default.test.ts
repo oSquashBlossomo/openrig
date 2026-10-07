@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -29,15 +29,48 @@ describe("Claude native auto default", () => {
     expect(claudePostureFlag(process.env, "full_bypass")).toBe("--dangerously-skip-permissions");
     expect(claudePostureFlag(process.env, "full_bypass", "plan")).toBe("--permission-mode plan");
   });
-  it("keeps the floor for absent or other defaults and reports unreadable settings", () => {
+  it("keeps the floor only when no native mode was selected", () => {
     expect(claudePostureFlag(process.env, "floor")).toBe("--permission-mode acceptEdits");
-    settings("manual");
-    expect(claudePostureFlag(process.env, "floor")).toBe("--permission-mode acceptEdits");
-    writeFileSync(join(dir, "settings.json"), "invalid JSON");
-    expect(() => claudePostureFlag(process.env, "floor")).toThrow();
+    settings("plan");
+    expect(claudePostureFlag(process.env, "floor")).toBe("");
   });
-  it.each(["fresh", "resume", "fork", "restore"])("honors the native default on %s launches", async kind => {
+  it.each(["settings.json", "settings.local.json"])("leaves project %s precedence to Claude", file => {
+    settings("acceptEdits");
+    const cwd = join(dir, "project");
+    mkdirSync(join(cwd, ".claude"), { recursive: true });
+    writeFileSync(join(cwd, ".claude", file), JSON.stringify({ permissions: { defaultMode: "auto" } }));
+    expect(claudePostureFlag(process.env, undefined, undefined, cwd)).toBe("");
+  });
+  it.each(["config", ""])("resolves the native config selection %j at the seat cwd", configDir => {
+    const cwd = join(dir, "project"), selected = join(cwd, configDir);
+    mkdirSync(selected, { recursive: true });
+    writeFileSync(join(selected, "settings.json"), JSON.stringify({ permissions: { defaultMode: "auto" } }));
+    expect(claudePostureFlag({ ...process.env, CLAUDE_CONFIG_DIR: configDir }, undefined, undefined, cwd)).toBe("");
+  });
+  it("defers malformed native settings without throwing or changing explicit selections", () => {
+    writeFileSync(join(dir, "settings.json"), "invalid JSON");
+    expect(claudePostureFlag(process.env, "floor")).toBe("");
+    expect(claudePostureFlag(process.env, "floor", "acceptEdits")).toBe("--permission-mode acceptEdits");
+  });
+  it("defers unreadable native settings to Claude", () => {
     settings("auto");
+    chmodSync(join(dir, "settings.json"), 0);
+    expect(() => readFileSync(join(dir, "settings.json"), "utf8")).toThrow();
+    expect(claudePostureFlag(process.env, "floor")).toBe("");
+  });
+  it("a malformed settings file does not escape the resume result boundary", async () => {
+    writeFileSync(join(dir, "settings.json"), "invalid JSON");
+    const tmux = { sendText: vi.fn(async () => ({ ok: false, message: "inert launch boundary" })) } as unknown as TmuxAdapter;
+    await expect(new ClaudeResumeAdapter(tmux).resume("worker@fixture", "claude_id", "native-token", dir, "floor"))
+      .resolves.toMatchObject({ ok: false, code: "resume_failed" });
+  });
+  it.each(["user", "project", "local"].flatMap(scope => ["fresh", "resume", "fork", "restore"].map(kind => ({ scope, kind }))))("honors the $scope native default on $kind launches", async ({ scope, kind }) => {
+    if (scope === "user") settings("auto");
+    else {
+      mkdirSync(join(dir, ".claude"));
+      writeFileSync(join(dir, ".claude", scope === "local" ? "settings.local.json" : "settings.json"),
+        JSON.stringify({ permissions: { defaultMode: "auto" } }));
+    }
     const commands: string[] = [];
     const tmux = { sendText: vi.fn(async (_target: string, command: string) => { commands.push(command); return { ok: true }; }),
       hasSession: vi.fn(async () => true), getPaneCommand: vi.fn(async () => "claude"),
