@@ -168,9 +168,9 @@ describe("Issue #611 Declarative Permission Policy Precedence & Cascade", () => 
       launchPosture: "floor",
     });
 
-    // None member retains floor acceptEdits despite rig being builtin:auto
+    // None member retains native inheritance despite rig being builtin:auto
     expect(store.resolve(noneNode.id, "claude-code")).toEqual({
-      effectiveMode: "acceptEdits",
+      effectiveMode: "inherit",
       source: "member_spec",
       launchPosture: "floor",
     });
@@ -291,7 +291,7 @@ describe("Issue #611 Declarative Permission Policy Precedence & Cascade", () => 
     const store = new NativePermissionStore(db);
 
     expect(store.resolve(claudeNode.id, "claude-code")).toEqual({
-      effectiveMode: "acceptEdits",
+      effectiveMode: "inherit",
       source: "system_default",
       launchPosture: "floor",
     });
@@ -686,6 +686,11 @@ description: Custom member policy
           "model",
           undefined,
           node.id,
+          undefined,
+          false,
+          false,
+          undefined, // Advisor keeps its existing positional slot.
+          true, // Static authored floor; the selected native mode remains undefined.
         );
       } finally {
         rmSync(dir, { recursive: true, force: true });

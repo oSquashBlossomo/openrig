@@ -39,12 +39,15 @@ export function yoloEnabled(
 
 /** Claude launch posture flag: explicit selection, full bypass, or the usability floor.
  * Native defaults omit the fallback flag so Claude keeps its own settings
- * precedence. Unreadable settings are also left to Claude. No files are written. */
+ * precedence. Authored floors arrive with claudePermissionFloor; a bare floor
+ * also represents unselected inheritance. Unreadable settings are left to Claude.
+ * No files are written. */
 export function claudePostureFlag(
   env: NodeJS.ProcessEnv = process.env,
   resolvedPosture?: ResolvedLaunchPosture,
   permissionMode?: string,
   cwd = process.cwd(),
+  claudePermissionFloor = false,
 ): string {
   if (permissionMode !== undefined) {
     if (!/^[A-Za-z][A-Za-z0-9]*$/.test(permissionMode)) throw new Error("Invalid Claude permission mode");
@@ -53,6 +56,7 @@ export function claudePostureFlag(
   // A policy-selected auto posture is explicit, so it outranks the native settings default below.
   if (resolvedPosture === "auto") return "--permission-mode auto";
   if (yoloEnabled(env, resolvedPosture)) return "--dangerously-skip-permissions";
+  if (claudePermissionFloor && resolvedPosture === "floor") return "--permission-mode acceptEdits";
   const configDir = resolve(cwd, env.CLAUDE_CONFIG_DIR ?? join(env.HOME || homedir(), ".claude"));
   // Presence is enough: the harness owns the merge and managed-policy precedence.
   // Relative native config selections are resolved where the seat launches.

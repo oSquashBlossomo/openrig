@@ -49,6 +49,7 @@ export interface SuccessorNode {
   nonInterruptive?: boolean;
   kernelAuthority?: boolean;
   permissionMode?: string;
+  claudePermissionFloor?: boolean;
   /** 0.5.2-07 model fidelity: the seat's SPEC-pinned model (nodes.model). The successor is a continuity
    *  edge of the same seat, so its launch must READ THE SPEC — a launch path that drops it makes the
    *  running topology drift from the founder-designed one. Populated by the caller from node provenance;
@@ -333,6 +334,7 @@ export class SuccessorSessionLauncher {
       launchGeneration: launchGeneration ?? undefined,
       nonInterruptive: node.nonInterruptive,
       kernelAuthority: node.kernelAuthority,
+      claudePermissionFloor: node.claudePermissionFloor,
       // Seam B: continuity — the successor launches at the departing seat's posture.
       ...(node.launchPosture ? { launchPosture: node.launchPosture } : {}),
       ...(node.permissionMode ? { permissionMode: node.permissionMode } : {}),

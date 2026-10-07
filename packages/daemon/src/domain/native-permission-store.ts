@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import type { NodeBinding } from "./runtime-adapter.js";
 import { permissionBindingOverride, type NativePermissionSelection } from "./native-permission-selection.js";
-import { builtinLaunchPosture } from "./permission-policy/policy-ref.js";
+import { builtinLaunchPosture, validatePermissionPolicyRef } from "./permission-policy/policy-ref.js";
 
 export interface StoredNativePermissionSelection extends NativePermissionSelection {
   actor: string;
@@ -12,6 +12,7 @@ export interface StoredNativePermissionSelection extends NativePermissionSelecti
 export type PermissionModeSource = "explicit" | "member_spec" | "rig_spec" | "kernel_default" | "system_default";
 
 export interface ResolvedSeatPermission {
+  /** "inherit" leaves the native mode unverified; it is not an observed launch effect. */
   effectiveMode: string;
   source: PermissionModeSource;
   launchPosture?: "floor" | "full_bypass" | "auto";
@@ -24,14 +25,37 @@ export class NativePermissionStore {
   constructor(private readonly db: Database.Database) {}
 
   /** One decision shared by fresh/continue, legacy restore and same-seat handover. */
-  launchOverride(nodeId: string, runtime: string): Pick<NodeBinding, "launchPosture" | "permissionMode" | "kernelAuthority"> {
+  launchOverride(nodeId: string, runtime: string, resolvedPosture?: NodeBinding["launchPosture"]): Pick<NodeBinding, "launchPosture" | "permissionMode" | "kernelAuthority" | "claudePermissionFloor"> {
     const selection = this.read(nodeId);
     if (selection && selection.runtime !== runtime) {
       throw new Error("Seat runtime changed since permission selection; explicitly select again or inherit.");
     }
     // A rig name is not an opt-in permission choice. Clear stale internal grants
     // and preserve native settings/profile inheritance unless explicitly selected.
-    return { kernelAuthority: false, ...permissionBindingOverride(selection) };
+    if (!selection && runtime === "claude-code") {
+      // Lifecycle bindings also use floor for honest absence, to suppress ambient
+      // YOLO. Only an authored policy selects the static floor. Use the caller's
+      // current posture: restore may have re-derived a changed custom policy.
+      const row = this.db.prepare(`SELECT n.permission_policy AS memberRef, r.permission_policy AS rigRef,
+        COALESCE(n.policy_origin, r.rig_policy_origin) AS origin
+        FROM nodes n JOIN rigs r ON r.id = n.rig_id WHERE n.id = ?`).get(nodeId) as {
+          memberRef: string | null; rigRef: string | null; origin: string | null;
+        } | undefined;
+      // 055/056 refs can predate 057/058 provenance, which was not backfilled.
+      // A raw member none still masks the rig. Never resolve relative files here.
+      const ref = row?.memberRef ?? row?.rigRef;
+      if (ref != null) {
+        const error = validatePermissionPolicyRef(ref, "Stored permission policy");
+        if (error) throw new Error(error);
+      }
+      // Older none rows can reach this boundary with the rig fallback posture.
+      // The literal choice is still inheritance and masks that fallback.
+      if (ref === "none") return { kernelAuthority: false, claudePermissionFloor: false, launchPosture: "floor" };
+      if (resolvedPosture === "floor" && (ref != null || row?.origin === "builtin" || row?.origin === "custom")) {
+        return { kernelAuthority: false, claudePermissionFloor: true };
+      }
+    }
+    return { kernelAuthority: false, claudePermissionFloor: false, ...permissionBindingOverride(selection) };
   }
 
   read(nodeId: string): StoredNativePermissionSelection | null {
@@ -119,7 +143,7 @@ export class NativePermissionStore {
     // Level 2: Member-level declaration in rig.yaml
     // Precedence: member's own declaration must never be silently outranked by a rig-wide default.
     if (memberPolicy !== null) {
-      const effectivePosture = nodePosture ?? builtinLaunchPosture(memberPolicy);
+      const effectivePosture = runtime === "claude-code" && memberPolicy === "none" ? "floor" : nodePosture ?? builtinLaunchPosture(memberPolicy);
 
       if (effectivePosture === "auto") {
         if (runtime !== "claude-code") {
@@ -148,11 +172,7 @@ export class NativePermissionStore {
       }
 
       // effectivePosture === "floor" (e.g. builtin:locked, none, or custom floor policy)
-      return {
-        effectiveMode: runtime === "codex" ? "floor" : "acceptEdits",
-        source: "member_spec",
-        launchPosture: "floor",
-      };
+      return this.floorStatus(nodeId, runtime, "member_spec");
     }
 
     // Level 3: Rig-level declaration in rig.yaml
@@ -163,7 +183,7 @@ export class NativePermissionStore {
     );
 
     if (rigPolicy !== null || effectiveRigPosture !== null) {
-      const posture = effectiveRigPosture ?? "floor";
+      const posture = runtime === "claude-code" && rigPolicy === "none" ? "floor" : effectiveRigPosture ?? "floor";
 
       if (posture === "auto") {
         if (runtime !== "claude-code") {
@@ -192,23 +212,23 @@ export class NativePermissionStore {
       }
 
       // posture === "floor" (e.g. builtin:locked, none)
-      return {
-        effectiveMode: runtime === "codex" ? "floor" : "acceptEdits",
-        source: "rig_spec",
-        launchPosture: "floor",
-      };
+      return this.floorStatus(nodeId, runtime, "rig_spec");
     }
 
     // Level 4: System default floor
-    return {
-      effectiveMode: runtime === "codex" ? "floor" : "acceptEdits",
-      source: "system_default",
-      launchPosture: "floor",
-    };
+    return this.floorStatus(nodeId, runtime, "system_default");
+  }
+
+  private floorStatus(nodeId: string, runtime: string, source: PermissionModeSource): ResolvedSeatPermission {
+    // Use the same authored-floor/native-inheritance boundary as launch. Status
+    // does not inspect native settings or promote prior argv into effective mode.
+    const override = runtime === "claude-code" ? this.launchOverride(nodeId, runtime, "floor") : undefined;
+    const inherit = runtime === "claude-code" && !override?.claudePermissionFloor;
+    return { effectiveMode: inherit ? "inherit" : runtime === "codex" ? "floor" : "acceptEdits", source, launchPosture: "floor" };
   }
 
   apply(binding: NodeBinding, runtime: string): NodeBinding {
-    const override = this.launchOverride(binding.nodeId, runtime);
+    const override = this.launchOverride(binding.nodeId, runtime, binding.launchPosture);
     const effectivePosture = override.launchPosture ?? binding.launchPosture;
     const permissionMode = override.permissionMode ?? (effectivePosture === "auto" && runtime === "claude-code" ? "auto" : undefined);
     return {

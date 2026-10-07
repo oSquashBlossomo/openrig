@@ -259,7 +259,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
           session: binding.tmuxSession, pane: binding.tmuxPane, generation: binding.launchGeneration }, binding.permissionMode);
       } catch (error) { return { ok: false, error: (error as Error).message }; }
     }
-    const posture = claudePostureFlag(process.env, binding.launchPosture, binding.permissionMode, binding.cwd);
+    const posture = claudePostureFlag(process.env, binding.launchPosture, binding.permissionMode, binding.cwd, binding.claudePermissionFloor);
     const appliedLaunch = observeClaudePermission(posture);
     const launchSettings = claudeLaunchSettingsArgs(operationalLaunchArgs(this.runtime, binding), binding.advisorModel);
     const permissionMode = posture + launchSettings.operational.map(arg => ` ${shellQuote(arg)}`).join("");

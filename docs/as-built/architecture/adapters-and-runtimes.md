@@ -115,7 +115,18 @@ attachment (`:2006`), then the floor, set on the binding as `launchPosture`
 (`:2158`). `NativePermissionStore.apply()`
 (`native-permission-store.ts:236`) then overlays a seat's explicit
 `rig seat set-permissions` choice. Kernel seats use the same inheritance.
-`bundle-behaviour.ts` is the read-only
+For Claude, an explicit `floor` choice or a lifecycle-resolved floor with
+builtin/custom policy provenance carries `claudePermissionFloor: true`. The static
+flag selector emits `acceptEdits` while retaining the classic pane-shell executable
+and provider environment; explicitly named native modes still use the managed
+capability-checked launch path. Valid legacy policy refs without provenance also
+select the floor. A legacy member `none` masks the inherited rig posture even
+without provenance. Absent and `deliberate_none` choices retain native inheritance. Restore passes its
+current re-derived posture, so a stale persisted custom floor cannot replace a
+newly resolved `auto` or `full_bypass`. Seat status reports `effectiveMode: inherit`
+for native inheritance and the CLI displays “inherit native settings”. Prior launch
+arguments and the unverified native effect remain separate; this status read does
+not inspect or claim the native settings merge. `bundle-behaviour.ts` is the read-only
 preview of the same mapping for an unopened bundle (see
 `packaging-bootstrap-bundles.md`).
 
@@ -124,8 +135,9 @@ preview of the same mapping for an unopened bundle (see
 - **Claude Code** (`claudePostureFlag`): an explicit `permissionMode` becomes
   `--permission-mode <mode>` (`:43`); `auto` becomes
   `--permission-mode auto` (`:47`); `full_bypass` becomes
-  `--dangerously-skip-permissions`; otherwise the floor is
-  `--permission-mode acceptEdits` (`:50`). For a seat with no resolved
+  `--dangerously-skip-permissions`; otherwise a selected native default is left
+  to Claude, with `--permission-mode acceptEdits` as the fallback. Authored floors
+  carry a separate static-floor marker from the store boundary. For a seat with no resolved
   posture, the instance-wide YOLO setting `OPENRIG_YOLO=1` (`:27`; off by
   default) selects the bypass; a resolved posture always wins (`:26`).
 - **Codex** (`codexPostureArg`, `:62`): `full_bypass` becomes
