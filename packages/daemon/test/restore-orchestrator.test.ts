@@ -71,9 +71,12 @@ function mockCodexResume(result?: ResumeResult): CodexResumeAdapter {
 }
 
 function nativeLineage(runtime: "claude-code" | "codex", token: string) {
+  const startedAt = "Sat Jan  1 12:00:00 2000";
   return async () => [
-    { pid: 1234, ppid: 1, command: "zsh" },
-    { pid: 1235, ppid: 1234, command: runtime === "claude-code" ? `claude --resume ${token}` : `codex resume ${token}` },
+    { pid: 1234, ppid: 1, pgid: 1234, tpgid: 1235, executableName: "zsh", startedAt, command: "zsh" },
+    { pid: 1235, ppid: 1234, pgid: 1235, tpgid: 1235,
+      executableName: runtime === "claude-code" ? "claude" : "codex", startedAt,
+      command: runtime === "claude-code" ? `claude --resume ${token}` : `codex resume ${token}` },
   ];
 }
 
@@ -3195,10 +3198,8 @@ describe("RestoreOrchestrator", () => {
       } as unknown as TmuxAdapter;
     }
 
-    const exactClaudeLineage = (token = "tok-abc-123") => async () => [
-      { pid: 1234, ppid: 1, command: "zsh" },
-      { pid: 1235, ppid: 1234, command: `claude.exe --resume ${token}` },
-    ];
+    const exactClaudeLineage = (token = "tok-abc-123") => async () => (await nativeLineage("claude-code", token)())
+      .map((row) => row.pid === 1235 ? { ...row, executableName: "claude.exe", command: `claude.exe --resume ${token}` } : row);
 
     let nextSeed = 90;
     function seedFailedAttempt(opts: {
@@ -3444,7 +3445,10 @@ describe("RestoreOrchestrator", () => {
       (tmux.hasSession as ReturnType<typeof vi.fn>).mockResolvedValue(true);
       (tmux.getPaneCommand as ReturnType<typeof vi.fn>).mockResolvedValue("zsh"); // shell, not claude/codex
       (tmux.capturePaneContent as ReturnType<typeof vi.fn>).mockResolvedValue("$ ");
-      const orch = createOrchestrator({ tmux, listProcesses: exactClaudeLineage() });
+      const orch = createOrchestrator({ tmux, listProcesses: async () => [{
+        pid: 1234, ppid: 1, pgid: 1234, tpgid: 1234, executableName: "zsh",
+        startedAt: "Sat Jan  1 12:00:00 2000", command: "zsh",
+      }] });
       const seeded = seedFailedAttempt({ restoreOutcome: "failed", withResumeToken: true });
 
       const result = await orch.reconcileNodeRuntimeTruth(seeded.rig.id, seeded.nodeId);

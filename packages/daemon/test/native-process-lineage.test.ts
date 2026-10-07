@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { findExactNativeResumeProcess, observeClaudePaneStartedAt, verifyCodexPaneProcess, type NativeProcessRow } from "../src/domain/native-process-lineage.js";
+import { findExactNativeResumeProcess, observeClaudePaneStartedAt, verifyClaudePaneProcess, verifyCodexPaneProcess, type NativeProcessRow } from "../src/domain/native-process-lineage.js";
 
 const token = "00000000-0000-7000-8000-000000000001";
 const startedAt = "Sat Jan  1 12:00:00 2000";
@@ -90,5 +90,31 @@ describe("observeClaudePaneStartedAt", () => {
     expect(await observe(claudeRows(), null)).toBeNull();
     expect(await observe(claudeRows().slice(0, 1))).toBeNull();
     expect(await observe(claudeRows([{ pid: 22, ppid: 20, pgid: 21, tpgid: 21, executableName: "claude", command: "claude", startedAt: claudeStart }]))).toBeNull();
+  });
+});
+
+
+describe("Claude rewritten process titles", () => {
+  const binary = "/fixture/.local/share/claude/versions/2.1.288";
+  const processRows = (path: string | undefined = binary): NativeProcessRow[] => [
+    { pid: 20, ppid: 1, pgid: 20, tpgid: 21, executableName: "zsh", command: "-zsh", startedAt },
+    { pid: 21, ppid: 20, pgid: 21, tpgid: 21, executableName: "2.1.288", command: `claude --resume ${token} --name worker@fixture`, startedAt, ...(path ? { executablePath: path } : {}) },
+  ];
+  const verify = (listProcesses: () => NativeProcessRow[], selectedExecutable?: string) => verifyClaudePaneProcess({
+    target: "%fixture", tmux: { getPanePid: async () => 20 }, listProcesses, expectedToken: token, selectedExecutable,
+  });
+  it("joins the renamed title to its versioned OS executable and exact conversation", async () => {
+    expect((await verify(processRows))?.process.pid).toBe(21);
+    expect((await verify(processRows, binary))?.process.pid).toBe(21);
+  });
+  it.each([undefined, "/tmp/2.1.288", "/fixture/.local/share/claude/versions/2.1.284", "/fixture/.local/share/claude/versions/../2.1.288"])("requires a matching native installed executable path (%s)", async path => {
+    expect(await verify(() => processRows(path === undefined ? "" : path))).toBeNull();
+  });
+  it("does not replace the frozen launch binary with a later installation", async () => {
+    expect(await verify(processRows, "/fixture/.local/share/claude/versions/2.1.284")).toBeNull();
+  });
+  it("rejects executable path changes between the two observations", async () => {
+    const changed = processRows("/other/.local/share/claude/versions/2.1.288");
+    expect(await verify(vi.fn().mockReturnValueOnce(processRows()).mockReturnValueOnce(changed))).toBeNull();
   });
 });

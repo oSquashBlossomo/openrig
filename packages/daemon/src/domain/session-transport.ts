@@ -34,7 +34,7 @@ const MID_WORK_PATTERNS = [
   /Working/,
   /^[✶✢✳✻✽·]\s+\S.*(?:…|\.{3})\s+\([^)]*\bthinking\)$/m,
   /esc to interrupt/,
-  /^[❯›]\s*\d+\.\s/m,   // trust/consent prompt choices (e.g. '› 1. Yes, continue')
+  /^[❯›»]\s*\d+\.\s/m,   // trust/consent prompt choices (e.g. '› 1. Yes, continue')
 ];
 
 // Idle-prompt patterns: empty prompt line (no typed text after the char).
@@ -46,7 +46,7 @@ const MID_WORK_PATTERNS = [
 // normally sits above it, but Codex hides that row while it streams assistant output. So the
 // placeholder counts as idle only through MID_WORK_PATTERNS here, and classifySendReadiness
 // never lets a placeholder-only verdict override a display-fresh running/needs_input hook.
-const CODEX_EMPTY_COMPOSER_PATTERN = /^›\s+Ask Codex to do anything\s*$/;
+const CODEX_EMPTY_COMPOSER_PATTERN = /^[›»]\s+Ask Codex to do anything\s*$/;
 
 // Codex's live turn-status row: a bullet, a header ("Working", or the reasoning summary Codex shows in its place),
 // then the elapsed time and "esc to interrupt" in parentheses, e.g. "• Working (1h 09m 39s • esc to interrupt)".
@@ -54,12 +54,12 @@ const CODEX_EMPTY_COMPOSER_PATTERN = /^›\s+Ask Codex to do anything\s*$/;
 const CODEX_TURN_STATUS_PATTERN = /^[•◦]\s+\S.*\((?:\d+[hms]\s*)+•\s*esc to interrupt\)/;
 
 const IDLE_PROMPT_PATTERNS = [
-  /^[❯›]\s*$/,  // prompt char + optional whitespace + end-of-line only
+  /^[❯›»]\s*$/,  // prompt char + optional whitespace + end-of-line only
   CODEX_EMPTY_COMPOSER_PATTERN,
 ];
 
 const PROMPT_DRAFT_PATTERNS = [
-  /^[❯›]\s+\S/,
+  /^[❯›»]\s+\S/,
 ];
 
 // Footer hints, not proof of inactivity: Claude also renders its mode bar
@@ -213,7 +213,7 @@ function findPromptDraftBeforeFooter(paneContent: string): string | null {
 
   const priorTrimmed = priorLine.trim();
   const looksLikeDraft = PROMPT_DRAFT_PATTERNS.some((pattern) => pattern.test(priorTrimmed));
-  const looksLikeSelection = /^[❯›]\s*\d+\.\s/.test(priorTrimmed);
+  const looksLikeSelection = /^[❯›»]\s*\d+\.\s/.test(priorTrimmed);
   if (!looksLikeDraft || looksLikeSelection) return null;
 
   return truncateEvidence(priorTrimmed);
@@ -247,7 +247,7 @@ export function classifyPaneActivity(paneContent: string): PaneActivityClassific
       oldQuestionEnd >= 0 && oldQuestionEnd < promptScanLines.length - 1
     ? promptScanLines.slice(oldQuestionEnd + 1) : promptScanLines;
   const selectionPromptEvidence = findCurrentClaudeQuestion(paneContent) ??
-    findPatternEvidence(selectionLines, [/^[❯›]\s*\d+\.\s/m]);
+    findPatternEvidence(selectionLines, [/^[❯›»]\s*\d+\.\s/m]);
   if (selectionPromptEvidence) {
     return {
       state: "attention",

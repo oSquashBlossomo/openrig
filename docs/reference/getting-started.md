@@ -18,7 +18,8 @@ even-numbered releases are untested.
 **Choose permissions before starting the team.** Ordinary OpenRig launches use
 Codex's `-s workspace-write`, with approval policy from your native configuration,
 or Claude Code's `acceptEdits`, which still leaves commands subject to native
-rules and prompts (the kernel's own seats get a wider operational default). Codex's
+rules and prompts. A selected native Claude default from user, project or local
+settings is inherited; the kernel's own seats get a wider operational default. Codex's
 sandbox normally blocks network access, including the local OpenRig daemon, so
 before that plain launch OpenRig asks Codex for its own configuration and adds
 network access inside the sandbox only when Codex answers that no configuration
@@ -704,9 +705,10 @@ This records the actor, reason and old/new choice on that seat. It does not
 relaunch it, alter native history, change sibling seats, or edit permission
 rules/hooks. A later lifecycle action remains a separate decision. The explicit
 seat choice overrides the inherited member/rig policy; `--mode inherit` clears
-it without changing that inherited policy. `floor` selects the existing normal
-launch path (including a Codex named profile when configured); it does not
-rewrite a native profile or force its approval settings.
+it without changing that inherited policy. An explicit Claude `floor` selects
+`--permission-mode acceptEdits`; no policy or `permission_policy: none` preserves
+a selected native default. Codex `floor` keeps its normal launch path, including
+a named profile when configured. These choices do not rewrite native settings.
 
 Codex and Claude accept `floor` and `full_bypass`. Additional Claude native modes,
 including `auto`, require support advertised by the managed executable's help.

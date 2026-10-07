@@ -655,8 +655,10 @@ describe("Lifecycle reboot/recovery scenario matrix (Tier 1)", () => {
         checkpointStore, nodeLauncher, tmuxAdapter: tmux,
         claudeResume: claudeStub, codexResume: codexStub,
         listProcesses: async () => [
-          { pid: 1234, ppid: 1, command: "zsh" },
-          { pid: 5678, ppid: 1234, command: "claude --resume t1" },
+          { pid: 1234, ppid: 1, pgid: 1234, tpgid: 5678, executableName: "zsh",
+            startedAt: "Sat Jan  1 12:00:00 2000", command: "zsh" },
+          { pid: 5678, ppid: 1234, pgid: 5678, tpgid: 5678, executableName: "claude",
+            startedAt: "Sat Jan  1 12:00:00 2000", command: "claude --resume t1" },
         ],
       });
 

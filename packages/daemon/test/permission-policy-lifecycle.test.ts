@@ -520,7 +520,8 @@ describe("GF2 — the COMPLETE production-altitude launch/restore matrix", () =>
         db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2,
         snapshotRepo: snapshotRepo2, snapshotCapture: snapshotCapture2, checkpointStore: checkpointStore2,
         listProcesses: async () => [
-          { pid: 1234, ppid: 1, command: "claude --resume tok-pod" },
+          { pid: 1234, ppid: 1, pgid: 1234, tpgid: 1234, executableName: "claude",
+            startedAt: "Sat Jan  1 12:00:00 2000", command: "claude --resume tok-pod" },
         ],
         nodeLauncher: new NodeLauncher({ db: db2, rigRepo: rigRepo2, sessionRegistry: sessionRegistry2, eventBus: eventBus2, tmuxAdapter: tmux }),
         tmuxAdapter: tmux,

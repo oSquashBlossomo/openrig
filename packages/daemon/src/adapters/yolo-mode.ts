@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+
 // OPR.0.4.8.2 — OpenRig YOLO mode (opt-in, DEFAULT OFF).
 //
 // A simple deterministic setting that rides the STABLE launch-flag surface only (per the founder's
@@ -33,21 +37,38 @@ export function yoloEnabled(
 // path-dependent. NOTE the ON posture differs by harness: Claude/Codex = permission bypass; Pi =
 // full RESOURCE TRUST (--approve), which is not a permission policy. ──
 
-/** Claude launch posture flag: floor `--permission-mode acceptEdits`, or the full bypass
- *  (global YOLO, or a per-seat resolved full_bypass policy attachment). */
+/** Claude launch posture flag: explicit selection, full bypass, or the usability floor.
+ * Native defaults omit the fallback flag so Claude keeps its own settings
+ * precedence. Authored floors arrive with claudePermissionFloor; a bare floor
+ * also represents unselected inheritance. Unreadable settings are left to Claude.
+ * No files are written. */
 export function claudePostureFlag(
   env: NodeJS.ProcessEnv = process.env,
   resolvedPosture?: ResolvedLaunchPosture,
   permissionMode?: string,
+  cwd = process.cwd(),
+  claudePermissionFloor = false,
 ): string {
   if (permissionMode !== undefined) {
     if (!/^[A-Za-z][A-Za-z0-9]*$/.test(permissionMode)) throw new Error("Invalid Claude permission mode");
     return `--permission-mode ${permissionMode}`;
   }
-  if (resolvedPosture === "auto") {
-    return "--permission-mode auto";
+  // A policy-selected auto posture is explicit, so it outranks the native settings default below.
+  if (resolvedPosture === "auto") return "--permission-mode auto";
+  if (yoloEnabled(env, resolvedPosture)) return "--dangerously-skip-permissions";
+  if (claudePermissionFloor && resolvedPosture === "floor") return "--permission-mode acceptEdits";
+  const configDir = resolve(cwd, env.CLAUDE_CONFIG_DIR ?? join(env.HOME || homedir(), ".claude"));
+  // Presence is enough: the harness owns the merge and managed-policy precedence.
+  // Relative native config selections are resolved where the seat launches.
+  for (const settingsPath of [join(configDir, "settings.json"), join(cwd, ".claude", "settings.json"), join(cwd, ".claude", "settings.local.json")]) {
+    try {
+      const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+      if (typeof settings?.permissions?.defaultMode === "string" && settings.permissions.defaultMode.trim()) return "";
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return "";
+    }
   }
-  return yoloEnabled(env, resolvedPosture) ? "--dangerously-skip-permissions" : "--permission-mode acceptEdits";
+  return "--permission-mode acceptEdits";
 }
 
 /**

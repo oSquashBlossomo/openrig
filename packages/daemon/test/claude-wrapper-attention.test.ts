@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type Database from "better-sqlite3";
 import { Hono } from "hono";
 import { createFullTestDb } from "./helpers/test-app.js";
@@ -18,7 +21,12 @@ const startedAt = "Fri Oct  2 20:00:00 2026";
 const root = { pid: 100, ppid: 1, pgid: 100, tpgid: 100, command: "/bin/bash wrapper.sh", executableName: "bash", startedAt };
 const child = { pid: 101, ppid: 100, pgid: 100, tpgid: 100, command: "/tmp/review/.local/share/claude/versions/2.1.1 --session-id review-token", executableName: "2.1.1", startedAt };
 const databases: Database.Database[] = [];
-afterEach(() => { for (const db of databases.splice(0)) db.close(); });
+const directories: string[] = [];
+afterEach(() => {
+  for (const db of databases.splice(0)) db.close();
+  vi.unstubAllEnvs();
+  for (const dir of directories.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
 
 function fixture(token: string | null = null) {
   const db = createFullTestDb(); databases.push(db);
@@ -60,6 +68,95 @@ function fixture(token: string | null = null) {
 }
 
 describe("Claude wrapper manual attention recovery", () => {
+  function afterClear() {
+    const token = "22222222-2222-4222-8222-222222222222";
+    const f = fixture(token);
+    f.registry.updateResumeToken(f.session.id, "claude_id", token, "hook");
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-clear-attention-"));
+    directories.push(configDir);
+    vi.stubEnv("CLAUDE_CONFIG_DIR", configDir);
+    fs.mkdirSync(path.join(configDir, "sessions"));
+    const file = path.join(configDir, "sessions", `${child.pid}.json`);
+    fs.writeFileSync(file, JSON.stringify({ name: f.name, sessionId: token }));
+    return { ...f, token, file };
+  }
+
+  it.each(["claude", "2.1.288", "bash"])("clears post-/clear %s identity only from the current PID's exact native session record", async label => {
+    const f = afterClear();
+    f.tmux.getPaneCommand.mockResolvedValue(label);
+    expect((await f.post()).status).toBe(200);
+    expect(f.store.getForNode(f.node.id)?.evidence.observedPid).toBe(child.pid);
+    await f.poll.reconcileAll();
+    expect(f.store.getForNode(f.node.id)?.verdict).toBe("verified");
+    expect((await f.verify(true)).ok).toBe(false); // A rotated token is not proof of a strict restore attempt.
+    expect(f.db.prepare("SELECT resume_token, resume_provenance FROM sessions WHERE id = ?").get(f.session.id))
+      .toEqual({ resume_token: f.token, resume_provenance: "hook" });
+    expect(f.sendVerify).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing", "wrong token", "wrong seat", "stale PID file", "malformed", "background", "ambiguous", "replaced process", "changed record"])("retains post-/clear attention with %s evidence", async mode => {
+    const f = afterClear();
+    f.tmux.getPaneCommand.mockResolvedValue("claude");
+    if (mode === "missing") fs.unlinkSync(f.file);
+    if (mode === "wrong token") fs.writeFileSync(f.file, JSON.stringify({ name: f.name, sessionId: "33333333-3333-4333-8333-333333333333" }));
+    if (mode === "wrong seat") fs.writeFileSync(f.file, JSON.stringify({ name: "other@rig", sessionId: f.token }));
+    if (mode === "stale PID file") fs.utimesSync(f.file, new Date(0), new Date(0));
+    if (mode === "malformed") fs.writeFileSync(f.file, "{");
+    if (mode === "background") f.listProcesses.mockResolvedValue([root, { ...child, pgid: 999 }]);
+    if (mode === "ambiguous") f.listProcesses.mockResolvedValue([root, child, { ...child, pid: 102 }]);
+    if (mode === "replaced process") f.listProcesses.mockImplementation(async () => [root, { ...child, startedAt: `202${f.listProcesses.mock.calls.length}-01-01T00:00:00Z` }]);
+    if (mode === "changed record") f.listProcesses.mockImplementation(async () => {
+      if (f.listProcesses.mock.calls.length > 1) fs.writeFileSync(f.file, JSON.stringify({ name: f.name, sessionId: "another-session" }));
+      return [root, child];
+    });
+    expect((await f.post()).status).toBe(422);
+    expect(f.startup()).toBe("attention_required");
+    expect(f.sendVerify).not.toHaveBeenCalled();
+  });
+
+  it("resolves a post-/clear PID record against the seat cwd for a relative provider root", async () => {
+    const f = afterClear();
+    const configDir = path.dirname(path.dirname(f.file));
+    f.db.prepare("UPDATE nodes SET cwd = ? WHERE id = ?").run(path.dirname(configDir), f.node.id);
+    vi.stubEnv("CLAUDE_CONFIG_DIR", path.basename(configDir));
+    expect((await f.post()).status).toBe(200);
+    await f.poll.reconcileAll();
+    expect(f.store.getForNode(f.node.id)?.verdict).toBe("verified");
+  });
+
+  it("clears a rewritten Claude title only with its OS executable mapping", async () => {
+    const f = fixture("review-token");
+    f.tmux.getPaneCommand.mockResolvedValue("2.1.288");
+    f.listProcesses.mockResolvedValue([root, { ...child, executableName: "2.1.288",
+      executablePath: "/fixture/.local/share/claude/versions/2.1.288", command: "claude --model example --resume review-token --name worker@fixture" }]);
+    expect((await f.post()).status).toBe(200);
+    expect(f.store.getForNode(f.node.id)?.evidence.observedPid).toBe(child.pid);
+    expect(f.sendVerify).not.toHaveBeenCalled();
+  });
+
+  it.each(["2.1.288", "claude"])("clears %s labels only with exact saved Claude identity", async command => {
+    const f = fixture("review-token");
+    f.tmux.getPaneCommand.mockResolvedValue(command);
+    expect((await f.post()).status).toBe(200);
+    expect(f.store.getForNode(f.node.id)?.verdict).toBe("verified");
+    expect(f.store.getForNode(f.node.id)?.evidence.observedPid).toBe(child.pid);
+    expect(f.sendVerify).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["wrong native identity", { ...child, command: child.command.replace("review-token", "different-token") }],
+    ["missing identity", { ...child, command: child.command.replace(" --session-id review-token", "") }],
+    ["outside pane lineage", { ...child, ppid: 999 }],
+    ["background process", { ...child, pgid: 999 }],
+    ["wrong OS executable", { ...child, executableName: "python3" }],
+  ])("rejects %s even behind an explicit Claude label", async (_name, observed) => {
+    const f = fixture("review-token");
+    f.tmux.getPaneCommand.mockResolvedValue("claude");
+    f.listProcesses.mockResolvedValue([root, observed]);
+    expect((await f.post()).status).toBe(422);
+    expect(f.store.getForNode(f.node.id)?.verdict).toBe("mismatch");
+    expect(f.sendVerify).not.toHaveBeenCalled();
+  });
+
   it.each(["valid", "no token", "wrong token", "missing path", "background", "unrelated", "ambiguous", "PID reused", "unavailable"])("numeric Claude pane identity clear: %s", async mode => {
     const f = fixture(mode === "no token" ? null : "review-token");
     f.tmux.getPaneCommand.mockResolvedValue("2.1.289");

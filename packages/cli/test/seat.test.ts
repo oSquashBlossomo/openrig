@@ -250,6 +250,25 @@ describe("rig seat status", () => {
     expect(output).toContain("Previous occupant: none");
   });
 
+  it.each([false, true])("renders native inheritance honestly and preserves status JSON (json=%s)", async json => {
+    const status = { ...STATUS, runtime: "claude-code", permissions: {
+      selectionState: "inherit", desired: null, nativeEffect: "unverified",
+      effective: { effectiveMode: "inherit", source: "system_default", launchPosture: "floor" },
+      lastLaunchArguments: { value: "acceptEdits" },
+    } };
+    const deps = makeDeps({ status: 200, data: status }, []);
+    const result = await captureLogs(() => makeCommand(deps).parseAsync([
+      "node", "rig", "seat", "status", "dev-impl@seat-rig", ...(json ? ["--json"] : []),
+    ]).then(() => {}));
+    expect(result.exitCode).toBeUndefined();
+    if (json) expect(JSON.parse(result.logs.join(""))).toEqual(status);
+    else {
+      expect(result.logs).toContain("Permission mode for future launches: inherit native settings (OpenRig default)");
+      expect(result.logs).toContain("Last launch arguments: acceptEdits");
+      expect(result.logs).toContain("Native permission effect: unverified by this status read");
+    }
+  });
+
   it("returns a nonzero status for an unknown seat", async () => {
     const deps = makeDeps({
       status: 404,

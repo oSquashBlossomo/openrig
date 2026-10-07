@@ -116,8 +116,10 @@ describe("Session routes", () => {
     const { app, rigRepo, sessionRegistry, eventBus } = createTestApp(db, {
       tmux,
       listProcesses: async () => [
-        { pid: 1234, ppid: 1, command: "zsh" },
-        { pid: 1235, ppid: 1234, command: "claude.exe --resume tok-abc-123" },
+        { pid: 1234, ppid: 1, pgid: 1234, tpgid: 1235, executableName: "zsh",
+          startedAt: "Sat Jan  1 12:00:00 2000", command: "zsh" },
+        { pid: 1235, ppid: 1234, pgid: 1235, tpgid: 1235, executableName: "claude.exe",
+          startedAt: "Sat Jan  1 12:00:00 2000", command: "claude.exe --resume tok-abc-123" },
       ],
     });
     const rig = rigRepo.createRig("r90");

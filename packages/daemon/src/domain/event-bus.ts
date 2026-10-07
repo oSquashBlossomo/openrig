@@ -292,7 +292,8 @@ export class EventBus {
   }
 
   private rowToPersistedEvent(row: EventRow): PersistedEvent {
-    const parsed = JSON.parse(row.payload) as unknown;
+    const payload = JSON.parse(row.payload) as unknown;
+    const parsed = decodeLegacyAuditEvent(row, payload) ?? payload;
     if (
       typeof parsed !== "object" ||
       parsed === null ||
@@ -318,6 +319,33 @@ interface EventRow {
   type: string;
   payload: string;
   created_at: string;
+}
+
+/** Recorded local audit rows predate the full payload envelope. Decode only
+ * their known shapes; do not rewrite the log or reinterpret malformed events. */
+function decodeLegacyAuditEvent(row: EventRow, payload: unknown): Record<string, unknown> | null {
+  if (!isRecord(payload) || Object.hasOwn(payload, "type")
+    || !row.rig_id || !row.node_id || typeof payload.reason !== "string") return null;
+  if (row.type === "node.primary_orchestrator_selected") {
+    if (!hasExactKeys(payload, ["reason", "fromLabel", "toLabel"])
+      || (payload.fromLabel !== null && typeof payload.fromLabel !== "string")
+      || typeof payload.toLabel !== "string") return null;
+  } else if (row.type === "edge.primary_dispatch_added") {
+    const edge = payload.edge;
+    if (!hasExactKeys(payload, ["reason", "edge"]) || !isRecord(edge)
+      || !hasExactKeys(edge, ["id", "rigId", "sourceId", "targetId", "kind", "createdAt"])
+      || !Object.values(edge).every(value => typeof value === "string")
+      || edge.rigId !== row.rig_id || edge.sourceId !== row.node_id) return null;
+  } else return null;
+  return { ...payload, type: row.type, rigId: row.rig_id, nodeId: row.node_id };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
+  return Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 }
 
 function setsEqual<T>(left: ReadonlySet<T>, right: ReadonlySet<T>): boolean {

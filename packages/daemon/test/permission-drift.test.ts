@@ -31,6 +31,13 @@ const cwd = "/tmp/w3-project";
 const settingsPath = `${cwd}/.claude/settings.local.json`;
 
 describe("applied launch observations retain the emitted argument value", () => {
+  it("records native permission deferral without claiming a mode or an invalid argument", () => {
+    const applied = observeClaudePermission("");
+    expect(applied).toEqual({ runtime: "claude-code", axis: "permission", state: "unknown", value: null,
+      reason: "native_default_deferred" });
+    const diagnostic = diagnoseRuntimePosture({ runtime: "claude-code", cwd, applied, fs: fsFixture({}) });
+    expect(diagnostic.enforcement).toMatchObject({ state: "unknown", effective: null, reason: "native_default_deferred" });
+  });
   it("preserves Claude permission vocabulary", () => {
     expect(observeClaudePermission("--permission-mode acceptEdits")).toEqual({
       runtime: "claude-code",

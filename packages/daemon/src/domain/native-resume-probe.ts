@@ -152,8 +152,9 @@ export function assessNativeResumeProbe(
         detail: "Claude is the active foreground process in the probe pane.",
       };
     }
-    if (/(^|\n)\s*❯/.test(paneContent)
-      && /^[ \t]*⏵⏵ auto mode on \(shift\+tab to cycle\)(?:[ \t]+·[^\r\n]*)?[ \t]*$/m.test(paneContent)) {
+    const recentLines = paneContent.trimEnd().split("\n").slice(-30).join("\n");
+    if (/^[ \t]*❯[ \t\u00a0]*$/m.test(recentLines)
+      && /^[ \t]*⏵⏵ auto mode on \(shift\+tab to cycle\)(?:[ \t]+·[^\r\n]*)?[ \t]*$/m.test(recentLines)) {
       return input.claudeAutoIdentityVerified
         ? { status: "resumed", code: "active_runtime", detail: "Claude auto-mode TUI and the exact managed native identity were verified." }
         : { status: "inconclusive", code: "claude_auto_identity_required", detail: "Auto-mode screen text requires proof of the launched Claude identity." };

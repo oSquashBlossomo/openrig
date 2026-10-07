@@ -73,6 +73,27 @@ describe("SSE events route", () => {
     db.close();
   });
 
+  it("streams recorded legacy audits on reconnect and continues with live events", async () => {
+    const rig = rigRepo.createRig("legacy-rig");
+    db.prepare("INSERT INTO events (rig_id, node_id, type, payload) VALUES (?, ?, ?, ?)").run(rig.id, "node-1",
+      "node.primary_orchestrator_selected", JSON.stringify({ reason: "recorded rollout", fromLabel: null, toLabel: "primary" }));
+    db.prepare("INSERT INTO events (rig_id, node_id, type, payload) VALUES (?, ?, ?, ?)").run(rig.id, "node-1",
+      "edge.primary_dispatch_added", JSON.stringify({ reason: "recorded rollout", edge: {
+        id: "edge-1", rigId: rig.id, sourceId: "node-1", targetId: "node-2", kind: "dispatch", createdAt: "2026-10-03T00:00:00Z",
+      } }));
+    const stored = db.prepare("SELECT * FROM events ORDER BY seq").all();
+    const response = await app.request("/api/events", { headers: { "Last-Event-ID": "0" } });
+    setTimeout(() => eventBus.emit({ type: "rig.created", rigId: rig.id }), 10);
+    const events = await readSSEEvents(response, 3);
+    expect(events.map(event => event.id)).toEqual(["1", "2", "3"]);
+    expect(events.map(event => JSON.parse(event.data).type)).toEqual([
+      "node.primary_orchestrator_selected", "edge.primary_dispatch_added", "rig.created",
+    ]);
+    expect(events.map(event => JSON.parse(event.data).rigId)).toEqual([rig.id, rig.id, rig.id]);
+    expect(db.prepare("SELECT * FROM events WHERE seq < 3 ORDER BY seq").all()).toEqual(stored);
+    await vi.waitFor(() => expect(eventBus.subscriberCount).toBe(0));
+  });
+
   it("connect to SSE -> receives content-type text/event-stream", async () => {
     const rig = rigRepo.createRig("r01");
     const res = await app.request(`/api/events?rigId=${rig.id}`);
