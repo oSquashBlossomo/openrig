@@ -122,8 +122,9 @@ function claudeSessionToken(args: string[]): string | null {
       const key = option[1]!;
       const value = option[2] ?? args[++index];
       if (seen.has(key) || !value || value.startsWith("-")) return null;
+      // Values are not validated here: the effort level never names the conversation,
+      // and specs may carry levels newer than this list. Duplicates stay indeterminate.
       seen.add(key);
-      if (key === "effort" && !["low", "medium", "high", "xhigh", "max"].includes(value)) return null;
       continue;
     }
     if (arg === "--dangerously-skip-permissions") continue;
@@ -149,7 +150,7 @@ function claudeSessionIdentity(args: string[]): string | null | { unparsed: true
     const effort = arg.match(/^--effort(?:=(.*))?$/);
     if (effort) {
       const value = effort[1] ?? args[++index];
-      if (effortSeen || !value || !["low", "medium", "high", "xhigh", "max"].includes(value)) return unparsed;
+      if (effortSeen || !value || value.startsWith("-")) return unparsed;
       effortSeen = true;
       continue;
     }
