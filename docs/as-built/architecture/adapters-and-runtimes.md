@@ -123,7 +123,11 @@ capability-checked launch path. Valid legacy policy refs without provenance also
 select the floor. A legacy member `none` masks the inherited rig posture even
 without provenance. Absent and `deliberate_none` choices retain native inheritance. Restore passes its
 current re-derived posture, so a stale persisted custom floor cannot replace a
-newly resolved `auto` or `full_bypass`. `bundle-behaviour.ts` is the read-only
+newly resolved `auto` or `full_bypass`. Seat status reports `effectiveMode: inherit`
+for native inheritance and the CLI displays “inherit native settings”. Prior launch
+arguments and the unverified native effect remain separate; this status read does
+not inspect or claim the native settings merge. The Claude kernel allowance does
+not select a permission mode and therefore also reports native inheritance. `bundle-behaviour.ts` is the read-only
 preview of the same mapping for an unopened bundle (see
 `packaging-bootstrap-bundles.md`).
 

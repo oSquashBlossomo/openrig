@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "yaml";
 import { createFullTestDb } from "./helpers/test-app.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { NativePermissionStore } from "../src/domain/native-permission-store.js";
+import { SeatStatusService } from "../src/domain/seat-status-service.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { StartupOrchestrator } from "../src/domain/startup-orchestrator.js";
@@ -76,6 +78,24 @@ describe("kernel operational launch default", () => {
       }
     });
   }
+  it("Claude kernel status reports native inheritance independently of its retained operational grants", async () => {
+    const configDir = mkdtempSync(join(tmpdir(), "kernel-status-native-"));
+    try {
+      writeFileSync(join(configDir, "settings.json"), JSON.stringify({ permissions: { defaultMode: "auto" } }));
+      vi.stubEnv("CLAUDE_CONFIG_DIR", configDir);
+      const f = fixture("claude-code"), t = transport();
+      await new ClaudeCodeAdapter(t).launchHarness(f.store.apply(f.binding, "claude-code"), { name: "operator" });
+      const command = t.send.mock.calls[0]![1] as string;
+      expect(command).not.toMatch(/--permission-mode|--dangerously-skip-permissions/);
+      const settings = JSON.parse(command.match(/'--settings' '([^']+)'/)![1]!);
+      expect(Object.keys(settings.permissions)).toEqual(["allow"]);
+      expect(settings.permissions.allow).toContain("Bash(rig:*)");
+      const status = new SeatStatusService({ rigRepo: f.rigRepo }).getStatus("operator.agent@kernel");
+      expect(status).toMatchObject({ ok: true, status: { permissions: { selectionState: "inherit", nativeEffect: "unverified",
+        effective: { effectiveMode: "inherit", source: "kernel_default", launchPosture: "floor" } } } });
+      expect(readFileSync(join(configDir, "settings.json"), "utf8")).toBe(JSON.stringify({ permissions: { defaultMode: "auto" } }));
+    } finally { rmSync(configDir, { recursive: true, force: true }); }
+  });
   it.each(["codex", "claude-code"])("%s other rigs with kernel-like cwd/pane keep the floor, even with a stale marker", async runtime => {
     const f = fixture(runtime, "project"), t = transport();
     const b = f.store.apply({ ...f.binding, kernelAuthority: true }, runtime);

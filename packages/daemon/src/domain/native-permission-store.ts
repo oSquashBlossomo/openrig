@@ -12,6 +12,7 @@ export interface StoredNativePermissionSelection extends NativePermissionSelecti
 export type PermissionModeSource = "explicit" | "member_spec" | "rig_spec" | "kernel_default" | "system_default";
 
 export interface ResolvedSeatPermission {
+  /** "inherit" leaves the native mode unverified; it is not an observed launch effect. */
   effectiveMode: string;
   source: PermissionModeSource;
   launchPosture?: "floor" | "full_bypass" | "auto";
@@ -162,7 +163,7 @@ export class NativePermissionStore {
     // Level 2: Member-level declaration in rig.yaml
     // Precedence: member's own declaration must never be silently outranked by a rig-wide default.
     if (memberPolicy !== null) {
-      const effectivePosture = nodePosture ?? builtinLaunchPosture(memberPolicy);
+      const effectivePosture = runtime === "claude-code" && memberPolicy === "none" ? "floor" : nodePosture ?? builtinLaunchPosture(memberPolicy);
 
       if (effectivePosture === "auto") {
         if (runtime !== "claude-code") {
@@ -191,17 +192,13 @@ export class NativePermissionStore {
       }
 
       // effectivePosture === "floor" (e.g. builtin:locked, none, or custom floor policy)
-      return {
-        effectiveMode: runtime === "codex" ? "floor" : "acceptEdits",
-        source: "member_spec",
-        launchPosture: "floor",
-      };
+      return this.floorStatus(nodeId, runtime, "member_spec");
     }
 
     // Kernel's operational default also replaces persisted no-policy floor provenance.
     if (this.hasKernelDefault(nodeId, runtime)) {
-      return { effectiveMode: runtime === "codex" ? "full_bypass" : "acceptEdits", source: "kernel_default",
-        launchPosture: runtime === "codex" ? "full_bypass" : "floor" };
+      return runtime === "claude-code" ? this.floorStatus(nodeId, runtime, "kernel_default")
+        : { effectiveMode: "full_bypass", source: "kernel_default", launchPosture: "full_bypass" };
     }
 
     // Level 3: Rig-level declaration in rig.yaml
@@ -212,7 +209,7 @@ export class NativePermissionStore {
     );
 
     if (rigPolicy !== null || effectiveRigPosture !== null) {
-      const posture = effectiveRigPosture ?? "floor";
+      const posture = runtime === "claude-code" && rigPolicy === "none" ? "floor" : effectiveRigPosture ?? "floor";
 
       if (posture === "auto") {
         if (runtime !== "claude-code") {
@@ -241,19 +238,19 @@ export class NativePermissionStore {
       }
 
       // posture === "floor" (e.g. builtin:locked, none)
-      return {
-        effectiveMode: runtime === "codex" ? "floor" : "acceptEdits",
-        source: "rig_spec",
-        launchPosture: "floor",
-      };
+      return this.floorStatus(nodeId, runtime, "rig_spec");
     }
 
     // Level 4: System default floor
-    return {
-      effectiveMode: runtime === "codex" ? "floor" : "acceptEdits",
-      source: "system_default",
-      launchPosture: "floor",
-    };
+    return this.floorStatus(nodeId, runtime, "system_default");
+  }
+
+  private floorStatus(nodeId: string, runtime: string, source: PermissionModeSource): ResolvedSeatPermission {
+    // Use the same authored-floor/native-inheritance boundary as launch. Status
+    // does not inspect native settings or promote prior argv into effective mode.
+    const override = runtime === "claude-code" ? this.launchOverride(nodeId, runtime, "floor") : undefined;
+    const inherit = runtime === "claude-code" && !override?.claudePermissionFloor;
+    return { effectiveMode: inherit ? "inherit" : runtime === "codex" ? "floor" : "acceptEdits", source, launchPosture: "floor" };
   }
 
   apply(binding: NodeBinding, runtime: string): NodeBinding {
