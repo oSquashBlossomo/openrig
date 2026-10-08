@@ -46,6 +46,7 @@ vi.mock("@xterm/xterm", () => ({ Terminal: class {
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 
 import { FocusedTerminal } from "../src/components/terminal/FocusedTerminal.js";
+import { TerminalPreviewPopover } from "../src/components/topology/TerminalPreviewPopover.js";
 
 // React's scheduler captured the real setImmediate when it loaded; tests that
 // step it must yield real macrotasks (fake timers replace the global).
@@ -752,4 +753,47 @@ it("refuses keys and Copy begun after B commits before A passive teardown", asyn
     try { act(() => { root.unmount(); }); }
     finally { container.remove(); }
   }
+});
+
+// Pinch zoom (scale > 1) deliberately gets no keyboard fitting; the popover's
+// own visible-viewport cap must then be a scroll container on both axes so
+// native rows, wide columns and the toolbar stay reachable. Utility CSS is
+// supplied (jsdom loads no stylesheet). DOM/layout model, not Safari proof.
+it("zoom-capped natural popover has a vertical user-scroll path to its controls", async () => {
+  // Supply actual utility semantics: the source UI stylesheet is not loaded in jsdom.
+  const style=document.createElement("style");
+  style.textContent=".overflow-hidden {overflow:hidden} .overflow-auto {overflow:auto} .overflow-y-auto {overflow-y:auto} .overflow-y-scroll {overflow-y:scroll}";
+  document.head.appendChild(style);
+  try {
+    vv.set({width:200,height:400,scale:5});
+    const view=render(<TerminalPreviewPopover rigId="r" logicalId="a" sessionName="fixture" testIdPrefix="zoom" />);
+    fireEvent.click(view.getByTestId("zoom-terminal-open"));
+    ready(s.sockets[0]);
+    await frame();
+    const popover=view.getByTestId("zoom-terminal-popover");
+    const area=inputArea(view);
+    expect(popover.style.maxHeight).toBe("384px");
+    expect(area.style.maxHeight).toBe(""); // Pinch zoom deliberately does not create keyboard fitting.
+    Object.defineProperty(popover,"clientHeight",{configurable:true,value:384});
+    Object.defineProperty(popover,"scrollHeight",{configurable:true,value:600});
+    const paste=view.getByRole("button",{name:/^paste/i});
+    Object.defineProperty(popover,"clientWidth",{configurable:true,value:184});
+    Object.defineProperty(popover,"scrollWidth",{configurable:true,value:900});
+    let hasPath=false, hasHorizontalPath=false;
+    for(let node:HTMLElement|null=paste.parentElement;node;node=node.parentElement){
+      const css=getComputedStyle(node); const y=css.overflowY||css.overflow;
+      if(/auto|scroll/.test(y) && node.scrollHeight>node.clientHeight) hasPath=true;
+      const x=css.overflowX||css.overflow;
+      if(/auto|scroll/.test(x) && node.scrollWidth>node.clientWidth) hasHorizontalPath=true;
+      if(node===popover)break;
+    }
+    expect(hasPath).toBe(true);
+    expect(hasHorizontalPath).toBe(true);
+    // The cap and its fixed visible-viewport bounds are unchanged; scrolling
+    // it resizes nothing and sends nothing upstream.
+    expect(popover.style.maxWidth).toBe("184px");
+    expect(Number.parseFloat(popover.style.left)).toBeGreaterThanOrEqual(8);
+    expect(Number.parseFloat(popover.style.top)).toBeGreaterThanOrEqual(8);
+    expect(s.sockets[0].sent).toEqual([]);
+  } finally {style.remove();}
 });

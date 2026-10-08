@@ -256,7 +256,10 @@ export function TerminalPreviewPopover({
         // smoked-glass surface, while the xterm renderer itself stays opaque for
         // reliable erase/redraw. The popover drops its redundant bg so the wrapper
         // remains the single terminal plate.
-        "nodrag nopan fixed z-[1000] max-h-[calc(100vh-1rem)] max-w-[calc(100vw-1rem)] overflow-hidden p-1.5 backdrop-blur-sm",
+        // The visible-viewport cap scrolls on both axes, so native rows, wide
+        // columns and the toolbar stay reachable where nothing inside fits
+        // them (pinch zoom gets no keyboard fitting).
+        "nodrag nopan fixed z-[1000] max-h-[calc(100vh-1rem)] max-w-[calc(100vw-1rem)] overflow-auto p-1.5 backdrop-blur-sm",
         // OPR.0.4.0.39: the shell sizes to the terminal (w-max) for BOTH static + live
         // - no reshape on go-live, no loose empty width. The inner is the canonical
         // geometry width so the shell tracks the column count automatically.

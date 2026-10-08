@@ -365,6 +365,8 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
   // Pending delayed prompt reveals; cancelled on unmount, session change and
   // when the user takes over scrolling.
   const promptScrollCancelsRef = useRef(new Set<() => void>());
+  // The latest accepted input's reveal; the next accepted input supersedes it.
+  const inputRevealRef = useRef<(() => void) | null>(null);
   // Bumped by user scroll/pan/key intent on the scroll owner. Output and
   // geometry restores only put back offsets the user did not change.
   const userScrollEpochRef = useRef(0);
@@ -443,11 +445,16 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
     for (const frame of frames) wsc.send(frame);
     // Accepted input brings this viewer's prompt into view in its actual
     // scroll owner (a toolbar key moves no caret, so nothing else would);
-    // the reveal is tracked so a wheel/touch takeover or teardown cancels it.
+    // the reveal is tracked so a wheel/touch takeover or teardown cancels it,
+    // and it supersedes (cancels and retires) the previous input's reveal.
     const host = containerRef.current;
     if (host) {
+      const prior = inputRevealRef.current;
+      if (prior) { prior(); promptScrollCancelsRef.current.delete(prior); }
       const gen = generationRef.current;
-      promptScrollCancelsRef.current.add(scrollTerminalViewportToPrompt(host, () => generationRef.current === gen && scrollOffsetRef.current === 0));
+      const cancel = scrollTerminalViewportToPrompt(host, () => generationRef.current === gen && scrollOffsetRef.current === 0);
+      inputRevealRef.current = cancel;
+      promptScrollCancelsRef.current.add(cancel);
     }
     return true;
   }, []);

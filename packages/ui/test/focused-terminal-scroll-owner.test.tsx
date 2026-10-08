@@ -248,3 +248,28 @@ it.each(["key", "typing"])("natural keyboard viewport returns to the prompt afte
     expect(state.sockets[0].sent).toHaveLength(1);
   } finally { delete (window as any).visualViewport; }
 });
+
+// Each accepted input supersedes the previous input's prompt reveal: rapid
+// typing keeps one reveal's worth of pending work, sends every frame once,
+// still lands on the prompt, and teardown leaves nothing behind.
+it("rapid accepted input keeps one pending prompt reveal; frames exact; unmount leaves no reveal work", async () => {
+  const { mounted, wrapper, writes } = mountViewer("fixture");
+  await advance(1);
+  await send(state.sockets[0], { type: "geometry", cols: 155, rows: 37 });
+  await advance(3000);
+  wrapper.scrollTop = 40;
+  const baseline = vi.getTimerCount();
+  await act(async () => { for (let i = 0; i < 100; i++) state.terms[0]!.dataHandler!("x"); });
+  // One input reveal's frame + 50ms pass, not one per keystroke.
+  expect(vi.getTimerCount() - baseline).toBeLessThanOrEqual(2);
+  expect(state.sockets[0].sent).toEqual(Array.from({ length: 100 }, () => JSON.stringify({ type: "text", text: "x" })));
+  await advance(100);
+  expect(wrapper.scrollTop).toBe(356);
+  expect(vi.getTimerCount()).toBe(baseline);
+  // A last reveal in flight is cancelled by unmount.
+  await act(async () => { state.terms[0]!.dataHandler!("y"); });
+  const before = writes.length;
+  mounted.unmount();
+  await advance(100);
+  expect(writes.length).toBe(before);
+});
