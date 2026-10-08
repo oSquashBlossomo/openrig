@@ -31,6 +31,8 @@ interface AnchorRect {
 interface PopoverPosition {
   left: number;
   top: number;
+  /** Visible-viewport bound; the class max-height covers the first paint. */
+  maxHeight?: number;
 }
 
 interface ViewportSize {
@@ -69,6 +71,13 @@ function rectFromElement(el: HTMLElement | null): AnchorRect {
     top: rect?.top ?? POPOVER_MARGIN,
     bottom: rect?.bottom ?? POPOVER_MARGIN,
   };
+}
+
+/** The visible viewport height and offset: a phone's software keyboard
+ *  shrinks (and may pan) the visual viewport without a window resize. */
+function visibleViewport(): ViewportSize & { top: number } {
+  const vv = window.visualViewport;
+  return { width: window.innerWidth, height: vv?.height ?? window.innerHeight, top: vv?.offsetTop ?? 0 };
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -125,10 +134,14 @@ export function TerminalPreviewPopover({
 
   const updatePosition = useCallback(() => {
     if (!open) return;
-    const nextAnchor = rectFromElement(rootRef.current);
+    const anchor = rectFromElement(rootRef.current);
     const width = popoverRef.current?.offsetWidth || FALLBACK_POPOVER_WIDTH;
     const height = popoverRef.current?.offsetHeight || FALLBACK_POPOVER_HEIGHT;
-    setPosition(computeTerminalPopoverPosition(nextAnchor, width, height));
+    // Place within the visible band (visual-viewport coordinates), then
+    // convert back to the layout viewport that position:fixed uses.
+    const view = visibleViewport();
+    const next = computeTerminalPopoverPosition({ ...anchor, top: anchor.top - view.top, bottom: anchor.bottom - view.top }, width, height, view);
+    setPosition({ left: next.left, top: next.top + view.top, maxHeight: view.height - POPOVER_MARGIN * 2 });
   }, [open]);
 
   useEffect(() => {
@@ -166,12 +179,17 @@ export function TerminalPreviewPopover({
       ? null
       : new ResizeObserver(handleViewportChange);
     if (popoverRef.current) observer?.observe(popoverRef.current);
+    const vv = window.visualViewport;
     window.addEventListener("resize", handleViewportChange);
     window.addEventListener("scroll", handleViewportChange, true);
+    vv?.addEventListener("resize", handleViewportChange);
+    vv?.addEventListener("scroll", handleViewportChange);
     return () => {
       observer?.disconnect();
       window.removeEventListener("resize", handleViewportChange);
       window.removeEventListener("scroll", handleViewportChange, true);
+      vv?.removeEventListener("resize", handleViewportChange);
+      vv?.removeEventListener("scroll", handleViewportChange);
     };
   }, [open, updatePosition]);
 
@@ -234,7 +252,7 @@ export function TerminalPreviewPopover({
         "cursor-default select-text font-mono text-[8px] text-stone-50",
         popoverClassName,
       )}
-      style={{ left: position.left, top: position.top }}
+      style={{ left: position.left, top: position.top, maxHeight: position.maxHeight }}
       onClick={(event) => event.stopPropagation()}
       onPointerDown={(event) => event.stopPropagation()}
     >

@@ -63,6 +63,18 @@ describe("xterm input mapper", () => {
     expect(result).toEqual([{ type: "keys", keys: ["DC"] }]);
   });
 
+  // xterm's Shift+Tab and Shift+Left sequences are tmux key names, not
+  // literal escape text, so the pane receives the chord exactly once.
+  it("Shift+Tab maps to BTab and Shift+Left to S-Left", () => {
+    expect(mapXtermInput("\x1b[Z")).toEqual([{ type: "keys", keys: ["BTab"] }]);
+    expect(mapXtermInput("\x1b[1;2D")).toEqual([{ type: "keys", keys: ["S-Left"] }]);
+    expect(mapXtermInput("a\x1b[Zb")).toEqual([
+      { type: "text", text: "a" },
+      { type: "keys", keys: ["BTab"] },
+      { type: "text", text: "b" },
+    ]);
+  });
+
   it("never emits implicit Enter for printable text", () => {
     const result = mapXtermInput("abcdef");
     for (const msg of result) {

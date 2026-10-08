@@ -8,10 +8,10 @@ import React from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, within } from "@testing-library/react";
 
-const s = vi.hoisted(() => ({ sockets: [] as any[], wheel: null as ((ev: { deltaY: number }) => boolean) | null, onData: null as ((d: string) => void) | null, bottom: 0 }));
+const s = vi.hoisted(() => ({ sockets: [] as any[], wheel: null as ((ev: { deltaY: number }) => boolean) | null, onData: null as ((d: string) => void) | null, bottom: 0, term: null as unknown }));
 vi.mock("@xterm/xterm", () => ({ Terminal: class {
   options = { fontSize: 12 }; cols = 90; rows = 27;
-  open(el: HTMLElement) { el.appendChild(document.createElement("div")); }
+  open(el: HTMLElement) { el.appendChild(document.createElement("div")); s.term = this; }
   resize(cols: number, rows: number) { this.cols = cols; this.rows = rows; }
   write(_d: string, done?: () => void) { done?.(); }
   focus() {} dispose() {}
@@ -44,11 +44,11 @@ const ready = (w: any) => { open(w); act(() => w.onmessage?.({ data: JSON.string
 const keys = (view: ReturnType<typeof render>, session = "fixture") => within(view.getByRole("group", { name: `Terminal keys for ${session}` }));
 const press = (view: ReturnType<typeof render>, name: RegExp, session?: string) => fireEvent.click(keys(view, session).getByRole("button", { name }));
 
-it.each(["natural", "width", "contain"] as const)("offers the six keys in %s fit, disabled until native geometry, sending nothing on mount", (fit) => {
+it.each(["natural", "width", "contain"] as const)("offers the keys in %s fit, disabled until native geometry, sending nothing on mount", (fit) => {
   const view = render(<FocusedTerminal sessionName="fixture" fit={fit} />);
   const buttons = keys(view).getAllByRole("button");
   expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual([
-    "Interrupt (Ctrl+C)", "Escape", "Tab", "Up arrow", "Down arrow", "Enter",
+    "Interrupt (Ctrl+C)", "Escape", "Tab", "Shift+Tab", "Up arrow", "Down arrow", "Shift+Left arrow", "Enter",
   ]);
   expect(buttons.every((b) => (b as HTMLButtonElement).disabled)).toBe(true);
   open(s.sockets[0]);
@@ -59,11 +59,38 @@ it.each(["natural", "width", "contain"] as const)("offers the six keys in %s fit
 it("each press sends exactly one native key frame to the ready socket", () => {
   const view = render(<FocusedTerminal sessionName="fixture" />);
   ready(s.sockets[0]);
-  for (const name of [/interrupt/i, /escape/i, /^tab$/i, /up arrow/i, /down arrow/i, /^enter$/i]) press(view, name);
+  for (const name of [/interrupt/i, /escape/i, /^tab$/i, /^shift\+tab$/i, /^up arrow/i, /down arrow/i, /^shift\+left arrow$/i, /^enter$/i]) press(view, name);
   expect(s.sockets[0].sent.map((f: string) => JSON.parse(f))).toEqual(
-    ["C-c", "Escape", "Tab", "Up", "Down", "Enter"].map((k) => ({ type: "keys", keys: [k] })),
+    ["C-c", "Escape", "Tab", "BTab", "Up", "Down", "S-Left", "Enter"].map((k) => ({ type: "keys", keys: [k] })),
   );
   expect(s.sockets).toHaveLength(1);
+});
+
+// Shift is not a sticky browser modifier: the chord is one press, and the
+// next plain key is unshifted.
+it("Shift+Tab and Shift+Left are single chords that do not shift the next key", () => {
+  const view = render(<FocusedTerminal sessionName="fixture" />);
+  ready(s.sockets[0]);
+  press(view, /^shift\+tab$/i);
+  press(view, /^tab$/i);
+  press(view, /^shift\+left arrow$/i);
+  act(() => { s.onData!("\x1b[D"); });
+  expect(s.sockets[0].sent.map((f: string) => JSON.parse(f))).toEqual(
+    ["BTab", "Tab", "S-Left", "Left"].map((k) => ({ type: "keys", keys: [k] })),
+  );
+});
+
+it("Keyboard focuses the terminal input and sends nothing", () => {
+  const focus = vi.fn();
+  const view = render(<FocusedTerminal sessionName="fixture" autoFocus={false} />);
+  ready(s.sockets[0]);
+  const term = s.term as { focus(): void };
+  term.focus = focus;
+  const keyboard = view.getByRole("button", { name: /show keyboard/i });
+  expect(fireEvent.mouseDown(keyboard)).toBe(false);
+  fireEvent.click(keyboard);
+  expect(focus).toHaveBeenCalledTimes(1);
+  expect(s.sockets[0].sent).toEqual([]);
 });
 
 it("keeps focus where the operator is typing", () => {

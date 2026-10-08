@@ -8,7 +8,7 @@
 // Heavy leaves (FocusedTerminal xterm+WS, SessionPreviewPane polling) are stubbed.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { act, render, screen, fireEvent, cleanup } from "@testing-library/react";
 
 vi.mock("../src/components/terminal/FocusedTerminal.js", () => ({
   FocusedTerminal: ({ sessionName }: { sessionName: string }) => (
@@ -87,5 +87,36 @@ describe("Progressive terminal popovers coexist under the global cap (rev1-r2 fi
     expect(screen.queryByTestId("live-a@r")).toBeNull();
     expect(screen.getByTestId("live-b@r")).toBeTruthy();
     expect(screen.getByTestId("live-c@r")).toBeTruthy();
+  });
+});
+
+// A phone's software keyboard shrinks (and may pan) the visual viewport with
+// no window resize; the fixed popover must move into the visible band so its
+// live terminal is not left under the keyboard. Without a keyboard the
+// position is unchanged.
+describe("Terminal popover follows the visible viewport", () => {
+  it("repositions above a software keyboard and stays put without one", () => {
+    const vv = Object.assign(new EventTarget(), { width: 390, height: 844, offsetTop: 0, offsetLeft: 0, scale: 1 });
+    Object.defineProperty(window, "visualViewport", { configurable: true, value: vv });
+    Object.defineProperty(window, "innerHeight", { configurable: true, writable: true, value: 844 });
+    try {
+      render(<TerminalPreviewPopover rigId="r1" logicalId="a" sessionName="a@r" testIdPrefix="pk" />);
+      screen.getByTestId("pk-terminal-open").parentElement!.getBoundingClientRect = () =>
+        ({ left: 20, right: 40, top: 600, bottom: 620, width: 20, height: 20, x: 20, y: 600, toJSON() {} }) as DOMRect;
+      fireEvent.click(screen.getByTestId("pk-terminal-open"));
+      const popover = screen.getByTestId("pk-terminal-popover");
+      // Fallback 240px tall: no room below the anchor, so it opens above it.
+      expect(popover.style.top).toBe("352px");
+
+      act(() => { Object.assign(vv, { height: 300, offsetTop: 100 }); vv.dispatchEvent(new Event("resize")); });
+      const top = Number.parseFloat(popover.style.top);
+      expect(top).toBeGreaterThanOrEqual(100);
+      expect(top + 240).toBeLessThanOrEqual(400);
+      // Never taller than the visible band (8px margins), so the live
+      // terminal's own fitting keeps its toolbar inside the popover.
+      expect(popover.style.maxHeight).toBe("284px");
+    } finally {
+      delete (window as any).visualViewport;
+    }
   });
 });
