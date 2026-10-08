@@ -133,8 +133,7 @@ afterEach(() => {
 });
 
 /** Device of this viewport size (the screen matches it; rotation swaps
- *  both); height defaults to jsdom's 768. Phones are narrower than 600px on
- *  one side, tablets are at least 600px on both. */
+ *  both); height defaults to jsdom's 768. */
 function setWidth(width: number, height = 768) {
   Object.defineProperty(window.screen, "width", { configurable: true, value: width });
   Object.defineProperty(window.screen, "height", { configurable: true, value: height });
@@ -196,8 +195,8 @@ function tapNode(el: HTMLElement) {
 }
 
 describe("narrow Graph tab mounts an interactive phone graph (not the table)", () => {
-  it.each([[430, 932], [932, 430], [834, 1194]])("at %ix%ipx the host Graph tab is the phone graph; Table stays its own tab", async (width, height) => {
-    const { container, router } = renderAt("/topology", width, height);
+  it.each([[430], [932], [834]])("at %ipx the host Graph tab is the phone graph; Table stays its own tab", async (width) => {
+    const { container, router } = renderAt("/topology", width);
     await waitFor(() => expect(q(container, "[data-testid='phone-graph-canvas']")).toBeTruthy(), { timeout: 5000 });
     expect(q(container, "[data-testid='topology-host-tab-graph']")?.getAttribute("data-active")).toBe("true");
     // Neither the desktop canvas nor the retired fallback.
@@ -463,7 +462,7 @@ describe("selection and scope survive rotation and the 1024px crossing", () => {
     await waitFor(() => expect(q(container, "[data-testid='phone-graph-seat-details']")).toBeTruthy());
     const canvas = q(container, "[data-testid='phone-graph-canvas']");
 
-    act(() => setWidth(932, 430));
+    act(() => setWidth(932));
     await waitFor(() => expect(q(container, "[data-testid='phone-graph-seat-details']")).toBeTruthy());
     // Same element: rotation did not remount the graph (local state survives).
     expect(q(container, "[data-testid='phone-graph-canvas']")).toBe(canvas);
@@ -473,7 +472,7 @@ describe("selection and scope survive rotation and the 1024px crossing", () => {
     await waitFor(() => expect(q(container, "[data-testid='graph-view']")).toBeTruthy(), { timeout: 5000 });
     expect(router.state.location.search).toMatchObject({ selectedRig: "abc-rig", selectedNode: "core.worker" });
 
-    act(() => setWidth(834, 1194));
+    act(() => setWidth(834));
     const details = await waitFor(() => {
       const el = q(container, "[data-testid='phone-graph-seat-details']");
       expect(el).toBeTruthy();
@@ -536,7 +535,7 @@ describe("camera controls never cover node controls (reserved space, measured su
       return { x: 0, y: 0, top: 0, left: 0, right: box.width, bottom: box.height, ...box, toJSON: () => box } as DOMRect;
     };
     try {
-      const { container } = renderAt("/topology/rig/abc-rig", 932, 430);
+      const { container } = renderAt("/topology/rig/abc-rig", 932);
       await seatChip(container, "ops.watch");
       const g = graphs["abc-rig"] as Graph;
       const rigModel = parseSpatialRig("local", { rigId: "abc-rig", rigName: "acme", graph: g });
@@ -623,311 +622,102 @@ function stubInputs(initial: Inputs) {
   };
 }
 
-/** jsdom has no layout: give the drawable surface a width (its height is
- *  whatever the graph sets on it). */
-function stubSurfaceWidth(width: number) {
-  const original = HTMLElement.prototype.getBoundingClientRect;
-  HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
-    if (this.getAttribute("data-testid") !== "phone-graph-surface") return original.call(this);
-    const box = { width, height: parseFloat(this.style.height) || 0 };
-    return { x: 0, y: 0, top: 0, left: 0, right: box.width, bottom: box.height, ...box, toJSON: () => box } as DOMRect;
-  };
-  return () => { HTMLElement.prototype.getBoundingClientRect = original; };
+const SCOPES = [
+  ["host", "/topology", "host-multi-rig-graph"],
+  ["rig", "/topology/rig/abc-rig", "graph-view"],
+  ["pod", "/topology/pod/abc-rig/core", "graph-view"],
+] as const;
+
+async function graphFrame(container: HTMLElement, renderer: string) {
+  await waitFor(() => expect(q(container, `[data-testid='${renderer}']`)).toBeTruthy(), { timeout: 5000 });
+  return q(container, "[data-testid='topology-graph-frame']")!;
 }
 
-/** Every node's drawn box in surface pixels, from the rendered camera. */
-function drawnBoxes(container: HTMLElement) {
-  const vpEl = container.querySelector(".react-flow__viewport") as HTMLElement;
-  const m = /translate\(([-\d.]+)px,\s*([-\d.]+)px\)\s*scale\(([-\d.]+)\)/.exec(vpEl.style.transform)!;
-  const vp = { x: Number(m[1]), y: Number(m[2]), zoom: Number(m[3]) };
-  const boxes = qa(container, ".react-flow__node").map((el) => {
-    const t = /translate\(([-\d.]+)px,\s*([-\d.]+)px\)/.exec(el.style.transform)!;
-    const left = vp.x + Number(t[1]) * vp.zoom;
-    const top = vp.y + Number(t[2]) * vp.zoom;
-    return { left, top, right: left + parseFloat(el.style.width) * vp.zoom, bottom: top + parseFloat(el.style.height) * vp.zoom };
-  });
-  return { vp, boxes };
+/** jsdom has no layout: the frame's sizing rule is what decides whether it
+ *  keeps a tall allocation (shrink-0 + min height) or shares what is left. */
+function expectTallFrame(container: HTMLElement, frame: HTMLElement) {
+  expect(frame.getAttribute("data-tall")).toBe("true");
+  expect(frame.className).toContain("shrink-0");
+  expect(frame.className).toMatch(/min-h-\[max\(24rem,calc\(100svh-/);
+  expect(frame.className).not.toContain("min-h-0");
+  // The sections below the graph (Recent at host and rig scope; pod scope's
+  // Graph tab has none) follow it in the page, so they are pushed down and
+  // scrolled to rather than squeezing it.
+  const recent = q(container, "[data-testid='topology-recent-frame']");
+  if (recent) expect(frame.compareDocumentPosition(recent) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  return recent;
 }
 
-function denseFleet(rigs: number, seatsPerRig: number) {
-  summary = Array.from({ length: rigs }, (_, r) => ({ id: `r${r}`, name: `fleet-${r}`, nodeCount: seatsPerRig }));
-  graphs = Object.fromEntries(summary.map((r) => [r.id, {
-    nodes: [
-      { id: `pod-${r.id}`, type: "podGroup", data: { podNamespace: "core" } },
-      ...Array.from({ length: seatsPerRig }, (_, i) => seat(`${r.id}.s${i}`, `pod-${r.id}`)),
-    ],
-    edges: [],
-  }]));
-}
-
-describe("tablet page flow: a readable full-width graph the page scrolls through", () => {
+describe("touch tablets keep the desktop graph in a tall frame", () => {
   const restores: Array<() => void> = [];
   afterEach(() => { while (restores.length) restores.pop()!(); });
 
-  it.each([[1180, 820], [1194, 834]])("iPad landscape %ix%ipx (touch) keeps the touch graph at host, rig and pod scope", async (width, height) => {
-    restores.push(stubInputs(TOUCH_ONLY).restore);
-    for (const path of ["/topology", "/topology/rig/abc-rig", "/topology/pod/abc-rig/core"]) {
-      const { container, unmount } = renderAt(path, width, height);
-      const canvas = await waitFor(() => { const el = q(container, "[data-testid='phone-graph-canvas']"); expect(el).toBeTruthy(); return el!; }, { timeout: 5000 });
-      expect(canvas.getAttribute("data-flow")).toBe("page");
-      await seatChip(container, "core.lead");
-      expect(q(container, "[data-testid='host-multi-rig-graph']")).toBeNull();
-      expect(q(container, "[data-testid='graph-view']")).toBeNull();
-      // The shell itself is still the wide layout (breakpoint unchanged).
-      expect(q(container, "[data-testid='mobile-rail-tray']")).toBeNull();
-      unmount();
-    }
-  }, 30000);
+  for (const [w, h] of [[820, 1180], [834, 1194], [1180, 820], [1194, 834]] as const) {
+    it.each(SCOPES)(`${w}x${h} %s scope: the desktop renderer in a tall, non-shrinking frame`, async (scope, path, renderer) => {
+      restores.push(stubInputs(TOUCH_ONLY).restore);
+      const { container } = renderAt(path, w, h);
+      const frame = await graphFrame(container, renderer);
+      expect(q(container, "[data-testid='phone-topology-graph']")).toBeNull();
+      expect(frame.contains(q(container, `[data-testid='${renderer}']`))).toBe(true);
+      expect(expectTallFrame(container, frame) !== null).toBe(scope !== "pod");
+      // The shell breakpoint is unchanged: portrait keeps the narrow shell.
+      expect(q(container, "[data-testid='mobile-rail-tray']") === null).toBe(w >= 1024);
+    }, 15000);
+  }
 
-  it("a mouse-only desktop at iPad-landscape width keeps the desktop canvas; a touch phone keeps its bounded canvas", async () => {
+  it.each([
+    ["an attached trackpad/mouse as primary pointer", TOUCH_WITH_POINTER],
+    ["touch points with fine-pointer media only", TOUCH_POINTS_ONLY],
+  ] as const)("834x1194 with %s still gets the tall desktop graph", async (_label, inputs) => {
+    restores.push(stubInputs(inputs).restore);
+    const { container } = renderAt("/topology", 834, 1194);
+    expectTallFrame(container, await graphFrame(container, "host-multi-rig-graph"));
+  }, 15000);
+
+  it("a mouse-only desktop keeps the shared frame; a narrow mouse-only window and touch phones keep the phone graph", async () => {
     restores.push(stubInputs(MOUSE_ONLY).restore);
-    const desktop = renderAt("/topology", 1180, 820);
-    await waitFor(() => expect(q(desktop.container, "[data-testid='host-multi-rig-graph']")).toBeTruthy(), { timeout: 5000 });
-    expect(q(desktop.container, "[data-testid='phone-topology-graph']")).toBeNull();
-    desktop.unmount();
+    for (const [w, h] of [[1440, 900], [1180, 820]] as const) {
+      const desktop = renderAt("/topology", w, h);
+      const frame = await graphFrame(desktop.container, "host-multi-rig-graph");
+      expect(frame.getAttribute("data-tall")).toBeNull();
+      expect(frame.className).toContain("min-h-0");
+      expect(frame.className).not.toContain("shrink-0");
+      desktop.unmount();
+    }
+    const narrow = renderAt("/topology", 834, 1194);
+    await waitFor(() => expect(q(narrow.container, "[data-testid='phone-graph-canvas']")).toBeTruthy(), { timeout: 5000 });
+    narrow.unmount();
 
     restores.push(stubInputs(TOUCH_ONLY).restore);
     for (const [w, h] of [[430, 932], [932, 430]] as const) {
       const phone = renderAt("/topology/rig/abc-rig", w, h);
-      const canvas = await waitFor(() => { const el = q(phone.container, "[data-testid='phone-graph-canvas']"); expect(el).toBeTruthy(); return el!; }, { timeout: 5000 });
-      expect(canvas.getAttribute("data-flow")).toBe("bounded");
-      expect(canvas.className).toContain("58svh");
       await seatChip(phone.container, "core.lead");
-      expect((phone.container.querySelector(".react-flow") as HTMLElement).className).toContain("touch-none");
+      expect(q(phone.container, "[data-testid='topology-graph-frame']")).toBeNull();
+      expect(q(phone.container, "[data-testid='graph-view']")).toBeNull();
       phone.unmount();
     }
-  }, 20000);
-
-  it.each([
-    ["touch only", TOUCH_ONLY],
-    ["touch with an attached trackpad/mouse as primary pointer", TOUCH_WITH_POINTER],
-    ["touch points reported, fine pointer media only", TOUCH_POINTS_ONLY],
-  ] as const)("1180x820 %s: a touch-capable tablet keeps the tablet graph", async (_label, inputs) => {
-    restores.push(stubInputs(inputs).restore);
-    const { container } = renderAt("/topology", 1180, 820);
-    const canvas = await waitFor(() => { const el = q(container, "[data-testid='phone-graph-canvas']"); expect(el).toBeTruthy(); return el!; }, { timeout: 5000 });
-    expect(canvas.getAttribute("data-flow")).toBe("page");
-    expect(q(container, "[data-testid='host-multi-rig-graph']")).toBeNull();
-  }, 15000);
-
-  it("connecting and disconnecting a pointer keeps the open tablet graph and terminal; a mouse-only desktop follows a touch capability change", async () => {
-    details["core.lead"] = seatDetail("core.lead");
-    const inputs = stubInputs(TOUCH_ONLY);
-    restores.push(inputs.restore);
-    const tablet = renderAt("/topology/rig/abc-rig", 1180, 820);
-    tapNode(await seatChip(tablet.container, "core.lead"));
-    const overlay = await terminalOverlay();
-    await waitFor(() => expect(sockets).toHaveLength(1));
-    const canvas = q(tablet.container, "[data-testid='phone-graph-canvas']");
-    for (const next of [TOUCH_WITH_POINTER, TOUCH_ONLY, TOUCH_POINTS_ONLY]) {
-      inputs.set(next);
-      expect(q(tablet.container, "[data-testid='phone-graph-canvas']")).toBe(canvas);
-      expect(q(document.body, "[data-testid='phone-graph-terminal']")).toBe(overlay);
-      expect(sockets[0]!.closeCalled).toBe(false);
-    }
-    expect(sockets).toHaveLength(1);
-    tablet.unmount();
-    // The capability subscription is released with the page.
-    expect(inputs.listeners(/any-pointer/)).toBe(0);
-
-    inputs.set(MOUSE_ONLY);
-    const desktop = renderAt("/topology", 1180, 820);
-    await waitFor(() => expect(q(desktop.container, "[data-testid='host-multi-rig-graph']")).toBeTruthy(), { timeout: 5000 });
-    expect(inputs.listeners(/any-pointer/)).toBeGreaterThan(0);
-    // A touchscreen reported without any resize switches the graph...
-    inputs.set({ ...MOUSE_ONLY, anyCoarse: true });
-    await waitFor(() => expect(q(desktop.container, "[data-testid='phone-graph-canvas']")?.getAttribute("data-flow")).toBe("page"), { timeout: 5000 });
-    // ...and losing it returns the desktop canvas.
-    inputs.set(MOUSE_ONLY);
-    await waitFor(() => expect(q(desktop.container, "[data-testid='host-multi-rig-graph']")).toBeTruthy(), { timeout: 5000 });
-    desktop.unmount();
-    expect(inputs.listeners(/any-pointer/)).toBe(0);
   }, 25000);
 
-  it.each([[1180, 820, 400], [834, 1194, 560]])("%ix%i: a keyboard-height viewport (%ipx) keeps the open tablet graph and terminal", async (width, height, keyboardHeight) => {
-    restores.push(stubInputs(TOUCH_WITH_POINTER).restore);
-    details["core.lead"] = seatDetail("core.lead");
-    const { container } = renderAt("/topology/rig/abc-rig", width, height);
-    tapNode(await seatChip(container, "core.lead"));
-    const overlay = await terminalOverlay();
-    await waitFor(() => expect(sockets).toHaveLength(1));
-    const canvas = q(container, "[data-testid='phone-graph-canvas']");
-    act(() => setViewportHeight(keyboardHeight));
-    expect(q(container, "[data-testid='phone-graph-canvas']")).toBe(canvas);
-    expect(canvas!.getAttribute("data-flow")).toBe("page");
-    expect(q(container, "[data-testid='graph-view']")).toBeNull();
-    expect(q(document.body, "[data-testid='phone-graph-terminal']")).toBe(overlay);
-    expect(sockets[0]!.closeCalled).toBe(false);
-    act(() => setViewportHeight(height));
-    expect(q(document.body, "[data-testid='phone-graph-terminal']")).toBe(overlay);
-    expect(sockets).toHaveLength(1);
-  }, 20000);
-
-  it("a short tablet viewport keeps page flow with details below; phone landscape keeps details beside the canvas", async () => {
-    restores.push(stubInputs(TOUCH_ONLY).restore);
-    details["core.lead"] = seatDetail("core.lead");
-    // jsdom does not evaluate media queries: assert which containers carry the
-    // short-landscape (max-height 540px) rules that put details beside the canvas.
-    const SHORT = "max-height:540px";
-    const parts = (c: HTMLElement) => {
-      const canvas = q(c, "[data-testid='phone-graph-canvas']")!;
-      return {
-        flow: canvas.getAttribute("data-flow"),
-        row: canvas.parentElement!.className.includes(SHORT),
-        canvas: canvas.className.includes(SHORT),
-        footer: q(c, "[data-testid='phone-graph-footer']")!.className.includes(SHORT),
-        details: q(c, "[data-testid='phone-graph-details']")!.className.includes(SHORT),
-      };
+  it("pointer connect/disconnect, a keyboard-height viewport and rotation keep the same mounted desktop graph", async () => {
+    const inputs = stubInputs(TOUCH_ONLY);
+    restores.push(inputs.restore);
+    const { container, unmount } = renderAt("/topology", 834, 1194);
+    await graphFrame(container, "host-multi-rig-graph");
+    const graph = q(container, "[data-testid='host-multi-rig-graph']");
+    const same = () => {
+      expect(q(container, "[data-testid='host-multi-rig-graph']")).toBe(graph);
+      expectTallFrame(container, q(container, "[data-testid='topology-graph-frame']")!);
     };
-    // Tablet: an 1180x820 screen whose viewport is 400px tall (keyboard open).
-    const tablet = renderAt("/topology/rig/abc-rig", 1180, 820);
-    act(() => setViewportHeight(400));
-    tapNode(await seatChip(tablet.container, "core.lead"));
-    expect((await terminalOverlay()).getAttribute("data-agent-key")).toContain("/agent/core.lead");
-    expect(parts(tablet.container)).toEqual({ flow: "page", row: false, canvas: false, footer: false, details: false });
-    expect(q(tablet.container, "[data-testid='graph-view']")).toBeNull();
-    tablet.unmount();
-    // Phone landscape keeps every short-landscape rule, and its terminal path.
-    const phone = renderAt("/topology/rig/abc-rig", 932, 430);
-    tapNode(await seatChip(phone.container, "core.lead"));
-    expect((await terminalOverlay()).getAttribute("data-agent-key")).toContain("/agent/core.lead");
-    expect(parts(phone.container)).toEqual({ flow: "bounded", row: true, canvas: true, footer: true, details: true });
-  }, 20000);
-
-  it.each([[820, 1180], [834, 1194]])("iPad portrait %ix%ipx: a dense fleet is drawn full width, readable, and as tall as the graph", async (width, height) => {
-    restores.push(stubInputs(TOUCH_ONLY).restore);
-    const SURFACE = width - 26;
-    restores.push(stubSurfaceWidth(SURFACE));
-    denseFleet(6, 12);
-    const { container } = renderAt("/topology", width, height);
-    await waitFor(() => expect(qa(container, "[data-testid='phone-graph-rig']")).toHaveLength(6), { timeout: 5000 });
-    fireEvent.click(q(container, "[data-testid='phone-graph-expand-all']")!);
-    await waitFor(() => expect(qa(container, "[data-testid='phone-graph-seat']")).toHaveLength(72));
-    const surface = q(container, "[data-testid='phone-graph-surface']")!;
-    const { vp, boxes } = await waitFor(() => {
-      const d = drawnBoxes(container);
-      expect(d.vp.zoom).not.toBe(1);
-      expect(Math.max(...d.boxes.map((b) => b.bottom))).toBeLessThanOrEqual(parseFloat(surface.style.height));
-      return d;
-    });
-    const surfaceHeight = parseFloat(surface.style.height);
-    // Readable: seats at (near) full size, not a fleet shrunk into a short canvas.
-    expect(vp.zoom).toBeGreaterThan(0.95);
-    // Every node — the first and the last rig — lies inside the surface:
-    // no clipping at either side, and the surface ends where the graph ends,
-    // so the page (not a nested canvas) scrolls to it.
-    for (const b of boxes) {
-      expect(b.left).toBeGreaterThanOrEqual(0);
-      expect(b.right).toBeLessThanOrEqual(SURFACE);
-      expect(b.top).toBeGreaterThanOrEqual(0);
-      expect(b.bottom).toBeLessThanOrEqual(surfaceHeight);
-    }
-    expect(Math.min(...boxes.map((b) => b.top))).toBeLessThan(24);
-    expect(surfaceHeight - Math.max(...boxes.map((b) => b.bottom))).toBeLessThan(24);
-    expect(surfaceHeight).toBeGreaterThan(height);
-    // No nested pan area: the canvas takes no drag, so touches scroll the page.
-    expect((container.querySelector(".react-flow") as HTMLElement).className).not.toContain("touch-none");
-    // The panels below the graph follow it in the page.
-    const canvas = q(container, "[data-testid='phone-graph-canvas']")!;
-    expect(canvas.compareDocumentPosition(q(container, "[data-testid='phone-graph-details']")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-
-    // First and last seats each open their own exact terminal.
-    const chips = qa(container, "[data-testid='phone-graph-seat']");
-    for (const chip of [chips[0]!, chips[chips.length - 1]!]) {
-      const key = chip.getAttribute("data-agent-key")!;
-      tapNode(chip);
-      const overlay = await terminalOverlay();
-      expect(overlay.getAttribute("data-agent-key")).toBe(key);
-      fireEvent.click(within(overlay).getByTestId("phone-graph-terminal-close"));
-      await waitFor(() => expect(q(document.body, "[data-testid='phone-graph-terminal']")).toBeNull());
-    }
-  }, 30000);
-
-  it("− / + step a page zoom between a legible floor and full width; Reset returns the readable view", async () => {
-    restores.push(stubInputs(TOUCH_ONLY).restore);
-    restores.push(stubSurfaceWidth(808));
-    denseFleet(4, 12);
-    const { container } = renderAt("/topology", 834, 1194);
-    await waitFor(() => expect(qa(container, "[data-testid='phone-graph-rig']")).toHaveLength(4), { timeout: 5000 });
-    fireEvent.click(q(container, "[data-testid='phone-graph-expand-all']")!);
-    await waitFor(() => expect(qa(container, "[data-testid='phone-graph-seat']")).toHaveLength(48));
-    const surface = q(container, "[data-testid='phone-graph-surface']")!;
-    const zoomOut = q(container, "[data-testid='phone-graph-zoom-out']") as HTMLButtonElement;
-    const zoomIn = q(container, "[data-testid='phone-graph-zoom-in']") as HTMLButtonElement;
-    const readable = await waitFor(() => { const z = drawnBoxes(container).vp.zoom; expect(z).toBeGreaterThan(0.95); return z; });
-    const tall = parseFloat(surface.style.height);
-    expect(zoomIn.disabled).toBe(true);
-    expect(q(container, "[data-testid='phone-graph-fit']")!.getAttribute("aria-label")).toBe("Reset to readable width");
-
-    for (let i = 0; i < 12; i++) if (!zoomOut.disabled) fireEvent.click(zoomOut);
-    await waitFor(() => expect(zoomOut.disabled).toBe(true));
-    const { vp, boxes } = drawnBoxes(container);
-    // The floor is legible, never the old whole-graph 0.15.
-    expect(vp.zoom).toBeCloseTo(0.5, 3);
-    // Zooming out shortens the graph (more fits on screen) and keeps it inside its surface.
-    const short = parseFloat(surface.style.height);
-    expect(short).toBeLessThan(tall * 0.6);
-    for (const b of boxes) expect(b.bottom).toBeLessThanOrEqual(short);
-
-    fireEvent.click(zoomIn);
-    await waitFor(() => expect(drawnBoxes(container).vp.zoom).toBeCloseTo(0.6, 3));
-    fireEvent.click(q(container, "[data-testid='phone-graph-fit']")!);
-    await waitFor(() => expect(drawnBoxes(container).vp.zoom).toBeCloseTo(readable, 3));
-    expect(parseFloat(surface.style.height)).toBe(tall);
-    expect(zoomIn.disabled).toBe(true);
-  }, 20000);
-
-  it("seat taps open the exact guarded terminal; a stopped seat is refused; rotation keeps the graph and selection", async () => {
-    restores.push(stubInputs(TOUCH_ONLY).restore);
-    details["core.lead"] = seatDetail("core.lead");
-    details["core.worker"] = seatDetail("core.worker", null);
-    const { container, router } = renderAt("/topology/rig/abc-rig", 834, 1194);
-    tapNode(await seatChip(container, "core.lead"));
-    const overlay = await terminalOverlay();
-    expect(overlay.getAttribute("data-agent-key")).toContain("/agent/core.lead");
-    await waitFor(() => expect(sockets).toHaveLength(1));
-    expect(sockets[0]!.url).toContain(encodeURIComponent("core.lead@acme"));
-    fireEvent.click(within(overlay).getByTestId("phone-graph-terminal-close"));
-    await waitFor(() => expect(sockets[0]!.closeCalled).toBe(true));
-
-    tapNode(await seatChip(container, "core.worker"));
-    const refused = await terminalOverlay();
-    await waitFor(() => expect(within(refused).getByTestId("spatial-terminal-state").getAttribute("data-state")).toBe("no-pane"));
-    expect(sockets).toHaveLength(1);
-    fireEvent.click(within(refused).getByTestId("phone-graph-terminal-close"));
-    await waitFor(() => expect(q(document.body, "[data-testid='phone-graph-terminal']")).toBeNull());
-
-    const canvas = q(container, "[data-testid='phone-graph-canvas']");
+    for (const next of [TOUCH_WITH_POINTER, TOUCH_POINTS_ONLY, TOUCH_ONLY]) { inputs.set(next); same(); }
+    act(() => setViewportHeight(560));
+    same();
+    act(() => setViewportHeight(1194));
     act(() => setWidth(1194, 834));
-    await waitFor(() => expect(q(container, "[data-testid='phone-graph-seat-details']")).toBeTruthy());
-    expect(q(container, "[data-testid='phone-graph-canvas']")).toBe(canvas);
-    expect(canvas!.getAttribute("data-flow")).toBe("page");
-    expect(router.state.location.search).toMatchObject({ selectedRig: "abc-rig", selectedNode: "core.worker" });
-    expect(q(document.body, "[data-testid='phone-graph-terminal']")).toBeNull();
-  }, 20000);
-
-  it("a rig row scrolls the page to that rig's drawn tile", async () => {
-    restores.push(stubInputs(TOUCH_ONLY).restore);
-    restores.push(stubSurfaceWidth(808));
-    denseFleet(6, 12);
-    const scrolled: HTMLElement[] = [];
-    const original = HTMLElement.prototype.scrollIntoView;
-    HTMLElement.prototype.scrollIntoView = function (this: HTMLElement) { scrolled.push(this); };
-    restores.push(() => { HTMLElement.prototype.scrollIntoView = original; });
-    const { container } = renderAt("/topology", 834, 1194);
-    await waitFor(() => expect(qa(container, "[data-testid='phone-graph-rig']")).toHaveLength(6), { timeout: 5000 });
-    await waitFor(() => expect(drawnBoxes(container).vp.zoom).not.toBe(1));
-    const rows = qa(container, "[data-testid='phone-graph-rig-row']");
-    fireEvent.click(rows[rows.length - 1]!);
-    await waitFor(() => expect(scrolled).toHaveLength(1));
-    const mark = scrolled[0]!;
-    const surface = q(container, "[data-testid='phone-graph-surface']")!;
-    expect(surface.contains(mark)).toBe(true);
-    expect(container.querySelector(".react-flow")!.contains(mark)).toBe(false);
-    const tile = q(container, "[data-testid='phone-graph-rig'][data-rig-id='r5']")!.closest(".react-flow__node") as HTMLElement;
-    const { vp } = drawnBoxes(container);
-    const tileTop = vp.y + Number(/translate\([-\d.]+px,\s*([-\d.]+)px\)/.exec(tile.style.transform)![1]) * vp.zoom;
-    expect(parseFloat(mark.style.top)).toBeCloseTo(tileTop, 1);
+    same();
+    act(() => setViewportHeight(400));
+    same();
+    unmount();
+    expect(inputs.listeners(/any-pointer/)).toBe(0);
   }, 20000);
 });
 

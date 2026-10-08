@@ -14,8 +14,6 @@ import {
   defaultPhoneCollapsedPodKeys,
   defaultPhoneExpandedRigIds,
   layoutPhoneGraph,
-  pagePhoneViewport,
-  PHONE_PAGE_MIN_ZOOM,
   phoneGraphColumns,
   readablePhoneViewport,
   type PhoneGraphLayoutInput,
@@ -277,24 +275,5 @@ describe("vertical-only drag extent", () => {
     expect(vp.x).toBe(0); // the graph's left edge at the surface edge
     expect(boundPhoneViewport({ x: -5000, y: 0, zoom: 2 }, extent, surface).x).toBe(430 - 360 * 2);
     expect(boundPhoneViewport({ x: -100, y: 0, zoom: 2 }, extent, surface).x).toBe(-100);
-  });
-});
-
-describe("pagePhoneViewport (tablet page flow)", () => {
-  const bounds = { x: 0, y: 0, width: 688, height: 3000 };
-  it("reads full width, capped, and sizes the surface to the drawn graph", () => {
-    const v = pagePhoneViewport(bounds, 794, null)!;
-    expect(v.viewport.zoom).toBeCloseTo((794 - 24) / 688, 6);
-    expect(v.viewport.x).toBeCloseTo(12, 6);
-    expect(v.viewport.y).toBe(12);
-    expect(v.height).toBe(Math.ceil(3000 * v.viewport.zoom + 24));
-    expect(pagePhoneViewport(bounds, 1400, null)!.viewport.zoom).toBe(1.25);
-  });
-  it("clamps an explicit zoom to [floor, width] and stays centred", () => {
-    const tiny = pagePhoneViewport(bounds, 794, 0.15)!;
-    expect(tiny.viewport.zoom).toBe(PHONE_PAGE_MIN_ZOOM);
-    expect(tiny.viewport.x).toBeCloseTo((794 - 688 * PHONE_PAGE_MIN_ZOOM) / 2, 6);
-    expect(pagePhoneViewport(bounds, 794, 3)!.viewport.zoom).toBe(tiny.readableZoom);
-    expect(pagePhoneViewport(bounds, 0, null)).toBeNull();
   });
 });

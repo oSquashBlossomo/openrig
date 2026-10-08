@@ -519,34 +519,6 @@ export function readablePhoneViewport(
   return { zoom, x, y: padding - bounds.y * zoom };
 }
 
-/** Zoom-out floor on a tablet page: seats shrink but stay distinguishable. */
-export const PHONE_PAGE_MIN_ZOOM = 0.5;
-
-/** Tablet page flow: the graph is drawn across the surface width and the
- *  surface is exactly as tall as the drawn graph, so the page (not a nested
- *  canvas) scrolls to the first and last rig. `zoom` null is the readable
- *  full-width view (fit width, capped at maxZoom); an explicit zoom is
- *  clamped to [PHONE_PAGE_MIN_ZOOM, that width] so the graph never runs past
- *  the sides (no horizontal drift) and never shrinks to unreadable dots. */
-export function pagePhoneViewport(
-  bounds: { x: number; y: number; width: number; height: number },
-  containerWidth: number,
-  zoom: number | null,
-  options: { padding?: number; maxZoom?: number } = {},
-): { viewport: PhoneViewport; height: number; readableZoom: number; minZoom: number } | null {
-  const padding = options.padding ?? 12;
-  if (containerWidth <= 2 * padding || bounds.width <= 0 || bounds.height <= 0) return null;
-  const readableZoom = Math.min(options.maxZoom ?? 1.25, (containerWidth - 2 * padding) / bounds.width);
-  const minZoom = Math.min(PHONE_PAGE_MIN_ZOOM, readableZoom);
-  const z = zoom === null ? readableZoom : Math.min(readableZoom, Math.max(minZoom, zoom));
-  return {
-    viewport: { zoom: z, x: (containerWidth - bounds.width * z) / 2 - bounds.x * z, y: padding - bounds.y * z },
-    height: Math.ceil(bounds.height * z + 2 * padding),
-    readableZoom,
-    minZoom,
-  };
-}
-
 /** Viewport centring one node at a readable zoom (selection follow). */
 export function centerPhoneViewport(
   node: { position: { x: number; y: number }; width: number; height: number },

@@ -24,14 +24,13 @@ export interface ShellViewport {
   /** Live innerWidth in px; useful for mid-band decisions (e.g., 768
    *  iPad-portrait breakpoint between mobile and desktop). */
   innerWidth: number;
-  /** A tablet in either orientation, never a phone: the viewport is at least
-   *  600px wide and the screen's short side is too. The screen, not the
-   *  viewport height, so a soft keyboard never reclassifies the device. */
-  isTablet: boolean;
-  /** A touch-capable tablet up to iPad Pro landscape width, whatever its
-   *  primary pointer (an attached trackpad or mouse keeps it a tablet).
-   *  Lets touch surfaces (the topology Graph) stay touch-first past the
-   *  1024px shell breakpoint without moving that breakpoint. */
+  /** A touch-capable tablet in either orientation, never a phone: the
+   *  viewport is at least 600px wide and the screen's short side is too
+   *  (the screen, not the viewport height, so a soft keyboard never
+   *  reclassifies it), up to iPad Pro landscape width, whatever its primary
+   *  pointer (an attached trackpad or mouse keeps it a tablet). Lets the
+   *  topology Graph keep the desktop canvas on a tablet below the 1024px
+   *  shell breakpoint without moving that breakpoint. */
   isTouchTablet: boolean;
 }
 
@@ -45,7 +44,6 @@ function readViewport(): ShellViewport {
   return {
     isWideLayout: innerWidth >= WIDE_LAYOUT_BREAKPOINT,
     innerWidth,
-    isTablet,
     isTouchTablet: isTablet && touchCapable && innerWidth <= TOUCH_TABLET_MAX_WIDTH,
   };
 }
@@ -53,7 +51,7 @@ function readViewport(): ShellViewport {
 export function useShellViewport(): ShellViewport {
   const [state, setState] = useState<ShellViewport>(() => {
     if (typeof window === "undefined") {
-      return { isWideLayout: true, innerWidth: WIDE_LAYOUT_BREAKPOINT, isTablet: false, isTouchTablet: false };
+      return { isWideLayout: true, innerWidth: WIDE_LAYOUT_BREAKPOINT, isTouchTablet: false };
     }
     return readViewport();
   });
