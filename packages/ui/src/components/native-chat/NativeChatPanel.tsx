@@ -6,6 +6,14 @@
 // text. See docs/reference/native-chat.md; client rules in
 // lib/native-chat.ts.
 //
+// Native slash commands are never Chat messages. A one-line slash draft can
+// be handed to the same seat's Terminal (after a fresh, uncached identity
+// read), where it waits in a local box until the operator pastes it; Enter,
+// pickers and confirmations stay native. Chat's readiness (canSend) guards
+// automatic Chat submission only: the operator sees the Terminal and decides
+// when to paste, under the Terminal's own admission and input checks. The handoff lives here, above every
+// Terminal mount, bound to its seat, session, conversation and owner key.
+//
 // Identity: the panel is keyed by host/rig/node, reads only that node, and
 // keys drafts by the native conversation the daemon reports. A latest read
 // that failed, a session other than the selected seat's, a remote source or
@@ -17,6 +25,7 @@ import { useEffect, useLayoutEffect, useReducer, useRef, useState, type Keyboard
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, ChevronRight, Square, SquareTerminal } from "lucide-react";
 import { DisplayTime } from "../time/DisplayTime.js";
+import type { StagedCommand } from "../terminal/FocusedTerminal.js";
 import { cn } from "../../lib/utils.js";
 import {
   NATIVE_CHAT_VIEW_LIMIT,
@@ -66,9 +75,51 @@ export function setPreferredSeatView(view: SeatView): void {
   preferredView = view;
 }
 
-export function SeatChatTerminal({ target, layout, terminal }: { target: SeatChatTarget; layout: SeatChatLayout; terminal: ReactNode }) {
+/** The native identity a command was opened against; every paste re-reads
+ *  it. Host and rig are bound by the owner's seat key. */
+interface CommandBinding { nodeId: string; sessionId: string; sessionName: string; conversationId: string; ownerKey: string }
+
+/** Fresh, uncached read of the seat's native identity (no side effects). Not
+ *  a daemon-side lock: the identity can still change before the paste lands. */
+async function checkNativeCommand(b: CommandBinding): Promise<true | { refuse: string }> {
+  let fresh: Awaited<ReturnType<typeof readNativeChat>>;
+  try {
+    fresh = await readNativeChat(b.nodeId, { cache: "no-store" });
+  } catch (err) {
+    return { refuse: `The seat's native conversation could not be read (${err instanceof Error ? err.message : "read failed"}).` };
+  }
+  if ("refused" in fresh) return { refuse: fresh.error };
+  const { identity } = fresh;
+  if (identity.nodeId !== b.nodeId) return { refuse: "The read answered for another seat." };
+  if (identity.sessionName !== b.sessionName) return { refuse: `The seat now reports session ${identity.sessionName}, not ${b.sessionName}.` };
+  if (identity.sessionId !== b.sessionId) return { refuse: `The native session ${b.sessionName} was replaced since this command was opened. Open it again from Chat.` };
+  if (identity.conversationId !== b.conversationId) return { refuse: "The native conversation changed (for example /clear or a restart) since this command was opened. Open it again from Chat." };
+  if (identity.ownerKey !== b.ownerKey) return { refuse: "The conversation's owner changed since this command was opened. Open it again from Chat." };
+  return true;
+}
+
+/** `terminal` renders this seat's guarded Terminal with the command staged
+ *  for it (null: none). */
+export function SeatChatTerminal({ target, layout, terminal }: { target: SeatChatTarget; layout: SeatChatLayout; terminal: (command: StagedCommand | null) => ReactNode }) {
   const [view, setViewState] = useState<SeatView>(preferredView);
   const setView = (next: SeatView) => { preferredView = next; setViewState(next); };
+  // Memory only. Leaving the seat drops it, so A → B → A never brings it back.
+  const seatKey = [target.hostId, target.rigId, target.nodeId ?? "", target.expectedSession ?? ""].join("\u0000");
+  const [handoff, setHandoff] = useState<{ id: string; seatKey: string; text: string; binding: CommandBinding; pasted: boolean } | null>(null);
+  if (handoff && handoff.seatKey !== seatKey) setHandoff(null);
+  const own = handoff?.seatKey === seatKey ? handoff : null;
+  const command: StagedCommand | null = own && !own.pasted ? {
+    id: own.id,
+    text: own.text,
+    sessionName: own.binding.sessionName,
+    check: () => checkNativeCommand(own.binding),
+    onPasted: (id) => setHandoff((h) => (h?.id === id ? { ...h, pasted: true } : h)),
+    onDismiss: (id) => setHandoff((h) => (h?.id === id ? null : h)),
+  } : null;
+  const openCommand = (text: string, binding: CommandBinding) => {
+    setHandoff({ id: crypto.randomUUID(), seatKey, text, binding, pasted: false });
+    setView("terminal");
+  };
   return (
     <div data-testid="seat-chat-terminal" data-view={view}>
       <div role="group" aria-label="Seat view" className={cn("mt-2 flex", layout !== "page" && "mx-4")}>
@@ -91,8 +142,10 @@ export function SeatChatTerminal({ target, layout, terminal }: { target: SeatCha
           target={target}
           layout={layout}
           onOpenTerminal={() => setView("terminal")}
+          onOpenCommand={openCommand}
+          pastedCommand={own?.pasted ? own.text : null}
         />
-      ) : terminal}
+      ) : terminal(command)}
     </div>
   );
 }
@@ -118,7 +171,18 @@ function TerminalButton({ onClick, label = "Open Terminal" }: { onClick: () => v
   );
 }
 
-export function NativeChatPanel({ target, layout, onOpenTerminal }: { target: SeatChatTarget; layout: SeatChatLayout; onOpenTerminal: () => void }) {
+interface PanelProps {
+  target: SeatChatTarget;
+  layout: SeatChatLayout;
+  onOpenTerminal: () => void;
+  /** Hand a checked slash draft to this seat's Terminal. */
+  onOpenCommand?: (text: string, binding: CommandBinding) => void;
+  /** The last handed-over command the operator pasted (not confirmed run). */
+  pastedCommand?: string | null;
+}
+
+export function NativeChatPanel(props: PanelProps) {
+  const { target, layout } = props;
   const refusal = target.isRemote
     ? `${target.hostId} is a remote source: native chat is only read and written on this host's own seats.`
     : !target.nodeId ? "This seat's node id was not reported, so its native conversation cannot be addressed." : null;
@@ -132,7 +196,7 @@ export function NativeChatPanel({ target, layout, onOpenTerminal }: { target: Se
       </Frame>
     );
   }
-  return <ChatBody target={target} nodeId={target.nodeId!} layout={layout} onOpenTerminal={onOpenTerminal} />;
+  return <ChatBody {...props} nodeId={target.nodeId!} />;
 }
 
 const HISTORY_HEIGHT: Record<SeatChatLayout, string> = {
@@ -148,7 +212,7 @@ const HISTORY_HEIGHT: Record<SeatChatLayout, string> = {
  *  reads were paused), so the view restarted at that page and its cursor. */
 interface Timeline { conv: string | null; messages: NativeChatMessage[]; olderCursor: string | null; trimmed: boolean; jumped: boolean }
 
-function ChatBody({ target, nodeId, layout, onOpenTerminal }: { target: SeatChatTarget; nodeId: string; layout: SeatChatLayout; onOpenTerminal: () => void }) {
+function ChatBody({ target, nodeId, layout, onOpenTerminal, onOpenCommand, pastedCommand }: PanelProps & { nodeId: string }) {
   const { hostId, rigId } = target;
   const queryClient = useQueryClient();
   const queryKey = ["native-chat", hostId, rigId, nodeId] as const;
@@ -218,6 +282,12 @@ function ChatBody({ target, nodeId, layout, onOpenTerminal }: { target: SeatChat
 
   // Earlier pages: explicit, bound to the conversation they were asked for.
   const [older, setOlder] = useState<{ loading: boolean; error: string | null }>({ loading: false, error: null });
+  // Open native command: one fresh check at a time, its refusal shown for
+  // the draft it checked.
+  const [commandCheck, setCommandCheck] = useState<{ op: number; key: string; draft: string; refusal: string | null } | null>(null);
+  const commandOpRef = useRef(0);
+  const aliveRef = useRef(true);
+  useEffect(() => { aliveRef.current = true; return () => { aliveRef.current = false; }; }, []);
   const olderAbortRef = useRef<AbortController | null>(null);
   useEffect(() => () => olderAbortRef.current?.abort(), [conv]);
   const anchorRef = useRef<number | null>(null);
@@ -313,12 +383,14 @@ function ChatBody({ target, nodeId, layout, onOpenTerminal }: { target: SeatChat
   // Why Send is off (first reason wins). Reading never stops for these.
   const inFlight = slot.pending && slot.pending.phase !== "submitted" ? slot.pending : null;
   const draftRefusal = composeRefusal(slot.draft);
-  const blocked: string | null =
+  const identityBlocked: string | null =
     target.blockedReason
     ?? (query.status === "error" ? "The latest chat read failed, so the seat's current state is unknown. Sending resumes after a successful read." : null)
     ?? (!data ? null : target.expectedSession && data.identity.sessionName !== target.expectedSession
       ? `The chat endpoint reports session ${data.identity.sessionName}, not this seat's ${target.expectedSession}. Select the seat again.`
-      : null)
+      : null);
+  const blocked: string | null =
+    identityBlocked
     ?? (data && !data.availability.canSend ? data.availability.detail || "The agent cannot take a chat message right now." : null)
     ?? (inFlight || pendingRows.some((p) => p.phase !== "submitted" && p.phase !== "indeterminate") ? "Waiting for the previous message's outcome." : null)
     ?? (pendingRows.some((p) => p.phase === "indeterminate") ? "A previous message's outcome is unknown. Check the history or Terminal, then dismiss it before sending again." : null)
@@ -401,6 +473,45 @@ function ChatBody({ target, nodeId, layout, onOpenTerminal }: { target: SeatChat
     indeterminate: `Interrupt outcome unknown${interrupt.detail ? ` (${interrupt.detail})` : ""}. Check the Terminal before interrupting again.`,
     unknown: `Interrupt outcome unknown (${interrupt.detail}). Checking again reuses the same request, so Escape is never sent twice.`,
   }[interrupt.phase];
+
+  // A slash draft is a native command: it can be handed to the Terminal
+  // when this seat is verified, nothing earlier is unresolved and it is one
+  // line without controls. Identity is read fresh on open and again on paste;
+  // a busy agent or open native menu is the operator's to judge in Terminal.
+  const slashDraft = slot.draft.trimStart().startsWith("/");
+  const commandRefusal = !slashDraft || identityBlocked ? null
+    : inFlight || pendingRows.some((p) => p.phase !== "submitted") || interruptBlocked ? "Resolve the earlier message or interrupt first; then open the command."
+    : /[\u0000-\u001f\u007f-\u009f]/.test(slot.draft) ? "A native command opened from Chat is one line without tabs or other control characters. Your draft stays here; use the Terminal directly for it."
+    : null;
+  const commandOffered = slashDraft && !identityBlocked && !commandRefusal && !!data && !!slotKey && !!onOpenCommand;
+  // Everything the offer rests on. Any change, even one changed back, retires
+  // the open in flight (its result then changes nothing) and its Checking or
+  // refusal state. A layout effect: it runs in the committing render, before
+  // a pending read can settle against the old values.
+  const commandBasis = commandOffered && data
+    ? [slotKey, slot.draft, data.identity.sessionId, data.identity.sessionName, data.identity.conversationId, data.identity.ownerKey].join("\u0000")
+    : null;
+  useLayoutEffect(() => {
+    commandOpRef.current++;
+    setCommandCheck(null);
+  }, [commandBasis]);
+  const commandChecking = !!commandCheck && commandCheck.refusal === null;
+  const commandNote = commandRefusal ?? commandCheck?.refusal ?? null;
+  const openCommand = async () => {
+    if (!commandOffered || commandChecking || !data || !slotKey || !onOpenCommand) return;
+    const op = ++commandOpRef.current;
+    const key = slotKey, text = slot.draft;
+    const { sessionId, sessionName, conversationId, ownerKey } = data.identity;
+    const binding: CommandBinding = { nodeId, sessionId, sessionName, conversationId, ownerKey };
+    setCommandCheck({ op, key, draft: text, refusal: null });
+    const verdict = await checkNativeCommand(binding);
+    // Only the latest open, for an unchanged seat, admission, conversation,
+    // owner, pending state and draft.
+    if (!aliveRef.current || commandOpRef.current !== op) return;
+    if (verdict !== true) { setCommandCheck({ op, key, draft: text, refusal: `Not opened: ${verdict.refuse}` }); return; }
+    setCommandCheck(null);
+    onOpenCommand(text, binding);
+  };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     // Desktop: Enter sends, Shift+Enter is a newline. Touch keyboards keep
@@ -609,9 +720,23 @@ function ChatBody({ target, nodeId, layout, onOpenTerminal }: { target: SeatChat
         </div>
         {blocked ? (
           <div className="mt-1.5 flex flex-wrap items-center gap-2">
-            <p id={reasonId} data-testid="native-chat-blocked" className="min-w-0 flex-1 px-1 text-[12px] leading-snug text-on-surface-variant">{blocked}</p>
+            <div className="min-w-0 flex-1 space-y-1 px-1 text-[12px] leading-snug">
+              <p id={reasonId} data-testid="native-chat-blocked" className="text-on-surface-variant">{blocked}</p>
+              {commandNote ? <p data-testid="native-chat-command-refused" role="alert" className="text-tertiary">{commandNote}</p> : null}
+            </div>
+            {commandOffered ? (
+              <button type="button" data-testid="native-chat-open-command" disabled={commandChecking} aria-busy={commandChecking} onClick={() => void openCommand()}
+                className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-full bg-on-surface px-3.5 text-[13px] font-medium text-background hover:opacity-90 disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-on-surface">
+                <SquareTerminal aria-hidden="true" className="h-4 w-4" /> Open native command
+              </button>
+            ) : null}
             {draftRefusal === blocked || needsTerminal ? <TerminalButton onClick={onOpenTerminal} /> : null}
           </div>
+        ) : null}
+        {pastedCommand ? (
+          <p data-testid="native-chat-command-status" role="status" className="mt-1.5 px-1 text-[12px] leading-snug text-on-surface-variant">
+            {pastedCommand} was pasted into the Terminal with no Enter. OpenRig does not confirm whether it ran; the Terminal shows what the agent did.
+          </p>
         ) : null}
       </form>
     </Frame>

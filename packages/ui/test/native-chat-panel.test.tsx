@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { SeatChatTerminal, setPreferredSeatView, splitFences, type SeatChatTarget } from "../src/components/native-chat/NativeChatPanel.js";
+import type { StagedCommand } from "../src/components/terminal/FocusedTerminal.js";
 import { NATIVE_CHAT_VIEW_LIMIT, composeRefusal, mergeMessages, readNativeChat, resetNativeChatStore, type NativeChatMessage, type NativeChatRequest, type NativeChatResponse } from "../src/lib/native-chat.js";
 
 type Page = NativeChatResponse | { status: number; body: unknown };
@@ -17,6 +18,7 @@ type PostReply = Reply | "network-error" | Promise<Reply> | ((body: Record<strin
 let postReplies: PostReply[] = [];
 const posts: Array<{ url: string; body: Record<string, unknown> }> = [];
 const gets: string[] = [];
+const getInits: Array<RequestInit | undefined> = [];
 
 function page(nodeId: string, over: Partial<NativeChatResponse> & { conversationId?: string; sessionName?: string } = {}): NativeChatResponse {
   return {
@@ -38,11 +40,13 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 
 beforeEach(() => {
   resetNativeChatStore();
+  lastCommand = null;
   setPreferredSeatView("chat");
   pages.clear();
   postReplies = [];
   posts.length = 0;
   gets.length = 0;
+  getInits.length = 0;
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method === "POST") {
       posts.push({ url, body: JSON.parse(String(init.body)) });
@@ -53,6 +57,7 @@ beforeEach(() => {
       return json(r.status, r.body);
     }
     gets.push(url);
+    getInits.push(init);
     const nodeId = decodeURIComponent(url.split("/api/native-chat/")[1]!.split("?")[0]!);
     const p = pages.get(nodeId);
     if (!p) return json(404, { error: "not found" });
@@ -67,11 +72,23 @@ function target(nodeId: string, over: Partial<SeatChatTarget> = {}): SeatChatTar
   return { hostId: "local", rigId: "rig-1", nodeId, isRemote: false, expectedSession: `sess-${nodeId}`, displayName: `agent-${nodeId}`, ...over };
 }
 
-function renderChat(t: SeatChatTarget) {
+/** The command the Chat owner last handed to its Terminal (null: none). */
+let lastCommand: StagedCommand | null = null;
+function FakeTerminal({ nodeId, command }: { nodeId: string | null; command: StagedCommand | null }) {
+  lastCommand = command;
+  return (
+    <>
+      <div data-testid="fake-terminal">terminal for {nodeId}</div>
+      {command ? <output data-testid="fake-command">{command.text}</output> : null}
+    </>
+  );
+}
+
+function renderChat(t: SeatChatTarget, { keyed = true }: { keyed?: boolean } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const ui = (x: SeatChatTarget) => (
     <QueryClientProvider client={client}>
-      <SeatChatTerminal key={`${x.hostId}|${x.rigId}|${x.nodeId}`} layout="stacked" target={x} terminal={<div data-testid="fake-terminal">terminal for {x.nodeId}</div>} />
+      <SeatChatTerminal key={keyed ? `${x.hostId}|${x.rigId}|${x.nodeId}` : "one"} layout="stacked" target={x} terminal={(command) => <FakeTerminal nodeId={x.nodeId} command={command} />} />
     </QueryClientProvider>
   );
   const r = render(ui(t));
@@ -166,6 +183,211 @@ describe("native chat: send and reply", () => {
       expect(row.querySelector("pre")!.textContent).toBe("$ ls\nREADME.md");
     }
     expect(rows[2]!.textContent).toBe("agent-n1: done");
+  });
+});
+
+describe("native chat: native slash commands", () => {
+  const openCommand = () => fireEvent.click(screen.getByRole("button", { name: "Open native command" }));
+  const busy = { state: "busy" as const, detail: "working", canSend: false, canInterrupt: true };
+  const withIdentity = (over: Partial<NativeChatResponse["identity"]>, base = page("n1")): NativeChatResponse => ({ ...base, identity: { ...base.identity, ...over } });
+  const promptOpen = { state: "needs_terminal" as const, detail: "A picker is open.", canSend: false, canInterrupt: false };
+
+  it.each(["/", "/help", "/review src/app.ts --deep", "/my-plugin:ship résumé ✓", "  /clear"])(
+    "hands %j unchanged to this seat's Terminal after a fresh owner and readiness read, posting nothing and keeping the draft",
+    async (text) => {
+      pages.set("n1", page("n1"));
+      renderChat(target("n1"));
+      await type(text);
+      // Still never a Chat message.
+      expect(sendButton().disabled).toBe(true);
+      fireEvent.keyDown(input(), { key: "Enter" });
+      const readsBefore = gets.length;
+      openCommand();
+      expect(await screen.findByTestId("fake-command")).toBeTruthy();
+      expect(gets.length).toBeGreaterThan(readsBefore);
+      expect(screen.getByTestId("fake-terminal").textContent).toBe("terminal for n1");
+      expect(lastCommand).toMatchObject({ text, sessionName: "sess-n1" });
+      expect(screen.getByTestId("fake-command").textContent).toBe(text);
+      expect(posts).toHaveLength(0);
+      fireEvent.click(screen.getByTestId("seat-view-chat"));
+      await waitFor(() => expect(input().value).toBe(text));
+    },
+  );
+
+  it.each([
+    ["the conversation was replaced", page("n1", { conversationId: "conv-new" }), /conversation changed/i],
+    ["another owner holds the conversation", withIdentity({ ownerKey: "owner-other" }), /owner changed/i],
+    ["another session answers", page("n1", { sessionName: "sess-other" }), /session/i],
+    ["the native session was replaced under the same name", withIdentity({ sessionId: "s-other" }), /session/i],
+  ])("stages nothing when the fresh read shows %s; the draft stays and the plain Terminal stays offered", async (_label, fresh, reason) => {
+    pages.set("n1", page("n1"));
+    renderChat(target("n1"));
+    await type("/compact focus on tests");
+    pages.set("n1", fresh);
+    openCommand();
+    await waitFor(() => expect(screen.getByTestId("native-chat-command-refused").textContent).toMatch(reason));
+    expect(screen.queryByTestId("fake-terminal")).toBeNull();
+    expect(input().value).toBe("/compact focus on tests");
+    // A later poll may also raise the needs-Terminal banner; any Terminal action opens the plain Terminal.
+    fireEvent.click(screen.getAllByTestId("native-chat-open-terminal").at(-1)!);
+    expect(screen.getByTestId("fake-terminal")).toBeTruthy();
+    expect(screen.queryByTestId("fake-command")).toBeNull();
+    expect(posts).toHaveLength(0);
+  });
+
+  it.each([["a line break", "/plan\nnext"], ["a tab", "/plan\tx"], ["an escape sequence", "/plan\u001b[A"], ["a C1 control", "/plan\u0085x"]])(
+    "a slash draft with %s is not offered as a native command",
+    async (_label, text) => {
+      pages.set("n1", page("n1"));
+      renderChat(target("n1"));
+      await type(text);
+      expect(screen.queryByRole("button", { name: "Open native command" })).toBeNull();
+      expect(screen.getByTestId("native-chat-command-refused").textContent).toMatch(/one line|control/i);
+      expect(input().value).toBe(text);
+      expect(posts).toHaveLength(0);
+    },
+  );
+
+  it.each([["busy", busy], ["showing a native prompt", promptOpen]])(
+    "for the same owner while the agent is %s, the command is still handed off and passes its uncached check; Chat Send stays off",
+    async (_label, availability) => {
+      pages.set("n1", page("n1", { availability }));
+      renderChat(target("n1"));
+      await type("/model");
+      expect(sendButton().disabled).toBe(true);
+      const readsBefore = getInits.length;
+      openCommand();
+      await screen.findByTestId("fake-command");
+      await expect(lastCommand!.check()).resolves.toBe(true);
+      // Identity reads for the command bypass HTTP caching; ordinary polling does not ask.
+      const commandReads = getInits.slice(readsBefore).filter((i) => i?.cache === "no-store");
+      expect(commandReads.length).toBeGreaterThanOrEqual(2);
+      expect(getInits[0]?.cache).toBeUndefined();
+      expect(posts).toHaveLength(0);
+    },
+  );
+
+  /** Holds every fresh (no-store) command read until settled; ordinary reads still answer. */
+  function holdCommandReads() {
+    const ordinary = globalThis.fetch;
+    const held: Array<(r: Response) => void> = [];
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) =>
+      init?.cache === "no-store" ? new Promise<Response>((r) => { held.push(r); }) : ordinary(url, init)));
+    return {
+      started: () => held.length,
+      settle: (body: NativeChatResponse) => act(async () => { held.shift()!(new Response(JSON.stringify(body), { status: 200 })); await Promise.resolve(); await Promise.resolve(); }),
+    };
+  }
+  const latestKey = ["native-chat", "local", "rig-1", "n1"];
+
+  it("a check superseded by a draft edit leaves Open available: restoring the draft opens it with a new fresh read", async () => {
+    pages.set("n1", page("n1"));
+    renderChat(target("n1"));
+    await type("/model");
+    const reads = holdCommandReads();
+    openCommand();
+    await waitFor(() => expect(reads.started()).toBe(1));
+    await type("/advisor");
+    await reads.settle(page("n1"));
+    await type("/model");
+    expect((screen.getByRole("button", { name: "Open native command" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByTestId("fake-terminal")).toBeNull();
+    openCommand();
+    await waitFor(() => expect(reads.started()).toBe(1));
+    await reads.settle(page("n1"));
+    expect(screen.getByTestId("fake-command").textContent).toBe("/model");
+  });
+
+  it.each([
+    ["the current conversation is replaced", (v: ReturnType<typeof renderChat>) => { const p = page("n1", { conversationId: "conv-new" }); pages.set("n1", p); v.client.setQueryData(latestKey, p); }],
+    ["the current owner changes", (v: ReturnType<typeof renderChat>) => { const p = withIdentity({ ownerKey: "owner-new" }); pages.set("n1", p); v.client.setQueryData(latestKey, p); }],
+    ["the current session is replaced", (v: ReturnType<typeof renderChat>) => { const p = withIdentity({ sessionId: "s-new" }); pages.set("n1", p); v.client.setQueryData(latestKey, p); }],
+    ["the host revokes this seat's admission", (v: ReturnType<typeof renderChat>) => v.show(target("n1", { blockedReason: "The seat's tmux pane changed." }))],
+    ["an earlier message becomes unresolved", (v: ReturnType<typeof renderChat>) => { const p = page("n1", { requests: [receipt("4d0a5f5e-0000-4000-8000-00000000000a", "earlier", "indeterminate")] }); pages.set("n1", p); v.client.setQueryData(latestKey, p); }],
+    ["the draft is edited and changed back", async () => { await type("/advisor"); await type("/model"); }],
+  ])("a successful read that settles after %s opens nothing and keeps Chat in place", async (_label, change) => {
+    pages.set("n1", page("n1"));
+    const view = renderChat(target("n1"));
+    await type("/model");
+    const reads = holdCommandReads();
+    openCommand();
+    await waitFor(() => expect(reads.started()).toBe(1));
+    // Let the query cache notify the panel (it batches on a later tick) before the old read settles.
+    await act(async () => { await change(view); await new Promise((r) => setTimeout(r, 20)); });
+    await reads.settle(page("n1"));
+    expect(screen.queryByTestId("fake-terminal")).toBeNull();
+    expect(screen.queryByTestId("fake-command")).toBeNull();
+    expect(screen.getByTestId("seat-view-chat").getAttribute("aria-pressed")).toBe("true");
+    expect(readsOpenAgain()).toBe(true);
+    expect(posts).toHaveLength(0);
+  });
+  /** The original conversation's draft is never lost or left permanently Checking. */
+  const readsOpenAgain = () => {
+    const open = screen.queryByRole("button", { name: "Open native command" }) as HTMLButtonElement | null;
+    return open === null || !open.disabled;
+  };
+
+  it("an unresolved earlier message is not handed off", async () => {
+    pages.set("n1", page("n1", { requests: [receipt("4d0a5f5e-0000-4000-8000-000000000009", "earlier", "indeterminate")] }));
+    renderChat(target("n1"));
+    await type("/status");
+    expect(screen.queryByRole("button", { name: "Open native command" })).toBeNull();
+    expect(posts).toHaveLength(0);
+  });
+
+  it("checks the native identity again at paste time (not Chat readiness), consumes the command once pasted, and never re-offers it", async () => {
+    pages.set("n1", page("n1"));
+    renderChat(target("n1"));
+    await type("/model");
+    openCommand();
+    await screen.findByTestId("fake-command");
+    const command = lastCommand!;
+    pages.set("n1", page("n1", { conversationId: "conv-other" }));
+    await expect(command.check()).resolves.toEqual({ refuse: expect.stringMatching(/conversation changed/i) });
+    pages.set("n1", withIdentity({ ownerKey: "owner-other" }));
+    await expect(command.check()).resolves.toEqual({ refuse: expect.stringMatching(/owner changed/i) });
+    pages.set("n1", withIdentity({ sessionId: "s-other" }));
+    await expect(command.check()).resolves.toEqual({ refuse: expect.stringMatching(/session/i) });
+    // The operator sees the Terminal: a busy agent or open native menu does not block a manual paste.
+    pages.set("n1", page("n1", { availability: promptOpen }));
+    await expect(command.check()).resolves.toBe(true);
+    pages.set("n1", page("n1"));
+    await expect(command.check()).resolves.toBe(true);
+    // A stale callback for another handoff changes nothing.
+    act(() => command.onPasted("not-this-one"));
+    expect(screen.getByTestId("fake-command")).toBeTruthy();
+    act(() => command.onPasted(command.id));
+    expect(screen.queryByTestId("fake-command")).toBeNull();
+    // Chat keeps the draft and says only what is known.
+    fireEvent.click(screen.getByTestId("seat-view-chat"));
+    await waitFor(() => expect(input().value).toBe("/model"));
+    expect(screen.getByTestId("native-chat-command-status").textContent).toMatch(/no Enter/i);
+    expect(screen.getByTestId("native-chat-command-status").textContent).toMatch(/does not confirm/i);
+    fireEvent.click(screen.getByTestId("seat-view-terminal"));
+    expect(screen.queryByTestId("fake-command")).toBeNull();
+    expect(posts).toHaveLength(0);
+  });
+
+  it("Close drops the staged command; a staged command never follows a switch to another seat or back", async () => {
+    pages.set("n1", page("n1"));
+    pages.set("n2", page("n2"));
+    const { show } = renderChat(target("n1"), { keyed: false });
+    await type("/review");
+    openCommand();
+    await screen.findByTestId("fake-command");
+    act(() => lastCommand!.onDismiss(lastCommand!.id));
+    expect(screen.queryByTestId("fake-command")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("seat-view-chat"));
+    openCommand();
+    await screen.findByTestId("fake-command");
+    show(target("n2"));
+    expect(screen.getByTestId("fake-terminal").textContent).toBe("terminal for n2");
+    expect(screen.queryByTestId("fake-command")).toBeNull();
+    show(target("n1"));
+    expect(screen.getByTestId("fake-terminal").textContent).toBe("terminal for n1");
+    expect(screen.queryByTestId("fake-command")).toBeNull();
+    expect(posts).toHaveLength(0);
   });
 });
 

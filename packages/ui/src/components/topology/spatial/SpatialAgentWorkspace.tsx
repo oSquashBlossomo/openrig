@@ -25,7 +25,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { hashKey, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { ArrowUpRight, ChevronDown, Crosshair, RotateCcw, X } from "lucide-react";
-import { FocusedTerminal } from "../../terminal/FocusedTerminal.js";
+import { FocusedTerminal, type StagedCommand } from "../../terminal/FocusedTerminal.js";
 import { useLiveTerminal } from "../../terminal/LiveTerminalProvider.js";
 import { RuntimeMark } from "../../graphics/RuntimeMark.js";
 import { DisplayTime } from "../../time/DisplayTime.js";
@@ -376,12 +376,12 @@ export function SeatChatAndTerminal(props: SeatLiveTerminalProps) {
         displayName: agent.displayName,
         blockedReason: verdict === null ? "Verifying this seat's identity before sending…" : verdict.ok ? null : verdict.reason,
       }}
-      terminal={<SeatLiveTerminal {...props} />}
+      terminal={(command) => <SeatLiveTerminal {...props} command={command} />}
     />
   );
 }
 
-export function SeatLiveTerminal({ agent, hostId, isRemote, detailKey, detailQuery, layout }: SeatLiveTerminalProps) {
+export function SeatLiveTerminal({ agent, hostId, isRemote, detailKey, detailQuery, layout, command = null }: SeatLiveTerminalProps & { command?: StagedCommand | null }) {
   const precheck = precheckSeat(agent, hostId, isRemote);
   const [machine, setMachine] = useState<DockMachine>({ dock: { kind: "pending", retrying: false }, stamp: "", everAdmitted: false, nextId: 1 });
   const mountedRef = useRef(true);
@@ -464,6 +464,7 @@ export function SeatLiveTerminal({ agent, hostId, isRemote, detailKey, detailQue
           seat={seat}
           agent={agent}
           layout={layout}
+          command={command}
           onRevoked={(r) => revoke(state.id, r)}
         />
       ) : !refusal ? (
@@ -485,10 +486,11 @@ export function SeatLiveTerminal({ agent, hostId, isRemote, detailKey, detailQue
   );
 }
 
-function AdmittedTerminal({ seat, agent, layout, onRevoked }: {
+function AdmittedTerminal({ seat, agent, layout, command, onRevoked }: {
   seat: AdmittedSeat;
   agent: SpatialAgent;
   layout: "side" | "stacked";
+  command: StagedCommand | null;
   onRevoked: (refusal: Refusal) => void;
 }) {
   const live = useLiveTerminal();
@@ -568,6 +570,7 @@ function AdmittedTerminal({ seat, agent, layout, onRevoked }: {
         autoFocus={false}
         beforeConnect={beforeConnect}
         onClosed={onClosed}
+        command={command}
       />
     </div>
   );

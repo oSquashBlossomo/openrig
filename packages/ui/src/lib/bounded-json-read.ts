@@ -4,6 +4,9 @@ export interface BoundedJsonReadOptions<T> {
   signal?: AbortSignal;
   /** Caller-owned headers, passed verbatim; ordinary reads add none. */
   headers?: HeadersInit;
+  /** Explicit fetch cache policy (e.g. "no-store" for a fresh identity
+   *  check); ordinary reads set none. */
+  cache?: RequestCache;
   /** Own status/body interpretation (e.g. legacy 503/404 shapes). The entire
    * callback shares the request's deadline; domain errors pass through. */
   readResponse?: (response: Response) => T | Promise<T>;
@@ -35,7 +38,8 @@ export async function boundedJsonRead<T>(route: string, options: BoundedJsonRead
   const request = (async () => {
     try {
       try { response = await fetch(route, { method: "GET", signal: controller.signal,
-        ...(options.headers === undefined ? {} : { headers: options.headers }) }); }
+        ...(options.headers === undefined ? {} : { headers: options.headers }),
+        ...(options.cache === undefined ? {} : { cache: options.cache }) }); }
       catch (error) {
         if (abortError) throw abortError;
         throw new OperatorReadError("network", error instanceof Error ? error.message : "Read could not reach the server.");

@@ -98,9 +98,9 @@ const route = (nodeId: string) => `/api/native-chat/${encodeURIComponent(nodeId)
 
 /** One bounded page (latest, or older than `before`) for this exact node. A
  *  response naming another node is a contract failure, never shown. */
-export async function readNativeChat(nodeId: string, options: { before?: string; signal?: AbortSignal } = {}): Promise<NativeChatResponse | NativeChatRefusal> {
+export async function readNativeChat(nodeId: string, options: { before?: string; signal?: AbortSignal; cache?: RequestCache } = {}): Promise<NativeChatResponse | NativeChatRefusal> {
   const url = options.before ? `${route(nodeId)}?before=${encodeURIComponent(options.before)}` : route(nodeId);
-  return boundedJsonRead(url, { signal: options.signal, headers: terminalAuthHeaders(), readResponse: async (response) => {
+  return boundedJsonRead(url, { signal: options.signal, cache: options.cache, headers: terminalAuthHeaders(), readResponse: async (response) => {
     if (response.status === 404 || response.status === 409) {
       const body: unknown = await response.json().catch(() => null);
       return {

@@ -42,6 +42,7 @@ vi.mock("@xterm/xterm", () => ({
     focus() { focusCalls++; }
     scrollToBottom() {}
     attachCustomWheelEventHandler() {}
+    resize() {}
     dispose() {}
     options = { fontSize: 13 };
   },
@@ -172,6 +173,58 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+});
+
+describe("a native command handed over from Chat", () => {
+  const chatFor = (agent: SpatialAgent) => ({
+    identity: { nodeId: agent.nodeId, sessionId: `s-${agent.nodeId}`, sessionName: agent.canonicalSessionName, runtime: "claude-code", conversationId: `conv-${agent.nodeId}`, ownerKey: `owner-${agent.nodeId}` },
+    availability: { state: "ready", detail: "", canSend: true, canInterrupt: false },
+    history: { state: "available", detail: "", olderCursor: null },
+    messages: [],
+    requests: [],
+  });
+  const geometry = (ws: MockWS) => act(() => { ws.onmessage?.({ data: JSON.stringify({ type: "geometry", cols: 90, rows: 4 }) }); });
+
+  it("reaches the same seat's admitted terminal with zero bytes until Paste command, then one literal frame without Enter, and never follows a seat switch", async () => {
+    setPreferredSeatView("chat");
+    try {
+      respond = (url) => {
+        if (url === detailUrl(agentA)) return json(detailFor(agentA));
+        if (url === detailUrl(agentB)) return json(detailFor(agentB));
+        if (url === `/api/native-chat/${agentA.nodeId}`) return json(chatFor(agentA));
+        if (url === `/api/native-chat/${agentB.nodeId}`) return json(chatFor(agentB));
+        return json({ error: "not found" }, 404);
+      };
+      renderWorkspace();
+      const draft = await screen.findByTestId("native-chat-input") as HTMLTextAreaElement;
+      await waitFor(() => expect(draft.disabled).toBe(false));
+      fireEvent.change(draft, { target: { value: "/review résumé ✓" } });
+      // Offered once the seat's identity is verified by the current detail read.
+      await waitFor(() => expect(screen.getByTestId("native-chat-blocked").textContent).toMatch(/Slash commands/));
+      fireEvent.click(await screen.findByRole("button", { name: "Open native command" }));
+      await waitFor(() => expect(terminalSockets("coord@alpha")).toHaveLength(1));
+      const ws = terminalSockets("coord@alpha")[0]!;
+      await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+      geometry(ws);
+      expect((screen.getByRole("textbox", { name: "Native command" }) as HTMLTextAreaElement).value).toBe("/review résumé ✓");
+      expect(ws.sent).toEqual([]);
+      fireEvent.click(screen.getByRole("button", { name: "Paste command" }));
+      await waitFor(() => expect(ws.sent.map((f) => JSON.parse(f))).toEqual([{ type: "text", text: "/review résumé ✓" }]));
+      expect(fetchMock.mock.calls.every(([, init]) => ((init as RequestInit | undefined)?.method ?? "GET") === "GET")).toBe(true);
+
+      // Another seat and back: nothing staged, nothing sent anywhere else.
+      act(() => setAgentExternal(agentB));
+      await waitFor(() => expect(terminalSockets("coord@beta")).toHaveLength(1));
+      act(() => setAgentExternal(agentA));
+      await waitFor(() => expect(terminalSockets("coord@alpha")).toHaveLength(2));
+      await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+      geometry(terminalSockets("coord@alpha")[1]!);
+      expect(screen.queryByRole("textbox", { name: "Native command" })).toBeNull();
+      expect(sockets.flatMap((s) => s.sent)).toEqual([JSON.stringify({ type: "text", text: "/review résumé ✓" })]);
+    } finally {
+      setPreferredSeatView("terminal");
+    }
+  });
 });
 
 describe("selection opens one live terminal, admitted by a fresh exact detail read", () => {

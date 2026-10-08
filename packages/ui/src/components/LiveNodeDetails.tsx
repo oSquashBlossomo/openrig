@@ -56,6 +56,7 @@ import type { AgentSpecReview } from "../hooks/useSpecReview.js";
 import { RuntimeBadge, ToolMark } from "./graphics/RuntimeMark.js";
 import { postOpenCmux } from "../hooks/useCmuxLaunch.js";
 import { SeatChatTerminal } from "./native-chat/NativeChatPanel.js";
+import type { StagedCommand } from "./terminal/FocusedTerminal.js";
 
 export type LiveNodeDetailsTab = "overview" | "details";
 type Tab = LiveNodeDetailsTab;
@@ -543,7 +544,7 @@ function SeatChat({ data, detailCurrent }: { data: NodeDetailData; detailCurrent
         displayName: data.logicalId,
         blockedReason: detailCurrent ? null : "The latest seat detail read failed, so this seat's identity is not current.",
       }}
-      terminal={<InlineTerminal data={data} />}
+      terminal={(command) => <InlineTerminal data={data} command={command} />}
     />
   );
 }
@@ -553,7 +554,7 @@ function SeatChat({ data, detailCurrent }: { data: NodeDetailData; detailCurrent
 // directly in Overview rather than behind a tab. The black-glass
 // chrome class is preserved verbatim so the visual feel matches the
 // pre-slice-25 terminal tab.
-function InlineTerminal({ data }: { data: NodeDetailData }) {
+function InlineTerminal({ data, command }: { data: NodeDetailData; command: StagedCommand | null }) {
   // OPR.0.4.6.MH2 rev1-r2 B1: the inline terminal is a LOCAL session surface
   // (session-name preview + click-to-live typeable xterm). Under a remote
   // selection a same-named LOCAL session must never render beneath the
@@ -592,6 +593,7 @@ function InlineTerminal({ data }: { data: NodeDetailData }) {
         terminalKey={`node-detail:${data.canonicalSessionName}`}
         testIdPrefix="node-detail-terminal"
         fit="contain"
+        command={command}
       />
     </div>
   );
