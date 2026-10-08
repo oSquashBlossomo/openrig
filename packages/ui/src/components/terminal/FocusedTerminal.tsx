@@ -1247,13 +1247,15 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
   const commandLine = command && command.sessionName === sessionName ? (
     <div data-testid={`focused-terminal-command-${sessionName}`} className="sticky left-0 flex max-w-full shrink-0 flex-col gap-1 bg-stone-900/90 px-2 py-1 font-mono text-[11px] leading-snug text-stone-200">
       <div>Command from Chat. Paste command types it into the agent&apos;s input without Enter; then run it with Enter or the agent&apos;s own menu.</div>
-      <div className="flex items-end gap-1">
+      {/* Wraps by the row's own width: a narrow host (phone, 3D side panel)
+          puts the actions under a full-width command so its arguments show. */}
+      <div className="flex flex-wrap items-end justify-end gap-1">
         <textarea
           aria-label="Native command"
           readOnly
           value={command.text}
-          rows={1}
-          className="min-w-0 flex-1 resize-none rounded border border-stone-700 bg-stone-950 p-1 text-[16px] text-stone-100"
+          rows={2}
+          className="max-h-24 min-w-[min(100%,24rem)] flex-1 resize-none rounded border border-stone-700 bg-stone-950 p-1 text-[16px] text-stone-100 [field-sizing:content]"
         />
         <button
           type="button"
