@@ -65,3 +65,32 @@ it.each([
 ])("does not promote an unframed or false metadata footer into composer proof (%j)", pane => {
   expect(matches(pane, "codex", cursor(7), "hello")).toBe(false);
 });
+
+it("matches the native Codex 0.161 paragraph at the 77-cell textarea word boundary", () => {
+  const text = "CHAT_REVIEW_CODEX: Read only acceptance.txt and report its marker. Also repeat café λ 日本語 🙂. Use no other tools.";
+  const lines = Array.from({ length: 24 }, () => "");
+  lines[19] = "› CHAT_REVIEW_CODEX: Read only acceptance.txt and report its marker. Also       ";
+  lines[20] = "  repeat café λ 日本語 🙂. Use no other tools.                                  ";
+  lines[22] = "  GPT-6.1-Sol high · /tmp/chat-proof/work-codex                        ";
+  expect(matches(lines.join("\n"), "codex", cursor(46, 20), text)).toBe(true);
+  expect(matches(lines.join("\n"), "codex", cursor(45, 20), text)).toBe(false);
+  expect(matches(lines.join("\n"), "codex", cursor(46, 20), text.replace("Also repeat", "Alsorepeat"))).toBe(false);
+});
+it.each([5, 6, 7])("uses native width−3 and preserves the insertion row for boundary word length %i", length => {
+  const text = "a".repeat(70) + " " + "é".repeat(length);
+  const body = length === 5 ? [`› ${text}`] : length === 6 ? [`› ${text}`, ""] : ["› " + "a".repeat(70), "  " + "é".repeat(length)];
+  const pane = [...body, "", "  GPT-6.1-Sol high · /tmp/proof", ""].join("\n");
+  const pos = length === 5 ? cursor(78) : length === 6 ? cursor(2, 1) : cursor(9, 1);
+  expect(matches(pane, "codex", pos, text)).toBe(true);
+  expect(matches(pane, "codex", { ...pos, x: pos.x + 1 }, text)).toBe(false);
+});
+it("counts wide Unicode cells and rejects loss of a literal trailing space at the exact Codex boundary", () => {
+  const text = "a".repeat(68) + " 日本語🙂";
+  expect(stringWidth(text)).toBe(77);
+  const pane = [`› ${text} `, "", "", "  GPT-6.1-Sol high · /tmp/proof", ""].join("\n");
+  expect(matches(pane, "codex", cursor(2, 1), text)).toBe(true);
+  expect(matches(pane, "codex", cursor(2, 1), text + " ")).toBe(false);
+  const withSpace = [`› ${text} `, "   ", "", "  GPT-6.1-Sol high · /tmp/proof", ""].join("\n");
+  expect(matches(withSpace, "codex", cursor(3, 1), text + " ")).toBe(true);
+  expect(matches(pane, "codex", cursor(79), text)).toBe(false);
+});

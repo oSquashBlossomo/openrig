@@ -85,10 +85,10 @@ export function nativeChatComposerMatches(pane: string, runtime: Runtime, cursor
       && (/^ *$/.test(body) || (runtime === "codex" && /^Ask Codex to do anything *$/.test(body)));
   }
   if (/\[Pasted text|Press up to edit queued messages/i.test(rows.join("\n"))) return false;
-  // Claude reserves two additional cells beyond its two-cell input prefix.
-  // Codex's demonstrated simple layout uses the remaining pane width. Unknown
-  // wrapping/width behavior fails closed rather than trimming requested bytes.
-  const capacity = cursor.width - stringWidth(lead) - (runtime === "claude-code" ? 2 : 0);
+  // Claude reserves two additional cells; Codex 0.161's composer_layout.rs
+  // reserves one right cell beyond LIVE_PREFIX_COLS (2). Unknown native layout
+  // still fails closed rather than adapting the requested text to fit it.
+  const capacity = cursor.width - stringWidth(lead) - (runtime === "claude-code" ? 2 : 1);
   if (capacity <= 0 || stringWidth(text) > capacity * rows.length + rows.length - 1) return false;
   let remaining = text;
   const projected: string[] = [];
@@ -101,12 +101,18 @@ export function nativeChatComposerMatches(pane: string, runtime: Runtime, cursor
     // Only a single expected space at an actual word-wrap boundary is omitted.
     // Long unsplittable words or ambiguous runs of spaces require Terminal.
     if (split <= 0 || remaining[split - 1] === " " || remaining[split + 1] === " ") return false;
-    projected.push(remaining.slice(0, split)); remaining = remaining.slice(split + 1);
+    projected.push(remaining.slice(0, split));
+    // A final trailing space is editable content on the continuation row,
+    // unlike an interior separator hidden at a native word-wrap boundary.
+    remaining = remaining.slice(split + (split < remaining.length - 1 ? 1 : 0));
     if (projected.length >= rows.length) return false;
   }
   projected.push(remaining);
+  // Codex textarea/wrapping.rs reserves an insertion row for a full final line.
+  if (runtime === "codex" && stringWidth(remaining) === capacity) projected.push("");
   if (projected.length !== rows.length) return false;
   return rows.every((row, i) => {
+    if (i > 0 && projected[i] === "") return /^ *$/.test(row);
     const expected = (i === 0 ? lead : " ".repeat(stringWidth(lead))) + projected[i]!;
     return row.startsWith(expected) && /^ *$/.test(row.slice(expected.length));
   }) && cursor.x === stringWidth(lead) + stringWidth(projected.at(-1)!);

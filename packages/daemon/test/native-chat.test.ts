@@ -288,3 +288,16 @@ it("does not submit a newly appeared native question despite a valid model-only 
   const result = await f.service.send(f.node.id, { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "hello" });
   expect(result.state).toBe("indeterminate"); expect(f.tmux.sendKeys).not.toHaveBeenCalled();
 });
+it("submits the actual Codex Unicode paragraph whose next word would exceed its 77-cell input width", async () => {
+  const f = fixture(), view = await f.service.read(f.node.id);
+  const text = "CHAT_REVIEW_CODEX: Read only acceptance.txt and report its marker. Also repeat café λ 日本語 🙂. Use no other tools.";
+  f.tmux.sendText.mockImplementation(async (_target, _text, before) => {
+    await before?.(); f.tmux.capturePaneObservation.mockResolvedValue({
+      snapshot: "› CHAT_REVIEW_CODEX: Read only acceptance.txt and report its marker. Also       \n  repeat café λ 日本語 🙂. Use no other tools.                                  \n\n  GPT-6.1-Sol high · /tmp/proof\n",
+      cursor: { x: 46, y: 1, width: 80, height: 24 },
+    }); return { ok: true };
+  });
+  expect((await f.service.send(f.node.id, { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text })).state).toBe("submitted");
+  expect(f.tmux.sendText).toHaveBeenCalledWith("%1", text, expect.any(Function));
+  expect(f.tmux.sendKeys).toHaveBeenCalledWith("%1", ["Enter"], expect.any(Function));
+});
