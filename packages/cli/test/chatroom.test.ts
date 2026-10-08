@@ -22,20 +22,22 @@ function mockLifecycleDeps(): LifecycleDeps {
   };
 }
 
-function captureLogs(fn: () => Promise<void>): Promise<{ logs: string[]; exitCode: number | undefined }> {
-  return new Promise(async (resolve) => {
-    const logs: string[] = [];
-    const origLog = console.log;
-    const origErr = console.error;
-    const origExitCode = process.exitCode;
-    process.exitCode = undefined;
-    console.log = (...args: unknown[]) => logs.push(args.join(" "));
-    console.error = (...args: unknown[]) => logs.push(args.join(" "));
-    try { await fn(); } finally { console.log = origLog; console.error = origErr; }
-    const exitCode = process.exitCode;
+async function captureLogs(fn: () => Promise<void>): Promise<{ logs: string[]; exitCode: number | undefined }> {
+  const logs: string[] = [];
+  const origLog = console.log;
+  const origErr = console.error;
+  const origExitCode = process.exitCode;
+  process.exitCode = undefined;
+  console.log = (...args: unknown[]) => logs.push(args.join(" "));
+  console.error = (...args: unknown[]) => logs.push(args.join(" "));
+  try {
+    await fn();
+    return { logs, exitCode: process.exitCode };
+  } finally {
+    console.log = origLog;
+    console.error = origErr;
     process.exitCode = origExitCode;
-    resolve({ logs, exitCode });
-  });
+  }
 }
 
 function runningDeps(port: number): StatusDeps {
@@ -52,6 +54,27 @@ function runningDeps(port: number): StatusDeps {
     clientFactory: (baseUrl) => new DaemonClient(baseUrl),
   };
 }
+
+describe("chatroom test log capture", () => {
+  it("rejects a failed command and restores console and exit state", async () => {
+    const log = console.log, error = console.error, exitCode = process.exitCode;
+    const failure = new Error("command failed during capture");
+    try {
+      await expect(captureLogs(async () => {
+        console.log("captured diagnostic");
+        process.exitCode = 1;
+        throw failure;
+      })).rejects.toBe(failure);
+      expect(console.log).toBe(log);
+      expect(console.error).toBe(error);
+      expect(process.exitCode).toBe(exitCode);
+    } finally {
+      console.log = log;
+      console.error = error;
+      process.exitCode = exitCode;
+    }
+  }, 1000);
+});
 
 describe("Chatroom CLI", () => {
   let server: http.Server;
@@ -346,16 +369,62 @@ describe("Chatroom CLI", () => {
     expect(capturedUrls.filter(url => url.includes("/chat/history"))).toHaveLength(1);
   });
 
-  it.each(["0.05", "0.05s"])("chatroom wait preserves the fractional deadline for %s", async (timeout) => {
-    capturedUrls.length = 0;
-    const started = Date.now();
-    const { logs, exitCode } = await captureLogs(() => makeCmd().parseAsync([
-      "node", "rig", "chatroom", "wait", "my-rig", "--after", "ZZZ", "--timeout", timeout,
-    ]));
-    expect(exitCode).toBe(1);
-    expect(logs.join("\n")).toContain("Timed out");
-    expect(Date.now() - started).toBeGreaterThanOrEqual(50);
-    expect(capturedUrls.filter(url => url.includes("/chat/history"))).toHaveLength(1);
+  it.each([
+    ["0.05", 0], ["0.05s", 0],
+    ["0.05", -1], ["0.05s", -1],
+    ["0.05", 25], ["0.05s", 25],
+  ])("chatroom wait preserves the fractional deadline for %s with first wake offset %ims", async (timeout, wakeOffset) => {
+    const origLog = console.log, origErr = console.error, origExitCode = process.exitCode;
+    // A timer can wake before the wall-clock deadline: a second poll is then
+    // valid. Drive that boundary explicitly instead of assuming one request.
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    vi.setSystemTime(0);
+    const setTimer = globalThis.setTimeout;
+    let shifted = false;
+    const timer = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback, delay, ...args) => {
+      if (!shifted && delay === 50) {
+        shifted = true;
+        return setTimer(callback, delay + wakeOffset, ...args);
+      }
+      return setTimer(callback, delay, ...args);
+    }) as typeof setTimeout);
+    const client = new DaemonClient(`http://localhost:${port}`);
+    const pollTimes: number[] = [];
+    const get = vi.spyOn(client, "get").mockImplementation(async (url) => {
+      if (url === "/api/rigs/summary") return { status: 200, data: rigSummary };
+      expect(url).toContain("/chat/history?after=ZZZ");
+      pollTimes.push(Date.now());
+      return { status: 200, data: [] };
+    });
+    try {
+      const prog = new Command();
+      prog.addCommand(chatroomCommand({ ...runningDeps(port), clientFactory: () => client }));
+      let finished = false;
+      const result = captureLogs(() => prog.parseAsync([
+        "node", "rig", "chatroom", "wait", "my-rig", "--after", "ZZZ", "--timeout", timeout,
+      ]).then(() => undefined)).then((outcome) => { finished = true; return outcome; });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(pollTimes).toEqual([0]);
+      expect(shifted).toBe(true); // 0.05[s] stays 50ms, including the sleep.
+      await vi.advanceTimersByTimeAsync(49);
+      expect(finished).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(finished).toBe(wakeOffset <= 0);
+      if (wakeOffset > 0) await vi.advanceTimersByTimeAsync(wakeOffset);
+      const { logs, exitCode } = await result;
+      expect(exitCode).toBe(1);
+      expect(logs.join("\n")).toContain("Timed out");
+      expect(Date.now()).toBe(50 + Math.max(0, wakeOffset));
+      expect(pollTimes).toEqual(wakeOffset < 0 ? [0, 49] : [0]);
+    } finally {
+      get.mockRestore();
+      timer.mockRestore();
+      vi.useRealTimers();
+      // An assertion may abandon a command still awaiting a fake timer.
+      console.log = origLog;
+      console.error = origErr;
+      process.exitCode = origExitCode;
+    }
   });
 
   it.each(["abc", "NaN", "Infinity", "-Infinity", "", " ", "-1", "-1s", "1e309", "1e309s"])("chatroom wait rejects invalid timeout %s before requests", async (timeout) => {
