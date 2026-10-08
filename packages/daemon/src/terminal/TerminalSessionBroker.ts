@@ -94,6 +94,8 @@ export interface BrokerTmux {
   sendText(name: string, text: string): Promise<TmuxResult>;
   capturePaneScreen(name: string, preserveTrailingSpaces?: boolean): Promise<string | null>;
   getPaneCursorPosition(name: string): Promise<TmuxCursorPosition | null>;
+  /** Atomic screen/cursor observation; absent adapters retain the bounded quiet-only path. */
+  capturePaneObservation?(name: string): Promise<{ snapshot: string; cursor: TmuxCursorPosition } | null>;
   /** Capture the last `lines` lines INCLUDING scrollback history (tmux
    *  capture-pane -S -lines). Used for the per-subscriber scroll-back window. */
   capturePaneContent(name: string, lines: number): Promise<string | null>;
@@ -196,6 +198,9 @@ export class TerminalSessionBroker {
   private displayFailures = 0;
   private attaching = 0;
   private readonly pendingRepaints = new Set<TerminalSubscriber>();
+  // Busy newcomers see authoritative snapshots, never deltas with an unknown base.
+  // They join raw fanout only after the ordinary quiet pipe/screen fence succeeds.
+  private readonly snapshotOnly = new Map<TerminalSubscriber, { failures: number; replayHistory: boolean }>();
   private settleTimer: ReturnType<typeof setTimeout> | null = null;
   private settleResolve: (() => void) | null = null;
   private readonly maxHistoryBytes: number;
@@ -374,6 +379,7 @@ export class TerminalSessionBroker {
       return;
     }
     this.returningToLive.delete(sub);
+    this.snapshotOnly.delete(sub);
     this.scrollOffsets.set(sub, clamped);
     // tmux `capture-pane -p -S -(offset+rows)` returns a buffer that ENDS at the live
     // bottom (verified against real tmux: `-S -N` returns ~N history lines above the
@@ -426,29 +432,38 @@ export class TerminalSessionBroker {
     });
   }
 
-  private async readScreen(): Promise<{ snapshot: string; cursor: TmuxCursorPosition; position: number; stable: boolean }> {
+  private async readScreen(): Promise<{ snapshot: string; cursor: TmuxCursorPosition; position: number; stable: boolean; atomic: boolean }> {
     // Native geometry can change between reads. Output has no atomic shared
     // sequence with capture-pane: use a bounded quiet sample, never skip bytes
-    // to make a snapshot look current. Busy output defers repaint, not delivery.
+    // to make a snapshot look current. Atomic observations may paint busy snapshot
+    // viewers; raw viewers still require the quiet fence before a repaint.
     let failure = new Error(GEOMETRY_UNAVAILABLE);
-    let changingScreen: { snapshot: string; cursor: TmuxCursorPosition; position: number; stable: false } | undefined;
+    let changingScreen: { snapshot: string; cursor: TmuxCursorPosition; position: number; stable: false; atomic: false } | undefined;
     for (let attempt = 0; attempt < 3; attempt++) {
-      const before = await this.tmux.getPaneCursorPosition(this.sessionName);
-      if (!validCursor(before)) throw geometryError(before);
       const position = this.pipeSize();
-      const snapshot = await this.tmux.capturePaneScreen(this.sessionName, true);
+      const observed = this.tmux.capturePaneObservation ? await this.tmux.capturePaneObservation(this.sessionName) : undefined;
+      // Unsupported atomic observations (for example configured after-hooks)
+      // retain the legacy quiet fence, but can never admit busy snapshots.
+      const before = observed?.cursor ?? await this.tmux.getPaneCursorPosition(this.sessionName);
+      if (!validCursor(before)) throw geometryError(before);
+      const snapshot = observed?.snapshot ?? await this.tmux.capturePaneScreen(this.sessionName, true);
       if (snapshot === null) throw new ScreenCaptureError("terminal screen capture unavailable; reopen to retry");
       await this.settlePipe();
       const cursor = await this.tmux.getPaneCursorPosition(this.sessionName);
+      if (observed && validCursor(cursor)) {
+        return { snapshot, cursor: before, position, atomic: true,
+          stable: position === this.lastSize && position === this.pipeSize()
+            && before.width === cursor.width && before.height === cursor.height && before.x === cursor.x && before.y === cursor.y };
+      }
       if (validCursor(cursor) && before.width === cursor.width && before.height === cursor.height) {
-        return { snapshot, cursor, position, stable: position === this.lastSize && position === this.pipeSize()
+        return { snapshot, cursor, position, atomic: false, stable: position === this.lastSize && position === this.pipeSize()
           && before.x === cursor.x && before.y === cursor.y };
       }
       if (validCursor(cursor)) {
         // Both native sizes are valid, but this capture belongs to the old
         // size. Keep the latest geometry without painting this snapshot or
         // treating an owner's ongoing resize as a shared display failure.
-        changingScreen = { snapshot, cursor, position, stable: false };
+        changingScreen = { snapshot, cursor, position, stable: false, atomic: false };
       } else {
         changingScreen = undefined;
         failure = geometryError(cursor);
@@ -470,14 +485,27 @@ export class TerminalSessionBroker {
     }
   }
 
-  private async repaintPending(screen: { snapshot: string; cursor: TmuxCursorPosition; position: number; stable: boolean }): Promise<void> {
+  private async repaintPending(screen: Awaited<ReturnType<TerminalSessionBroker["readScreen"]>>): Promise<void> {
     if (this.torndown) return;
     if (!screen.stable || screen.position !== this.lastSize || screen.position !== this.pipeSize()) {
-      // A history viewer receives no live deltas until repaint. Bound that
-      // otherwise silent wait, without interrupting viewers already streaming.
-      for (const [sub, attempts] of [...this.returningToLive]) {
-        if (attempts + 1 < MAX_DISPLAY_ATTEMPTS) this.returningToLive.set(sub, attempts + 1);
-        else {
+      if (screen.atomic) {
+        for (const sub of this.pendingRepaints) {
+          if (!this.subscribers.has(sub) || (!this.snapshotOnly.has(sub) && !this.returningToLive.has(sub))) continue;
+          this.snapshotOnly.set(sub, { failures: 0, replayHistory: this.snapshotOnly.get(sub)?.replayHistory ?? false });
+          this.scrollOffsets.delete(sub);
+          this.returningToLive.delete(sub);
+          try { sub.send(screenSnapshotEscape(screen.snapshot, screen.cursor)); } catch { this.detach(sub); }
+        }
+        return;
+      }
+      // Adapters without an atomic observation still cannot paint a busy capture.
+      for (const sub of new Set([...this.returningToLive.keys(), ...this.snapshotOnly.keys()])) {
+        const snapshot = this.snapshotOnly.get(sub);
+        const attempts = snapshot?.failures ?? this.returningToLive.get(sub) ?? 0;
+        if (attempts + 1 < MAX_DISPLAY_ATTEMPTS) {
+          if (snapshot) snapshot.failures++;
+          else this.returningToLive.set(sub, attempts + 1);
+        } else {
           try { sub.close(1011, SCREEN_BUSY); } catch { /* dead subscriber */ }
           this.detach(sub);
         }
@@ -489,9 +517,14 @@ export class TerminalSessionBroker {
       const offset = this.scrollOffsets.get(sub) ?? 0;
       if (offset > 0 && !this.returningToLive.has(sub)) await this.paintScroll(sub, offset);
       else {
+        if (this.snapshotOnly.get(sub)?.replayHistory) {
+          const history = this.history.join("");
+          if (isSafeHistoryReplay(history)) { try { sub.send(history); } catch { this.detach(sub); continue; } }
+        }
         try { sub.send(screenSnapshotEscape(screen.snapshot, screen.cursor)); } catch { this.detach(sub); }
         this.scrollOffsets.delete(sub);
         this.returningToLive.delete(sub);
+        this.snapshotOnly.delete(sub);
       }
       this.pendingRepaints.delete(sub);
     }
@@ -560,6 +593,7 @@ export class TerminalSessionBroker {
     this.scrollOffsets.delete(sub);
     this.returningToLive.delete(sub);
     this.pendingRepaints.delete(sub);
+    this.snapshotOnly.delete(sub);
     if (this.subscribers.size === 0 && this.attaching === 0) {
       void this.teardown();
     }
@@ -613,21 +647,29 @@ export class TerminalSessionBroker {
         try { sub.geometry?.(this.cols, this.rows); } catch { /* dead subscriber */ }
         sentCols = this.cols; sentRows = this.rows;
       }
-      if (!historySent) {
+      const fenced = screen.stable && screen.position === this.lastSize && screen.position === this.pipeSize();
+      if (!historySent && (!screen.atomic || fenced)) {
         historySent = true;
         if (this.historyBytes > 0) {
           const history = this.history.join("");
           if (isSafeHistoryReplay(history)) { try { sub.send(history); } catch { /* dead socket */ } }
         }
       }
-      this.readTail(sub);
-      if (screen.stable && screen.position === this.lastSize && screen.position === this.pipeSize()) {
+      this.readTail(screen.atomic ? undefined : sub);
+      // Native bytes can arrive between the earlier fence and this tail read.
+      // If consumed without the newcomer, retain snapshots until a new fence.
+      const readyForDeltas = screen.stable && screen.position === this.lastSize && screen.position === this.pipeSize();
+      if (screen.atomic || readyForDeltas) {
+        if (!readyForDeltas) {
+          this.snapshotOnly.set(sub, { failures: 0, replayHistory: !historySent });
+          this.pendingRepaints.add(sub);
+        }
         try { sub.send(screenSnapshotEscape(screen.snapshot, screen.cursor)); } catch { /* dead socket */ }
         return;
       }
       // The capture and pipe have no atomic watermark. Retry a bounded sample,
       // never acknowledge unread bytes or paint a known-outdated snapshot. A
-      // permanently busy fresh viewer must fail honestly instead of going live
+      // permanently busy viewer without atomic observations must fail instead of going live
       // indefinitely with only cursor deltas and no authoritative screen seed.
     }
     throw new BusyScreenError(SCREEN_BUSY);
@@ -672,7 +714,7 @@ export class TerminalSessionBroker {
       // OPR.0.4.0.39: a subscriber scrolled back into history is viewing a static
       // tmux capture window; skip the live fanout so output does not overwrite it.
       // It rejoins live when it scrolls back to the bottom (offset 0).
-      if ((this.scrollOffsets.get(sub) ?? 0) > 0) continue;
+      if ((this.scrollOffsets.get(sub) ?? 0) > 0 || this.snapshotOnly.has(sub)) continue;
       try {
         sub.send(data);
       } catch {
@@ -746,6 +788,7 @@ export class TerminalSessionBroker {
   private stopTimers(): void {
     this.pendingRepaints.clear();
     this.returningToLive.clear();
+    this.snapshotOnly.clear();
     if (this.settleTimer) { clearTimeout(this.settleTimer); this.settleTimer = null; }
     this.settleResolve?.();
     this.settleResolve = null;

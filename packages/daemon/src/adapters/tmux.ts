@@ -1111,6 +1111,41 @@ export class TmuxAdapter {
     }
   }
 
+  /** Observe the screen and its cursor/geometry in one non-yielding tmux command
+   * group. This is NOT a pipe-byte watermark: callers still fence before streaming.
+   * After-command hooks can yield. Check inherited session hooks in the same
+   * group, including the check command's own hook, and reject any configured hook
+   * rather than modifying it or returning a mixed observation. Hook values never
+   * leave this adapter. tmux cmdq_next processes these normal-return commands
+   * together before servicing more pane output. */
+  async capturePaneObservation(paneId: string): Promise<{ snapshot: string; cursor: TmuxCursorPosition } | null> {
+    const target = exactTarget(paneId, "pane");
+    const hooks = ["after-show-options", "after-display-message", "after-capture-pane"];
+    const marker = `__openrig_screen_${randomUUID().replace(/-/g, "")}__`;
+    const format = `${marker}|#{pane_id}|${CURSOR_FORMAT}`;
+    const argv = ["tmux", ...hooks.flatMap(hook => ["show-options", "-A", "-t", target, hook, ";"]),
+      "display-message", "-p", "-t", target, format, ";", "capture-pane", "-p", "-e", "-N", "-t", target];
+    try {
+      const output = (await this.run(argv)).replace(/\r\n/g, "\n");
+      const prefix = hooks.join("\n") + "\n";
+      if (!output.startsWith(prefix)) return null;
+      const end = output.indexOf("\n", prefix.length);
+      if (end < 0) return null;
+      const [tag, nativePane, ...fields] = output.slice(prefix.length, end).split("|");
+      if (tag !== marker || !/^%\d+$/.test(nativePane ?? "") || fields.length !== 4
+        || fields.some(value => !/^\d+$/.test(value)) || /^%\d+$/.test(paneId) && paneId !== nativePane) return null;
+      const [x, y, width, height] = fields.map(Number) as [number, number, number, number];
+      if (![x, y, width, height].every(Number.isSafeInteger) || width < 1 || height < 1 || x > width || y >= height) return null;
+      const snapshot = output.slice(end + 1);
+      // A complete visible capture has exactly height newline-terminated rows.
+      // Refuse partial responses or extra hook output, preserving written spaces.
+      if (!snapshot.endsWith("\n") || snapshot.split("\n").length !== height + 1) return null;
+      return { snapshot, cursor: { x, y, width, height } };
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * Get the current cursor coordinates and pane geometry. Coordinates are
    * zero-based. Returns null if unavailable or if tmux yields non-finite /
