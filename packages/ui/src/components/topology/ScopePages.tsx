@@ -106,12 +106,21 @@ function GraphFrame({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** Narrow-layout graph frame: the phone graph sizes its own bounded canvas,
- *  so this frame never stretches or shrinks with the page (shrink-0) and the
- *  page keeps scrolling around it. */
+/** The desktop canvas needs the wide shell and a pointer. A touch tablet
+ *  (iPad landscape crosses 1024px) keeps the touch graph in both
+ *  orientations; the shell breakpoint itself is unchanged. */
+function useDesktopGraph(): boolean {
+  const { isWideLayout, isTouchTablet } = useShellViewport();
+  return isWideLayout && !isTouchTablet;
+}
+
+/** Touch graph frame: the phone graph sizes its own canvas, so this frame
+ *  never stretches or shrinks with the page (shrink-0) and the page keeps
+ *  scrolling around it. On a wide touch tablet it clears the Explorer
+ *  overlay like the desktop frame (the offset is 0 below 1024px). */
 function PhoneGraphFrame({ children }: { children: React.ReactNode }) {
   return (
-    <div data-testid="topology-phone-graph-frame" className="shrink-0">
+    <div data-testid="topology-phone-graph-frame" className="shrink-0" style={{ marginLeft: "var(--header-anchor-offset, 0px)" }}>
       <ErrorBoundary label="Graph view">{children}</ErrorBoundary>
     </div>
   );
@@ -235,7 +244,7 @@ function HostScopeContent({ nav }: { nav: TopologyNavigation }) {
   // Recent describes the connected instance only: null while the selection
   // resolves, unsupported (no read, no local rows) for a remote selection.
   const recentInstance = useTopologyRecentInstance();
-  const { isWideLayout } = useShellViewport();
+  const desktopGraph = useDesktopGraph();
   useOverlayForActiveTab(active);
 
   // OPR.0.4.6.MH2 FR-3/FR-6 — the page title names the ACTUAL data source
@@ -324,7 +333,7 @@ function HostScopeContent({ nav }: { nav: TopologyNavigation }) {
         </div>
       ) : null}
       {!remoteUnreachable && active === "graph" ? (
-        isWideLayout ? (
+        desktopGraph ? (
           <GraphFrame>
             <HostMultiRigGraph />
           </GraphFrame>
@@ -388,7 +397,7 @@ function RigScopeContent({ nav, rigId }: { nav: TopologyNavigation; rigId: strin
     : rig && typeof rig.name === "string" && rig.name.length > 0 ? { kind: "rig" as const, rig: rig.name } : "unavailable" as const;
   const active = nav.location.view as TopologyRigPodScopeTab;
   const setActive = (view: TopologyRigPodScopeTab) => nav.replace({ view });
-  const { isWideLayout } = useShellViewport();
+  const desktopGraph = useDesktopGraph();
   useOverlayForActiveTab(active);
 
   const liveCap = useTerminalCap();
@@ -461,7 +470,7 @@ function RigScopeContent({ nav, rigId }: { nav: TopologyNavigation; rigId: strin
       )}
       <ActivityRollupBar rigId={rigId} />
       {active === "graph" ? (
-        isWideLayout ? (
+        desktopGraph ? (
           <GraphFrame>
             <RigGraph rigId={rigId} rigName={rig?.name ?? null} showDiscovered={false} />
           </GraphFrame>
@@ -579,7 +588,7 @@ function PodScopeContent({ nav, rigId, podName }: { nav: TopologyNavigation; rig
   const health = useScopeHealth(nav, useMemoHealthScope("pod", rigId, podName));
   const active = nav.location.view as TopologyRigPodScopeTab;
   const setActive = (view: TopologyRigPodScopeTab) => nav.replace({ view });
-  const { isWideLayout } = useShellViewport();
+  const desktopGraph = useDesktopGraph();
   useOverlayForActiveTab(active);
 
   return (
@@ -592,7 +601,7 @@ function PodScopeContent({ nav, rigId, podName }: { nav: TopologyNavigation; rig
       tabsNav={<TopologyViewModeTabs tabs={RIG_POD_SCOPE_TABS} active={active} onSelect={setActive} testIdPrefix="topology-pod" />}
     >
       {active === "graph" ? (
-        isWideLayout ? (
+        desktopGraph ? (
           <GraphFrame>
             <RigGraph rigId={rigId} rigName={null} showDiscovered={false} podScope={podName} />
           </GraphFrame>

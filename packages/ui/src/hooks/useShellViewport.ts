@@ -9,6 +9,14 @@
 import { useEffect, useState } from "react";
 
 const WIDE_LAYOUT_BREAKPOINT = 1024;
+/** Shortest side of a tablet screen: every phone is narrower than this in
+ *  one orientation, every iPad (mini included) is wider in both. */
+const TABLET_MIN_SIDE = 600;
+/** Widest touch tablet viewport (iPad Pro 13" landscape is 1376px). */
+const TOUCH_TABLET_MAX_WIDTH = 1400;
+/** Some input is a touchscreen. Unlike the primary `pointer`/`hover`, an
+ *  attached mouse or trackpad does not turn this off. */
+const ANY_TOUCH_QUERY = "(any-pointer: coarse)";
 
 export interface ShellViewport {
   /** True when window.innerWidth >= 1024px (Tailwind lg breakpoint). */
@@ -16,29 +24,51 @@ export interface ShellViewport {
   /** Live innerWidth in px; useful for mid-band decisions (e.g., 768
    *  iPad-portrait breakpoint between mobile and desktop). */
   innerWidth: number;
+  /** A tablet in either orientation, never a phone: the viewport is at least
+   *  600px wide and the screen's short side is too. The screen, not the
+   *  viewport height, so a soft keyboard never reclassifies the device. */
+  isTablet: boolean;
+  /** A touch-capable tablet up to iPad Pro landscape width, whatever its
+   *  primary pointer (an attached trackpad or mouse keeps it a tablet).
+   *  Lets touch surfaces (the topology Graph) stay touch-first past the
+   *  1024px shell breakpoint without moving that breakpoint. */
+  isTouchTablet: boolean;
+}
+
+function readViewport(): ShellViewport {
+  const { innerWidth, innerHeight, screen } = window;
+  // Fall back to the viewport where the screen size is not reported.
+  const shortSide = Math.min(screen?.width || innerWidth, screen?.height || innerHeight);
+  const isTablet = innerWidth >= TABLET_MIN_SIDE && shortSide >= TABLET_MIN_SIDE;
+  const touchCapable = (typeof window.matchMedia === "function" && window.matchMedia(ANY_TOUCH_QUERY).matches)
+    || (window.navigator?.maxTouchPoints ?? 0) > 0;
+  return {
+    isWideLayout: innerWidth >= WIDE_LAYOUT_BREAKPOINT,
+    innerWidth,
+    isTablet,
+    isTouchTablet: isTablet && touchCapable && innerWidth <= TOUCH_TABLET_MAX_WIDTH,
+  };
 }
 
 export function useShellViewport(): ShellViewport {
   const [state, setState] = useState<ShellViewport>(() => {
     if (typeof window === "undefined") {
-      return { isWideLayout: true, innerWidth: WIDE_LAYOUT_BREAKPOINT };
+      return { isWideLayout: true, innerWidth: WIDE_LAYOUT_BREAKPOINT, isTablet: false, isTouchTablet: false };
     }
-    return {
-      isWideLayout: window.innerWidth >= WIDE_LAYOUT_BREAKPOINT,
-      innerWidth: window.innerWidth,
-    };
+    return readViewport();
   });
 
   useEffect(() => {
-    const handleResize = () => {
-      setState({
-        isWideLayout: window.innerWidth >= WIDE_LAYOUT_BREAKPOINT,
-        innerWidth: window.innerWidth,
-      });
-    };
+    const handleResize = () => setState(readViewport());
     handleResize();
     window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
+    // Input devices can come and go without a resize.
+    const touchQuery = typeof window.matchMedia === "function" ? window.matchMedia(ANY_TOUCH_QUERY) : null;
+    touchQuery?.addEventListener?.("change", handleResize);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      touchQuery?.removeEventListener?.("change", handleResize);
+    };
   }, []);
 
   return state;

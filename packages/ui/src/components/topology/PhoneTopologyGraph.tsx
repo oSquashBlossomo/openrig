@@ -13,6 +13,13 @@
 //     The canvas has a bounded height and wheel/trackpad input is left to the
 //     page, so the page around it always scrolls; native page zoom is
 //     untouched outside the canvas.
+//   - Tablet page flow (both sides >= 600px: iPad portrait and, via the
+//     touch-tablet check in ScopePages, landscape past 1024px): the graph is
+//     drawn full width at a readable zoom and the canvas is as tall as the
+//     graph, so ordinary page scrolling reaches every rig and the panels
+//     below. The canvas takes no drag or pinch (no nested pan area; native
+//     page pinch-zoom works); − / + / Reset step a page zoom between a
+//     legible floor and the full width, and the controls stay sticky.
 //   - A seat tap (canvas chip, seat row or the details action) selects the
 //     seat and opens its terminal over the graph: the 3D workspace's guarded
 //     SeatLiveTerminal dock, unchanged (fresh exact-identity read, pinned
@@ -44,6 +51,7 @@ import { Crosshair, Maximize, Minus, Plus, SquareTerminal, X } from "lucide-reac
 import { useSpatialTopology } from "../../hooks/useSpatialTopology.js";
 import { useRigSummary } from "../../hooks/useRigSummary.js";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion.js";
+import { useShellViewport } from "../../hooks/useShellViewport.js";
 import {
   MAX_SPATIAL_RIGS,
   deriveSeatStatus,
@@ -60,6 +68,7 @@ import {
   defaultPhoneExpandedRigIds,
   emptyTally,
   layoutPhoneGraph,
+  pagePhoneViewport,
   phoneGraphColumns,
   phoneTranslateExtent,
   readablePhoneViewport,
@@ -144,6 +153,7 @@ function PhoneTopologyGraphBody({ nav }: { nav: TopologyNavigation }) {
   const knownHost = useKnownSelectedHost();
   const linkSource = nav.location.sourceHost ?? knownHost;
   const reducedMotion = usePrefersReducedMotion();
+  const { isTablet: pageFlow } = useShellViewport();
   const flow = useReactFlow();
   const { expandedRigs, setRigExpanded } = useTopologyOverlay();
   const model = data.model;
@@ -266,6 +276,13 @@ function PhoneTopologyGraphBody({ nav }: { nav: TopologyNavigation }) {
   );
 
   const translateExtent = useMemo(() => phoneTranslateExtent(layout.bounds), [layout.bounds]);
+  // Tablet page flow: null = the readable full-width view (Reset).
+  const [pageZoom, setPageZoom] = useState<number | null>(null);
+  const pageView = useMemo(
+    () => (pageFlow ? pagePhoneViewport(layout.bounds, size.width, pageZoom) : null),
+    [pageFlow, layout.bounds, size.width, pageZoom],
+  );
+  const scrollMarkRef = useRef<HTMLDivElement | null>(null);
 
   // ---- Relationships of the selected seat (canvas highlight only).
   const relations = useMemo(() => {
@@ -346,7 +363,7 @@ function PhoneTopologyGraphBody({ nav }: { nav: TopologyNavigation }) {
   // ---- Viewport: readable opening view, refit on rotation/column change,
   // keep the operator's pan/zoom across expand/collapse and data refreshes.
   const orientation = size.width >= size.height ? "landscape" : "portrait";
-  const fitKey = layout.nodes.length > 0 && size.width > 0 && size.height > 0
+  const fitKey = !pageFlow && layout.nodes.length > 0 && size.width > 0 && size.height > 0
     ? `${columns}|${orientation}|${Math.round(size.width / 48)}`
     : null;
   const appliedFitKey = useRef<string | null>(null);
@@ -358,11 +375,11 @@ function PhoneTopologyGraphBody({ nav }: { nav: TopologyNavigation }) {
   useEffect(() => {
     const prev = boundedFor.current;
     boundedFor.current = { extent: translateExtent, fitKey };
-    if (!prev || prev.extent === translateExtent || prev.fitKey !== fitKey || size.width <= 0) return;
+    if (pageFlow || !prev || prev.extent === translateExtent || prev.fitKey !== fitKey || size.width <= 0) return;
     const now = flow.getViewport();
     const next = boundPhoneViewport(now, translateExtent, size);
     if (Math.abs(next.x - now.x) > 0.5 || Math.abs(next.y - now.y) > 0.5) void flow.setViewport(next, { duration });
-  }, [translateExtent, fitKey, size, flow, duration]);
+  }, [translateExtent, fitKey, size, flow, duration, pageFlow]);
   useEffect(() => {
     if (!fitKey || appliedFitKey.current === fitKey) return;
     const first = appliedFitKey.current === null;
@@ -373,6 +390,14 @@ function PhoneTopologyGraphBody({ nav }: { nav: TopologyNavigation }) {
       : readablePhoneViewport(layout.bounds, size);
     if (next) void flow.setViewport(boundPhoneViewport(next, translateExtent, size), { duration: first ? 0 : duration });
   }, [fitKey, layout, selectedNodeId, size, flow, duration, translateExtent]);
+  // Page flow: the camera follows the layout, width and page zoom exactly
+  // (the surface is resized to match in the same commit). Leaving page flow
+  // refits through the effect above.
+  useEffect(() => {
+    if (!pageView) return;
+    appliedFitKey.current = null;
+    void flow.setViewport(pageView.viewport);
+  }, [pageView, flow]);
 
   // Centre requests (neighbor rows, Center button) resolve after the layout
   // has re-expanded whatever held the target.
@@ -383,10 +408,20 @@ function PhoneTopologyGraphBody({ nav }: { nav: TopologyNavigation }) {
     const node = layout.nodes.find((n) => n.id === id);
     setCenterRequest(null);
     if (!node) return;
+    if (pageView) {
+      // The page scrolls, not the camera: bring the node's drawn box into view.
+      const mark = scrollMarkRef.current;
+      if (!mark) return;
+      const { y, zoom } = pageView.viewport;
+      mark.style.top = `${y + node.position.y * zoom}px`;
+      mark.style.height = `${node.height * zoom}px`;
+      mark.scrollIntoView?.({ block: "center", behavior: reducedMotion ? "auto" : "smooth" });
+      return;
+    }
     const zoom = Math.max(flow.getZoom(), 1);
     const next = centerPhoneViewport(node, size, zoom);
     if (next) void flow.setViewport(boundPhoneViewport(next, translateExtent, size), { duration });
-  }, [centerRequest, layout, size, flow, duration, translateExtent]);
+  }, [centerRequest, layout, size, flow, duration, translateExtent, pageView, reducedMotion]);
 
   const selectSeat = useCallback((agent: SpatialAgent, opts: { center?: boolean } = {}) => {
     // Make the seat visible first: open its rig and pod if they are collapsed.
@@ -504,11 +539,20 @@ function PhoneTopologyGraphBody({ nav }: { nav: TopologyNavigation }) {
           <GraphPartialNotice issues={partial} unavailable={unavailable} />
         </div>
       ) : null}
-      <div className="flex flex-col gap-3 px-3 pb-3 [@media(orientation:landscape)_and_(max-height:540px)]:flex-row">
+      {/* Phone landscape (short viewport) puts details beside the canvas; a
+          tablet keeps page flow with details below even when its viewport is
+          short (keyboard open), so every short-landscape rule is phone-only. */}
+      <div className={cn("flex flex-col gap-3 px-3 pb-3", !pageFlow && "[@media(orientation:landscape)_and_(max-height:540px)]:flex-row")}>
         <div
           data-testid="phone-graph-canvas"
           data-columns={columns}
-          className="flex h-[clamp(300px,58svh,760px)] min-w-0 flex-col border border-outline-variant bg-surface-lowest/30 [@media(orientation:landscape)_and_(max-height:540px)]:h-[max(240px,calc(100svh-7.5rem))] [@media(orientation:landscape)_and_(max-height:540px)]:flex-[3]"
+          data-flow={pageFlow ? "page" : "bounded"}
+          className={cn(
+            "flex min-w-0 flex-col border border-outline-variant bg-surface-lowest/30",
+            pageFlow
+              ? null
+              : "h-[clamp(300px,58svh,760px)] [@media(orientation:landscape)_and_(max-height:540px)]:h-[max(240px,calc(100svh-7.5rem))] [@media(orientation:landscape)_and_(max-height:540px)]:flex-[3]",
+          )}
         >
           {/* Reserved control header: camera controls live in their own row,
               outside the drawable surface, so they can never cover a node's
@@ -517,28 +561,46 @@ function PhoneTopologyGraphBody({ nav }: { nav: TopologyNavigation }) {
             role="toolbar"
             aria-label="Graph view controls"
             data-testid="phone-graph-controls"
-            className="flex h-11 shrink-0 items-stretch border-b border-outline-variant bg-background/90"
+            className={cn(
+              "flex h-11 shrink-0 items-stretch border-b border-outline-variant bg-background/90",
+              // Page flow: the controls follow the page while the graph scrolls by.
+              pageFlow && "sticky top-0 z-10",
+            )}
           >
             <span className="flex min-w-0 flex-1 items-center truncate px-3 font-mono text-[10px] text-on-surface-variant">
-              Drag to scroll · pinch to zoom
+              {pageFlow ? "Scroll the page · − / + to zoom" : "Drag to scroll · pinch to zoom"}
             </span>
-            <button type="button" data-testid="phone-graph-fit" aria-label="Fit whole graph" title="Fit whole graph"
-              onClick={() => void flow.fitView({ padding: 0.06, duration, minZoom: PHONE_MIN_ZOOM })}
+            <button type="button" data-testid="phone-graph-fit"
+              aria-label={pageFlow ? "Reset to readable width" : "Fit whole graph"} title={pageFlow ? "Reset to readable width" : "Fit whole graph"}
+              onClick={() => (pageFlow ? setPageZoom(null) : void flow.fitView({ padding: 0.06, duration, minZoom: PHONE_MIN_ZOOM }))}
               className="inline-flex h-11 w-11 items-center justify-center border-l border-outline-variant text-on-surface hover:bg-surface-low/70">
               <Maximize className="h-4 w-4" aria-hidden="true" />
             </button>
             <button type="button" data-testid="phone-graph-zoom-out" aria-label="Zoom out" title="Zoom out"
-              onClick={() => void flow.zoomOut({ duration })}
-              className="inline-flex h-11 w-11 items-center justify-center border-l border-outline-variant text-on-surface hover:bg-surface-low/70">
+              disabled={pageView ? pageView.viewport.zoom <= pageView.minZoom : false}
+              onClick={() => {
+                if (!pageFlow) void flow.zoomOut({ duration });
+                else if (pageView) setPageZoom(Math.max(pageView.minZoom, pageView.viewport.zoom / 1.2));
+              }}
+              className="inline-flex h-11 w-11 items-center justify-center border-l border-outline-variant text-on-surface hover:bg-surface-low/70 disabled:opacity-40">
               <Minus className="h-4 w-4" aria-hidden="true" />
             </button>
             <button type="button" data-testid="phone-graph-zoom-in" aria-label="Zoom in" title="Zoom in"
-              onClick={() => void flow.zoomIn({ duration })}
-              className="inline-flex h-11 w-11 items-center justify-center border-l border-outline-variant text-on-surface hover:bg-surface-low/70">
+              disabled={pageView ? pageView.viewport.zoom >= pageView.readableZoom : false}
+              onClick={() => {
+                if (!pageFlow) void flow.zoomIn({ duration });
+                else if (pageView) setPageZoom(pageView.viewport.zoom * 1.2 >= pageView.readableZoom ? null : pageView.viewport.zoom * 1.2);
+              }}
+              className="inline-flex h-11 w-11 items-center justify-center border-l border-outline-variant text-on-surface hover:bg-surface-low/70 disabled:opacity-40">
               <Plus className="h-4 w-4" aria-hidden="true" />
             </button>
           </div>
-          <div ref={setSurfaceEl} data-testid="phone-graph-surface" className="relative min-h-0 flex-1">
+          <div
+            ref={setSurfaceEl}
+            data-testid="phone-graph-surface"
+            className={cn("relative", !pageFlow && "min-h-0 flex-1")}
+            style={pageFlow ? { height: pageView?.height ?? 300 } : undefined}
+          >
             <ReactFlow
               nodes={viewNodes}
               edges={viewEdges}
@@ -548,8 +610,10 @@ function PhoneTopologyGraphBody({ nav }: { nav: TopologyNavigation }) {
               nodesDraggable={false}
               nodesConnectable={false}
               elementsSelectable={false}
-              panOnDrag
-              zoomOnPinch
+              // Page flow takes no gestures at all (React Flow then filters
+              // every touch), so drags scroll the page and pinch zooms it.
+              panOnDrag={!pageFlow}
+              zoomOnPinch={!pageFlow}
               // One-finger drags move vertically: the horizontal extent is the
               // graph itself, so while it fits the width d3 keeps it centred
               // (no sideways drift); zoomed in, panning stays inside it.
@@ -565,15 +629,20 @@ function PhoneTopologyGraphBody({ nav }: { nav: TopologyNavigation }) {
               // Gestures inside the canvas belong to the graph (no Safari
               // double-tap page zoom mid-pan); the header, footer and
               // everything outside the canvas keep native scroll and page zoom.
-              className="touch-none"
+              className={pageFlow ? "touch-manipulation" : "touch-none"}
             />
+            {pageFlow ? <div ref={scrollMarkRef} aria-hidden="true" className="pointer-events-none absolute inset-x-0" /> : null}
           </div>
           {/* Reserved peek footer (portrait; phone landscape shows the details
               column beside the canvas instead). Always present so selecting
               does not resize the surface, and never over a node. */}
           <div
             data-testid="phone-graph-footer"
-            className="flex h-11 shrink-0 items-stretch border-t border-outline-variant bg-background/95 font-mono text-[11px] [@media(orientation:landscape)_and_(max-height:540px)]:hidden"
+            className={cn(
+              "flex h-11 shrink-0 items-stretch border-t border-outline-variant bg-background/95 font-mono text-[11px]",
+              // Page flow: the peek stays above the bottom nav while the graph scrolls.
+              pageFlow ? "sticky bottom-[var(--shell-bottom)] z-10" : "[@media(orientation:landscape)_and_(max-height:540px)]:hidden",
+            )}
           >
             {peekName ? (
               <div data-testid="phone-graph-peek" className="flex min-w-0 flex-1 items-center gap-1 pl-3">
@@ -600,7 +669,10 @@ function PhoneTopologyGraphBody({ nav }: { nav: TopologyNavigation }) {
         <div
           ref={detailsRef}
           data-testid="phone-graph-details"
-          className="min-w-0 scroll-mt-2 border border-outline-variant bg-background/80 [@media(orientation:landscape)_and_(max-height:540px)]:flex-[2] [@media(orientation:landscape)_and_(max-height:540px)]:h-[max(240px,calc(100svh-7.5rem))] [@media(orientation:landscape)_and_(max-height:540px)]:overflow-y-auto"
+          className={cn(
+            "min-w-0 scroll-mt-2 border border-outline-variant bg-background/80",
+            !pageFlow && "[@media(orientation:landscape)_and_(max-height:540px)]:flex-[2] [@media(orientation:landscape)_and_(max-height:540px)]:h-[max(240px,calc(100svh-7.5rem))] [@media(orientation:landscape)_and_(max-height:540px)]:overflow-y-auto",
+          )}
         >
           <PhoneGraphDetails
             nav={nav}
