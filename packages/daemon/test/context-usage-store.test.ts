@@ -109,6 +109,7 @@ describe("ContextUsageStore", () => {
           info: {
             last_token_usage: {
               input_tokens: 227139,
+              cached_input_tokens: 220000,
               output_tokens: 611,
               total_tokens: 227750,
             },
@@ -136,6 +137,7 @@ describe("ContextUsageStore", () => {
     expect(usage.sessionName).toBe("dev-qa@test-rig");
     expect(usage.transcriptPath).toBe(rolloutPath);
     expect(usage.currentUsage).toContain("\"model_context_window\":258400");
+    expect(JSON.parse(usage.currentUsage!).last_token_usage.cached_input_tokens).toBe(220000);
 
     rmSync(codexHome, { recursive: true, force: true });
   });
