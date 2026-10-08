@@ -48,6 +48,8 @@ import { useTopologyOverlay } from "./topology-overlay-context.js";
 // supersedes universal-shell.md L143's "graph degrades to table on mobile":
 // Graph and Table stay separate, explicit tabs at every width.
 import { useShellViewport } from "../../hooks/useShellViewport.js";
+import { cn } from "../../lib/utils.js";
+import { GraphSeatDock, useGraphSeatDock } from "./GraphSeatDock.js";
 import { PhoneTopologyGraph } from "./PhoneTopologyGraph.js";
 import { useNodeInventory } from "../../hooks/useNodeInventory.js";
 import { computeActivityRollup, formatRollupLabel } from "../../lib/activity-visuals.js";
@@ -94,11 +96,20 @@ function SpatialPanel({ scope }: { scope: SpatialScope }) {
  *  (21rem expanded, 3rem collapsed, 0 on narrow/opaque layouts), so the
  *  frame starts past it and React Flow measures — and fits to — only the
  *  visible canvas instead of drawing nodes underneath the Explorer. */
-function GraphFrame({ children }: { children: React.ReactNode }) {
+function GraphFrame({ children, tall = false }: { children: React.ReactNode; tall?: boolean }) {
   return (
     <div
       data-testid="topology-graph-frame"
-      className="flex-1 min-h-0 relative"
+      data-tall={tall ? "true" : undefined}
+      // Tablet: the same desktop graph, but its frame keeps (at least) the
+      // workspace height below the tab bar instead of shrinking to what the
+      // sections under it leave; those sections follow it and the page
+      // scrolls to them. svh, so a soft keyboard or Safari's toolbar never
+      // resizes the graph. Desktop keeps sharing the viewport (flex-1/min-h-0).
+      className={cn(
+        "relative flex-1",
+        tall ? "shrink-0 min-h-[max(24rem,calc(100svh-var(--shell-top)-var(--shell-bottom)-4rem))]" : "min-h-0",
+      )}
       style={{ marginLeft: "var(--header-anchor-offset, 0px)" }}
     >
       {children}
@@ -235,7 +246,7 @@ function HostScopeContent({ nav }: { nav: TopologyNavigation }) {
   // Recent describes the connected instance only: null while the selection
   // resolves, unsupported (no read, no local rows) for a remote selection.
   const recentInstance = useTopologyRecentInstance();
-  const { isWideLayout } = useShellViewport();
+  const { isWideLayout, isTouchTablet } = useShellViewport();
   useOverlayForActiveTab(active);
 
   // OPR.0.4.6.MH2 FR-3/FR-6 — the page title names the ACTUAL data source
@@ -254,6 +265,7 @@ function HostScopeContent({ nav }: { nav: TopologyNavigation }) {
   const liveCap = useTerminalCap();
 
   const remoteUnreachable = isRemote && !!rigsError;
+  const dock = useGraphSeatDock("host", isTouchTablet && active === "graph" && !remoteUnreachable);
   const remoteLoading = isRemote && !remoteUnreachable && (isPlaceholderData || (isFetching && rigs === undefined));
 
   return (
@@ -324,10 +336,13 @@ function HostScopeContent({ nav }: { nav: TopologyNavigation }) {
         </div>
       ) : null}
       {!remoteUnreachable && active === "graph" ? (
-        isWideLayout ? (
-          <GraphFrame>
-            <HostMultiRigGraph />
-          </GraphFrame>
+        isWideLayout || isTouchTablet ? (
+          <>
+            <GraphFrame tall={isTouchTablet}>
+              <HostMultiRigGraph onSeatSelect={dock.open} />
+            </GraphFrame>
+            {dock.seat ? <GraphSeatDock seat={dock.seat} reveal={dock.reveal} from={nav.scope} onClose={dock.close} /> : null}
+          </>
         ) : (
           <PhoneGraphFrame>
             <PhoneTopologyGraph nav={nav} />
@@ -388,8 +403,9 @@ function RigScopeContent({ nav, rigId }: { nav: TopologyNavigation; rigId: strin
     : rig && typeof rig.name === "string" && rig.name.length > 0 ? { kind: "rig" as const, rig: rig.name } : "unavailable" as const;
   const active = nav.location.view as TopologyRigPodScopeTab;
   const setActive = (view: TopologyRigPodScopeTab) => nav.replace({ view });
-  const { isWideLayout } = useShellViewport();
+  const { isWideLayout, isTouchTablet } = useShellViewport();
   useOverlayForActiveTab(active);
+  const dock = useGraphSeatDock(`rig\u0000${rigId}`, isTouchTablet && active === "graph");
 
   const liveCap = useTerminalCap();
 
@@ -461,10 +477,13 @@ function RigScopeContent({ nav, rigId }: { nav: TopologyNavigation; rigId: strin
       )}
       <ActivityRollupBar rigId={rigId} />
       {active === "graph" ? (
-        isWideLayout ? (
-          <GraphFrame>
-            <RigGraph rigId={rigId} rigName={rig?.name ?? null} showDiscovered={false} />
-          </GraphFrame>
+        isWideLayout || isTouchTablet ? (
+          <>
+            <GraphFrame tall={isTouchTablet}>
+              <RigGraph rigId={rigId} rigName={rig?.name ?? null} showDiscovered={false} onSeatSelect={dock.open} />
+            </GraphFrame>
+            {dock.seat ? <GraphSeatDock seat={dock.seat} reveal={dock.reveal} from={nav.scope} onClose={dock.close} /> : null}
+          </>
         ) : (
           <PhoneGraphFrame>
             <PhoneTopologyGraph nav={nav} />
@@ -579,10 +598,14 @@ function PodScopeContent({ nav, rigId, podName }: { nav: TopologyNavigation; rig
   const health = useScopeHealth(nav, useMemoHealthScope("pod", rigId, podName));
   const active = nav.location.view as TopologyRigPodScopeTab;
   const setActive = (view: TopologyRigPodScopeTab) => nav.replace({ view });
-  const { isWideLayout } = useShellViewport();
+  const { isWideLayout, isTouchTablet } = useShellViewport();
   useOverlayForActiveTab(active);
+  const dock = useGraphSeatDock(`pod\u0000${rigId}\u0000${podName}`, isTouchTablet && active === "graph");
+  // The same configured live-terminal cap as host and rig scope.
+  const liveCap = useTerminalCap();
 
   return (
+    <LiveTerminalProvider cap={liveCap}>
     <ScopeShell
       eyebrow="Topology · Pod"
       title={`${rigId} / ${podName}`}
@@ -592,10 +615,13 @@ function PodScopeContent({ nav, rigId, podName }: { nav: TopologyNavigation; rig
       tabsNav={<TopologyViewModeTabs tabs={RIG_POD_SCOPE_TABS} active={active} onSelect={setActive} testIdPrefix="topology-pod" />}
     >
       {active === "graph" ? (
-        isWideLayout ? (
-          <GraphFrame>
-            <RigGraph rigId={rigId} rigName={null} showDiscovered={false} podScope={podName} />
-          </GraphFrame>
+        isWideLayout || isTouchTablet ? (
+          <>
+            <GraphFrame tall={isTouchTablet}>
+              <RigGraph rigId={rigId} rigName={null} showDiscovered={false} podScope={podName} onSeatSelect={dock.open} />
+            </GraphFrame>
+            {dock.seat ? <GraphSeatDock seat={dock.seat} reveal={dock.reveal} from={nav.scope} onClose={dock.close} /> : null}
+          </>
         ) : (
           <PhoneGraphFrame>
             <PhoneTopologyGraph nav={nav} />
@@ -621,6 +647,7 @@ function PodScopeContent({ nav, rigId, podName }: { nav: TopologyNavigation; rig
         </div>
       ) : null}
     </ScopeShell>
+    </LiveTerminalProvider>
   );
 }
 

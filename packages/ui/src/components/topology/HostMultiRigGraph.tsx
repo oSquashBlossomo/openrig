@@ -54,7 +54,9 @@ import {
   HYBRID_COLLAPSED_RIG_WIDTH,
   layoutHybridOuterRigs,
   layoutHybridRig,
+  prefixedHybridNodeId,
 } from "../../lib/hybrid-layout.js";
+import type { GraphSeatSelection } from "./GraphSeatDock.js";
 import {
   applyHotPotatoEdges,
   buildTopologySessionIndex,
@@ -81,7 +83,11 @@ const HOST_GRAPH_MIN_ZOOM = 0.03;
 const HOST_GRAPH_MAX_ZOOM = 2;
 const HOST_GRAPH_FIT_PADDING = 0.08;
 
-export function HostMultiRigGraph() {
+export function HostMultiRigGraph({ onSeatSelect }: {
+  /** Tablet Graph: an agent tap reports its exact seat here (the host page
+   *  docks its terminal under the graph) instead of navigating away. */
+  onSeatSelect?: (seat: GraphSeatSelection) => void;
+} = {}) {
   const navigate = useNavigate();
   const { data: psEntries, isError: psFailed, error: psError, refetch: refetchPs } = usePsEntries();
   const hostId = useSelectedHostId();
@@ -335,6 +341,12 @@ export function HostMultiRigGraph() {
       return;
     }
     if (typeof data?.logicalId === "string" && data.logicalId) {
+      if (onSeatSelect) {
+        // Canvas ids are rig-prefixed; the seat is the served node id.
+        const prefix = prefixedHybridNodeId(rigId, "");
+        if (node.id.startsWith(prefix)) onSeatSelect({ hostId, rigId, nodeId: node.id.slice(prefix.length), logicalId: data.logicalId });
+        return;
+      }
       // Raw params through the shared builder (encoded once by the router).
       const target = topologyTarget({ scope: { kind: "seat", rigId, logicalId: data.logicalId }, sourceHost: linkSource });
       if (target) navigate({ to: target.to, params: target.params, search: target.search, state: freshTopologyVisitState } as never);
