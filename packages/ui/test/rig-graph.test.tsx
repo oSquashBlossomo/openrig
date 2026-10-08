@@ -346,6 +346,49 @@ describe("RigGraph", () => {
     });
   });
 
+  it("an exact-seat callback (tablet dock) never pre-empts placement; outside placement it gets the served node id and nothing navigates or focuses", async () => {
+    const node = {
+      id: "n1",
+      type: "rigNode",
+      position: { x: 0, y: 0 },
+      data: {
+        logicalId: "dev.impl", rigId: "rig-1", role: "worker", runtime: "claude-code", model: null, status: null,
+        binding: { cmuxSurface: "surface-1" }, nodeKind: "agent", startupStatus: null, canonicalSessionName: null,
+        podId: "dev", restoreOutcome: "n-a", resumeToken: null,
+      },
+    };
+    const onSeatSelect = vi.fn();
+    const setPlacementTarget = vi.fn();
+    mockFetch.mockResolvedValueOnce(mockGraphResponse([{ ...node, data: { ...node.data, binding: null } }], []));
+    const placing = render(
+      <QueryWrapper>
+        <DrawerSelectionContext.Provider value={{ selection: { type: "discovery" }, setSelection: vi.fn() }}>
+          <DiscoveryPlacementContext.Provider
+            value={{ selectedDiscoveredId: "disc-1", setSelectedDiscoveredId: vi.fn(), placementTarget: null, setPlacementTarget, clearPlacement: vi.fn() }}
+          >
+            <RigGraph showDiscovered={false} rigId="rig-1" onSeatSelect={onSeatSelect} />
+          </DiscoveryPlacementContext.Provider>
+        </DrawerSelectionContext.Provider>
+      </QueryWrapper>
+    );
+    await waitFor(() => expect(placing.container.querySelector(".react-flow__node-rigNode")).not.toBeNull());
+    fireEvent.click(placing.container.querySelector(".react-flow__node-rigNode")!);
+    expect(setPlacementTarget).toHaveBeenCalledWith({ kind: "node", rigId: "rig-1", logicalId: "dev.impl", eligible: true });
+    expect(onSeatSelect).not.toHaveBeenCalled();
+    placing.unmount();
+
+    navigateSpy.mockClear();
+    mockFetch.mockReset();
+    mockFetch.mockResolvedValue(mockGraphResponse([node], []));
+    const { container } = render(<QueryWrapper><RigGraph showDiscovered={false} rigId="rig-1" onSeatSelect={onSeatSelect} /></QueryWrapper>);
+    await waitFor(() => expect(container.querySelector(".react-flow__node-rigNode")).not.toBeNull());
+    fireEvent.click(container.querySelector(".react-flow__node-rigNode")!);
+    expect(onSeatSelect).toHaveBeenCalledWith({ hostId: "local", rigId: "rig-1", nodeId: "n1", logicalId: "dev.impl" });
+    expect(navigateSpy).not.toHaveBeenCalled();
+    // A cmux-bound seat is still not focused: no focus POST.
+    expect(mockFetch.mock.calls.some(([url]) => String(url).includes("/focus"))).toBe(false);
+  });
+
   // OPR.0.4.6.MH2 rev1-r2 re-verdict B1: placement targets feed the LOCAL
   // discovery bind/adopt mutation — under a REMOTE selection a rendered node
   // must never become a target and the placement banner must not advertise.

@@ -132,8 +132,18 @@ afterEach(() => {
   setWidth(1024);
 });
 
-function setWidth(width: number) {
+/** Device of this viewport size (the screen matches it; rotation swaps
+ *  both); height defaults to jsdom's 768. */
+function setWidth(width: number, height = 768) {
+  Object.defineProperty(window.screen, "width", { configurable: true, value: width });
+  Object.defineProperty(window.screen, "height", { configurable: true, value: height });
+  setViewportHeight(height, width);
+}
+
+/** Viewport-only resize on the same device (a soft keyboard, a toolbar). */
+function setViewportHeight(height: number, width = window.innerWidth) {
   Object.defineProperty(window, "innerWidth", { configurable: true, value: width, writable: true });
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: height, writable: true });
   window.dispatchEvent(new Event("resize"));
 }
 
@@ -142,8 +152,8 @@ function SeatProbe() {
   return <div data-testid="seat-probe">{JSON.stringify(params)}</div>;
 }
 
-function renderAt(initialPath: string | string[], width: number) {
-  setWidth(width);
+function renderAt(initialPath: string | string[], width: number, height?: number) {
+  setWidth(width, height);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   const rootRoute = createRootRoute({
     component: () => (
@@ -165,7 +175,7 @@ function renderAt(initialPath: string | string[], width: number) {
     routeTree: rootRoute.addChildren(routes),
     history: createMemoryHistory({ initialEntries: Array.isArray(initialPath) ? initialPath : [initialPath] }),
   });
-  return { ...render(<RouterProvider router={router} />), router };
+  return { ...render(<RouterProvider router={router} />), router, queryClient };
 }
 
 const q = (c: HTMLElement, sel: string) => c.querySelector(sel) as HTMLElement | null;
@@ -555,6 +565,500 @@ describe("camera controls never cover node controls (reserved space, measured su
       HTMLElement.prototype.getBoundingClientRect = original;
     }
   }, 15000);
+});
+
+/** Input capabilities and device hints as the browser reports them through
+ *  media queries, navigator.maxTouchPoints, navigator.platform and the user
+ *  agent. Hardware values are not observed here; these are the combinations
+ *  the graph must handle. */
+type Inputs = {
+  pointer: "coarse" | "fine"; hover: boolean; anyCoarse: boolean; anyFine: boolean; maxTouchPoints: number;
+  platform: string; userAgent: string;
+};
+/** iPadOS Safari's default desktop-class identity (MacIntel + touch points). */
+const IPAD_DESKTOP_MODE = { platform: "MacIntel", userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15" };
+const TOUCH_ONLY: Inputs = { pointer: "coarse", hover: false, anyCoarse: true, anyFine: false, maxTouchPoints: 5, ...IPAD_DESKTOP_MODE };
+/** A touchscreen with an attached trackpad/mouse that became the primary pointer. */
+const TOUCH_WITH_POINTER: Inputs = { pointer: "fine", hover: true, anyCoarse: true, anyFine: true, maxTouchPoints: 5, ...IPAD_DESKTOP_MODE };
+/** Media queries report only the fine pointer; touch points remain. */
+const TOUCH_POINTS_ONLY: Inputs = { pointer: "fine", hover: true, anyCoarse: false, anyFine: true, maxTouchPoints: 5, ...IPAD_DESKTOP_MODE };
+/** A Mac with a mouse/trackpad: MacIntel, no touch points. */
+const MOUSE_ONLY: Inputs = { pointer: "fine", hover: true, anyCoarse: false, anyFine: true, maxTouchPoints: 0, ...IPAD_DESKTOP_MODE };
+/** An iPad reporting its native (mobile) identity. */
+const IPAD_NATIVE: Inputs = {
+  pointer: "coarse", hover: false, anyCoarse: true, anyFine: false, maxTouchPoints: 5,
+  platform: "iPad", userAgent: "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+};
+/** A Windows touchscreen laptop/desktop (touch plus mouse/trackpad). */
+const WINDOWS_TOUCH: Inputs = {
+  pointer: "fine", hover: true, anyCoarse: true, anyFine: true, maxTouchPoints: 5,
+  platform: "Win32", userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+};
+/** A Linux touchscreen desktop. */
+const LINUX_TOUCH: Inputs = { ...WINDOWS_TOUCH, platform: "Linux x86_64", userAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36" };
+/** A MacIntel reporting a coarse pointer but no touch points: not an iPad. */
+const MAC_COARSE_NO_TOUCH: Inputs = { ...MOUSE_ONLY, anyCoarse: true };
+
+function stubInputs(initial: Inputs) {
+  let inputs = initial;
+  const listeners = new Map<string, Set<(e: Event) => void>>();
+  const feature = (f: string, v: string) =>
+    f === "pointer" ? inputs.pointer === v
+      : f === "hover" ? (v === "hover") === inputs.hover
+        : f === "any-pointer" ? (v === "coarse" ? inputs.anyCoarse : v === "fine" ? inputs.anyFine : false)
+          : false;
+  const evaluate = (query: string) => query.split(",").some((alt) => alt.split(/\s+and\s+/).every((part) => {
+    const m = /\(\s*([a-z-]+)\s*:\s*([a-z]+)\s*\)/.exec(part);
+    return m ? feature(m[1]!, m[2]!) : false;
+  }));
+  const original = window.matchMedia;
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    value: (query: string) => {
+      const set = listeners.get(query) ?? new Set();
+      listeners.set(query, set);
+      return {
+        get matches() { return evaluate(query); },
+        media: query, onchange: null,
+        addEventListener: (_t: string, fn: (e: Event) => void) => set.add(fn),
+        removeEventListener: (_t: string, fn: (e: Event) => void) => set.delete(fn),
+        addListener: (fn: (e: Event) => void) => set.add(fn),
+        removeListener: (fn: (e: Event) => void) => set.delete(fn),
+        dispatchEvent: () => false,
+      };
+    },
+  });
+  Object.defineProperty(window.navigator, "maxTouchPoints", { configurable: true, get: () => inputs.maxTouchPoints });
+  Object.defineProperty(window.navigator, "platform", { configurable: true, get: () => inputs.platform });
+  Object.defineProperty(window.navigator, "userAgent", { configurable: true, get: () => inputs.userAgent });
+  return {
+    /** Devices connect/disconnect: no resize, only media-query change events. */
+    set(next: Inputs) {
+      inputs = next;
+      act(() => { for (const fns of [...listeners.values()]) for (const fn of [...fns]) fn(new Event("change")); });
+    },
+    listeners: (pattern: RegExp) => [...listeners].filter(([q]) => pattern.test(q)).reduce((n, [, fns]) => n + fns.size, 0),
+    restore() {
+      Object.defineProperty(window, "matchMedia", { configurable: true, value: original });
+      for (const k of ["maxTouchPoints", "platform", "userAgent"] as const) delete (window.navigator as unknown as Record<string, unknown>)[k];
+    },
+  };
+}
+
+const SCOPES = [
+  ["host", "/topology", "host-multi-rig-graph"],
+  ["rig", "/topology/rig/abc-rig", "graph-view"],
+  ["pod", "/topology/pod/abc-rig/core", "graph-view"],
+] as const;
+
+async function graphFrame(container: HTMLElement, renderer: string) {
+  await waitFor(() => expect(q(container, `[data-testid='${renderer}']`)).toBeTruthy(), { timeout: 5000 });
+  return q(container, "[data-testid='topology-graph-frame']")!;
+}
+
+/** jsdom has no layout: the frame's sizing rule is what decides whether it
+ *  keeps a tall allocation (shrink-0 + min height) or shares what is left. */
+function expectTallFrame(container: HTMLElement, frame: HTMLElement) {
+  expect(frame.getAttribute("data-tall")).toBe("true");
+  expect(frame.className).toContain("shrink-0");
+  expect(frame.className).toMatch(/min-h-\[max\(24rem,calc\(100svh-/);
+  expect(frame.className).not.toContain("min-h-0");
+  // The sections below the graph (Recent at host and rig scope; pod scope's
+  // Graph tab has none) follow it in the page, so they are pushed down and
+  // scrolled to rather than squeezing it.
+  const recent = q(container, "[data-testid='topology-recent-frame']");
+  if (recent) expect(frame.compareDocumentPosition(recent) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  return recent;
+}
+
+describe("touch tablets keep the desktop graph in a tall frame", () => {
+  const restores: Array<() => void> = [];
+  afterEach(() => { while (restores.length) restores.pop()!(); });
+
+  for (const [w, h] of [[820, 1180], [834, 1194], [1180, 820], [1194, 834]] as const) {
+    it.each(SCOPES)(`${w}x${h} %s scope: the desktop renderer in a tall, non-shrinking frame`, async (scope, path, renderer) => {
+      restores.push(stubInputs(TOUCH_ONLY).restore);
+      const { container } = renderAt(path, w, h);
+      const frame = await graphFrame(container, renderer);
+      expect(q(container, "[data-testid='phone-topology-graph']")).toBeNull();
+      expect(frame.contains(q(container, `[data-testid='${renderer}']`))).toBe(true);
+      expect(expectTallFrame(container, frame) !== null).toBe(scope !== "pod");
+      // The shell breakpoint is unchanged: portrait keeps the narrow shell.
+      expect(q(container, "[data-testid='mobile-rail-tray']") === null).toBe(w >= 1024);
+    }, 15000);
+  }
+
+  it.each([
+    ["an attached trackpad/mouse as primary pointer", TOUCH_WITH_POINTER],
+    ["touch points with fine-pointer media only", TOUCH_POINTS_ONLY],
+  ] as const)("834x1194 with %s still gets the tall desktop graph", async (_label, inputs) => {
+    restores.push(stubInputs(inputs).restore);
+    const { container } = renderAt("/topology", 834, 1194);
+    expectTallFrame(container, await graphFrame(container, "host-multi-rig-graph"));
+  }, 15000);
+
+  it.each([
+    ["native iPad platform/UA", IPAD_NATIVE],
+    ["desktop-mode iPad (MacIntel + touch points) with an attached pointer", TOUCH_WITH_POINTER],
+  ] as const)("834x1194 and 1194x834, %s: the tall desktop graph and its under-graph dock", async (_label, inputs) => {
+    restores.push(stubInputs(inputs).restore);
+    details["core.lead"] = seatDetail("core.lead");
+    for (const [w, h] of [[834, 1194], [1194, 834]] as const) {
+      const { container, router, unmount } = renderAt("/topology/rig/abc-rig", w, h);
+      expectTallFrame(container, await graphFrame(container, "graph-view"));
+      fireEvent.click(await desktopAgent(container, "core.lead"));
+      await seatDock(container, "local|abc-rig|core.lead");
+      expect(router.state.location.pathname).toBe("/topology/rig/abc-rig");
+      unmount();
+    }
+  }, 20000);
+
+  it.each([
+    ["Windows touchscreen", 1280, 800, WINDOWS_TOUCH],
+    ["Windows touchscreen", 1368, 912, WINDOWS_TOUCH],
+    ["Linux touchscreen", 1280, 800, LINUX_TOUCH],
+    ["MacIntel with a coarse pointer but no touch points", 1280, 800, MAC_COARSE_NO_TOUCH],
+  ] as const)("%s at %ix%i keeps the desktop graph in the shared frame, and an agent tap still opens the seat page", async (_label, w, h, inputs) => {
+    restores.push(stubInputs(inputs).restore);
+    const { container, router } = renderAt("/topology/rig/abc-rig", w, h);
+    const frame = await graphFrame(container, "graph-view");
+    expect(frame.getAttribute("data-tall")).toBeNull();
+    expect(frame.className).toContain("min-h-0");
+    expect(frame.className).not.toContain("shrink-0");
+    fireEvent.click(await desktopAgent(container, "core.lead"));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/topology/seat/abc-rig/core.lead"));
+    expect(q(container, "[data-testid='graph-seat-dock']")).toBeNull();
+  }, 15000);
+
+  it.each([
+    ["Windows touchscreen", WINDOWS_TOUCH],
+    ["Linux touchscreen", LINUX_TOUCH],
+  ] as const)("%s at a tablet-sized 912x1368 below 1024px keeps the narrow (phone) graph, not the tablet desktop graph", async (_label, inputs) => {
+    restores.push(stubInputs(inputs).restore);
+    const { container } = renderAt("/topology/rig/abc-rig", 912, 1368);
+    await waitFor(() => expect(q(container, "[data-testid='phone-graph-canvas']")).toBeTruthy(), { timeout: 5000 });
+    expect(q(container, "[data-testid='topology-graph-frame']")).toBeNull();
+    expect(q(container, "[data-testid='graph-view']")).toBeNull();
+  }, 15000);
+
+  it("a mouse-only desktop keeps the shared frame; a narrow mouse-only window and touch phones keep the phone graph", async () => {
+    restores.push(stubInputs(MOUSE_ONLY).restore);
+    for (const [w, h] of [[1440, 900], [1180, 820]] as const) {
+      const desktop = renderAt("/topology", w, h);
+      const frame = await graphFrame(desktop.container, "host-multi-rig-graph");
+      expect(frame.getAttribute("data-tall")).toBeNull();
+      expect(frame.className).toContain("min-h-0");
+      expect(frame.className).not.toContain("shrink-0");
+      desktop.unmount();
+    }
+    const narrow = renderAt("/topology", 834, 1194);
+    await waitFor(() => expect(q(narrow.container, "[data-testid='phone-graph-canvas']")).toBeTruthy(), { timeout: 5000 });
+    narrow.unmount();
+
+    restores.push(stubInputs(TOUCH_ONLY).restore);
+    for (const [w, h] of [[430, 932], [932, 430]] as const) {
+      const phone = renderAt("/topology/rig/abc-rig", w, h);
+      await seatChip(phone.container, "core.lead");
+      expect(q(phone.container, "[data-testid='topology-graph-frame']")).toBeNull();
+      expect(q(phone.container, "[data-testid='graph-view']")).toBeNull();
+      phone.unmount();
+    }
+  }, 25000);
+
+  it("pointer connect/disconnect, a keyboard-height viewport and rotation keep the same mounted desktop graph", async () => {
+    const inputs = stubInputs(TOUCH_ONLY);
+    restores.push(inputs.restore);
+    const { container, unmount } = renderAt("/topology", 834, 1194);
+    await graphFrame(container, "host-multi-rig-graph");
+    const graph = q(container, "[data-testid='host-multi-rig-graph']");
+    const same = () => {
+      expect(q(container, "[data-testid='host-multi-rig-graph']")).toBe(graph);
+      expectTallFrame(container, q(container, "[data-testid='topology-graph-frame']")!);
+    };
+    for (const next of [TOUCH_WITH_POINTER, TOUCH_POINTS_ONLY, TOUCH_ONLY]) { inputs.set(next); same(); }
+    act(() => setViewportHeight(560));
+    same();
+    act(() => setViewportHeight(1194));
+    act(() => setWidth(1194, 834));
+    same();
+    act(() => setViewportHeight(400));
+    same();
+    unmount();
+    expect(inputs.listeners(/any-pointer/)).toBe(0);
+  }, 20000);
+});
+
+/** A desktop-graph agent node by its served node id (host canvas ids are
+ *  rig-prefixed, so match the end of the React Flow wrapper's data-id). */
+async function desktopAgent(container: HTMLElement, nodeId: string) {
+  return waitFor(() => {
+    const el = qa(container, ".react-flow__node").find((n) => {
+      const id = n.getAttribute("data-id") ?? "";
+      return id === nodeId || id.endsWith(nodeId);
+    });
+    expect(el).toBeTruthy();
+    return el!;
+  }, { timeout: 5000 });
+}
+
+async function seatDock(container: HTMLElement, seatKey?: string) {
+  return waitFor(() => {
+    const el = q(container, "[data-testid='graph-seat-dock']");
+    expect(el).toBeTruthy();
+    if (seatKey) expect(el!.getAttribute("data-seat-key")).toBe(seatKey);
+    return el!;
+  }, { timeout: 5000 });
+}
+
+/** core.lead served under a node id that is NOT its logical id, so any
+ *  substitution of one for the other resolves the wrong seat (or none). */
+function servedIdDiffersFromLogicalId() {
+  // The detail read (by logical id) reports the served node id, which the
+  // guarded admission requires to equal the selected graph node's.
+  details["core.lead"] = { ...seatDetail("core.lead"), nodeId: "n-lead" };
+  const g = graphs["abc-rig"] as Graph;
+  graphs["abc-rig"] = {
+    nodes: g.nodes.map((n) => ((n as { id: string }).id === "core.lead" ? seat("n-lead", "pod-core", { logicalId: "core.lead", canonicalSessionName: "core.lead@acme" }) : n)),
+    edges: g.edges.map((e) => ({ ...(e as object), source: (e as { source: string }).source === "core.lead" ? "n-lead" : (e as { source: string }).source })),
+  };
+}
+
+const inputFrames = (i: number) => sockets[i]!.sent.filter((f) => /"type":"(input|text|keys)"/.test(f));
+const writes = () => mockFetch.mock.calls.filter(([url, init]) => /\/focus\b/.test(String(url)) || ((init as RequestInit | undefined)?.method ?? "GET") !== "GET");
+
+describe("tablet Graph: an agent tap docks its live terminal beneath the graph panel", () => {
+  const restores: Array<() => void> = [];
+  afterEach(() => { while (restores.length) restores.pop()!(); });
+
+  it.each([
+    ["host", "/topology", "host-multi-rig-graph", 834, 1194],
+    ["host", "/topology", "host-multi-rig-graph", 1194, 834],
+    ["rig", "/topology/rig/abc-rig", "graph-view", 834, 1194],
+    ["pod", "/topology/pod/abc-rig/core", "graph-view", 1180, 820],
+  ] as const)("%s scope (%s, %s) at %ix%i: the exact seat's guarded terminal opens under the still-mounted graph", async (_scope, path, renderer, w, h) => {
+    restores.push(stubInputs(TOUCH_ONLY).restore);
+    servedIdDiffersFromLogicalId();
+    const { container, router } = renderAt(path, w, h);
+    const frame = await graphFrame(container, renderer);
+    const graph = q(container, `[data-testid='${renderer}']`);
+    fireEvent.click(await desktopAgent(container, "n-lead"));
+    // Keyed by the served node id; the session/detail/link use the logical id.
+    const dock = await seatDock(container, "local|abc-rig|n-lead");
+    // Same route, same mounted graph (camera and expansion kept), no modal.
+    expect(router.state.location.pathname).toBe(path);
+    expect(q(container, `[data-testid='${renderer}']`)).toBe(graph);
+    expect(q(document.body, "[data-testid='phone-graph-terminal']")).toBeNull();
+    // Directly beneath the graph panel, ahead of Health/Recent.
+    expect(frame.nextElementSibling).toBe(dock);
+    const recent = q(container, "[data-testid='topology-recent-frame']");
+    if (recent) expect(dock.compareDocumentPosition(recent) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The guarded dock admits the exact pane; opening sends nothing,
+    // focuses no cmux surface and moves no focus into the terminal.
+    await waitFor(() => expect(within(dock).getByTestId("spatial-terminal-live").getAttribute("data-terminal-pane")).toBe("%1"));
+    await waitFor(() => expect(sockets).toHaveLength(1));
+    expect(sockets[0]!.url).toContain(encodeURIComponent("core.lead@acme"));
+    expect(inputFrames(0)).toEqual([]);
+    expect(writes()).toEqual([]);
+    expect(dock.contains(document.activeElement)).toBe(false);
+    expect(within(dock).getByTestId("graph-seat-dock-details").getAttribute("href")).toBe("/topology/seat/abc-rig/core.lead?sourceHost=local");
+    expect(within(dock).getByRole("button", { name: "Close terminal" })).toBeTruthy();
+  }, 20000);
+
+  it("another agent switches the one dock; close frees the socket and leaves the graph; reopen attaches again", async () => {
+    restores.push(stubInputs(TOUCH_ONLY).restore);
+    details["core.lead"] = seatDetail("core.lead");
+    details["ops.watch"] = seatDetail("ops.watch");
+    const { container } = renderAt("/topology/rig/abc-rig", 834, 1194);
+    await graphFrame(container, "graph-view");
+    const graph = q(container, "[data-testid='graph-view']");
+    fireEvent.click(await desktopAgent(container, "core.lead"));
+    await seatDock(container, "local|abc-rig|core.lead");
+    await waitFor(() => expect(sockets).toHaveLength(1));
+
+    fireEvent.click(await desktopAgent(container, "ops.watch"));
+    const dock = await seatDock(container, "local|abc-rig|ops.watch");
+    expect(qa(container, "[data-testid='graph-seat-dock']")).toHaveLength(1);
+    await waitFor(() => expect(sockets).toHaveLength(2));
+    expect(sockets[0]!.closeCalled).toBe(true);
+    expect(sockets[1]!.url).toContain(encodeURIComponent("ops.watch@acme"));
+
+    fireEvent.click(within(dock).getByTestId("graph-seat-dock-close"));
+    await waitFor(() => expect(q(container, "[data-testid='graph-seat-dock']")).toBeNull());
+    expect(sockets[1]!.closeCalled).toBe(true);
+    expect(q(container, "[data-testid='graph-view']")).toBe(graph);
+    // Closing stops nothing: no lifecycle or focus request was made.
+    expect(writes()).toEqual([]);
+
+    fireEvent.click(await desktopAgent(container, "core.lead"));
+    await seatDock(container, "local|abc-rig|core.lead");
+    await waitFor(() => expect(sockets).toHaveLength(3));
+    expect(sockets[2]!.url).toContain(encodeURIComponent("core.lead@acme"));
+  }, 20000);
+
+  it("re-tapping the open agent reveals its dock again with the same terminal and socket", async () => {
+    restores.push(stubInputs(TOUCH_ONLY).restore);
+    details["core.lead"] = seatDetail("core.lead");
+    const revealed: Array<{ el: HTMLElement; options: ScrollIntoViewOptions | boolean | undefined }> = [];
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = function (this: HTMLElement, options?: ScrollIntoViewOptions | boolean) { revealed.push({ el: this, options }); };
+    restores.push(() => { HTMLElement.prototype.scrollIntoView = original; });
+    const { container } = renderAt("/topology/rig/abc-rig", 834, 1194);
+    await graphFrame(container, "graph-view");
+    fireEvent.click(await desktopAgent(container, "core.lead"));
+    const dock = await seatDock(container, "local|abc-rig|core.lead");
+    await waitFor(() => expect(within(dock).getByTestId("spatial-terminal-live")).toBeTruthy());
+    await waitFor(() => expect(sockets).toHaveLength(1));
+    const live = within(dock).getByTestId("spatial-terminal-live");
+    const dockReveals = () => revealed.filter((r) => r.el === dock);
+    const reveals = () => dockReveals().length;
+    expect(reveals()).toBe(1);
+    fireEvent.click(await desktopAgent(container, "core.lead"));
+    await waitFor(() => expect(reveals()).toBe(2));
+    expect(q(container, "[data-testid='graph-seat-dock']")).toBe(dock);
+    expect(within(dock).getByTestId("spatial-terminal-live")).toBe(live);
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0]!.closeCalled).toBe(false);
+    expect(dock.contains(document.activeElement)).toBe(false);
+    // Every reveal aligns the dock's top (not "nearest"): the terminal that
+    // mounts taller after the read must not decide how much is revealed.
+    for (const r of dockReveals()) expect(r.options).toMatchObject({ block: "start" });
+  }, 20000);
+
+  it("a pod page detaches a seat the refreshed graph moved to another pod; a rig page keeps it", async () => {
+    restores.push(stubInputs(TOUCH_ONLY).restore);
+    servedIdDiffersFromLogicalId();
+    const moved = () => {
+      const g = graphs["abc-rig"] as Graph;
+      return { ...g, nodes: g.nodes.map((n) => ((n as { id: string }).id === "n-lead" ? { ...(n as object), parentId: "pod-ops" } : n)) };
+    };
+    const before = graphs["abc-rig"];
+    for (const [path, staysAttached] of [["/topology/pod/abc-rig/core", false], ["/topology/rig/abc-rig", true]] as const) {
+      graphs["abc-rig"] = before;
+      sockets.length = 0;
+      const { container, queryClient, unmount } = renderAt(path, 834, 1194);
+      await graphFrame(container, "graph-view");
+      fireEvent.click(await desktopAgent(container, "n-lead"));
+      const dock = await seatDock(container, "local|abc-rig|n-lead");
+      await waitFor(() => expect(within(dock).getByTestId("spatial-terminal-live")).toBeTruthy());
+      await waitFor(() => expect(sockets).toHaveLength(1));
+      graphs["abc-rig"] = moved();
+      await act(async () => { await queryClient.invalidateQueries({ queryKey: ["rig", "abc-rig", "graph"] }); });
+      if (staysAttached) {
+        // Same agent, same rig: still resolves; its terminal stays attached.
+        await waitFor(() => expect(within(dock).getByTestId("spatial-terminal-live")).toBeTruthy());
+        expect(q(container, "[data-testid='graph-seat-dock-unresolved']")).toBeNull();
+        expect(sockets[0]!.closeCalled).toBe(false);
+      } else {
+        await waitFor(() => expect(q(container, "[data-testid='graph-seat-dock-unresolved']")?.textContent).toContain("pod core"), { timeout: 5000 });
+        expect(q(container, "[data-testid='spatial-terminal-dock']")).toBeNull();
+        expect(sockets[0]!.closeCalled).toBe(true);
+      }
+      unmount();
+    }
+  }, 30000);
+
+  it("a stopped seat or failed detail read is refused; a seat dropped from the refreshed graph detaches", async () => {
+    restores.push(stubInputs(TOUCH_ONLY).restore);
+    details["core.worker"] = seatDetail("core.worker", null);
+    details["ops.watch"] = seatDetail("ops.watch");
+    const { container, queryClient } = renderAt("/topology/rig/abc-rig", 834, 1194);
+    await graphFrame(container, "graph-view");
+    fireEvent.click(await desktopAgent(container, "core.worker"));
+    let dock = await seatDock(container, "local|abc-rig|core.worker");
+    await waitFor(() => expect(within(dock).getByTestId("spatial-terminal-state").getAttribute("data-state")).toBe("no-pane"));
+    fireEvent.click(await desktopAgent(container, "core.lead")); // no detail served → 503
+    dock = await seatDock(container, "local|abc-rig|core.lead");
+    await waitFor(() => expect(within(dock).getByTestId("spatial-terminal-state").getAttribute("data-state")).toBe("unreadable"));
+    expect(sockets).toHaveLength(0);
+
+    fireEvent.click(await desktopAgent(container, "ops.watch"));
+    await seatDock(container, "local|abc-rig|ops.watch");
+    await waitFor(() => expect(sockets).toHaveLength(1));
+    // The served graph no longer has ops.watch: the dock detaches, never substitutes.
+    const g = graphs["abc-rig"] as Graph;
+    graphs["abc-rig"] = { nodes: g.nodes.filter((n) => (n as { id: string }).id !== "ops.watch"), edges: [] };
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ["rig", "abc-rig", "graph"] }); });
+    await waitFor(() => expect(q(container, "[data-testid='graph-seat-dock-unresolved']")).toBeTruthy(), { timeout: 5000 });
+    expect(q(container, "[data-testid='spatial-terminal-dock']")).toBeNull();
+    expect(sockets[0]!.closeCalled).toBe(true);
+  }, 25000);
+
+  it("host, scope, view and rig changes drop the dock (no stale or cross-host terminal)", async () => {
+    restores.push(stubInputs(TOUCH_ONLY).restore);
+    details["core.lead"] = seatDetail("core.lead");
+    summary = [{ id: "abc-rig", name: "acme", nodeCount: 3 }, { id: "other-rig", name: "other", nodeCount: 0 }];
+    graphs["other-rig"] = { nodes: [], edges: [] };
+    const { container, router, queryClient } = renderAt("/topology/rig/abc-rig", 834, 1194);
+    await graphFrame(container, "graph-view");
+    const open = async () => {
+      fireEvent.click(await desktopAgent(container, "core.lead"));
+      await seatDock(container, "local|abc-rig|core.lead");
+      await waitFor(() => expect(sockets.at(-1)!.closeCalled).toBe(false));
+    };
+    const dropped = async () => {
+      await waitFor(() => expect(q(container, "[data-testid='graph-seat-dock']")).toBeNull());
+      expect(sockets.at(-1)!.closeCalled).toBe(true);
+    };
+    await open();
+    // A different selected host: the dock is the old host's, so it goes.
+    act(() => queryClient.setQueryData(["hosts"], { ownName: "localhost", selected: "vps-a", hosts: [] }));
+    await dropped();
+    act(() => queryClient.setQueryData(["hosts"], { ownName: "localhost", selected: "local", hosts: [] }));
+    await graphFrame(container, "graph-view");
+    // Switching back to the same host does not resurrect it.
+    expect(q(container, "[data-testid='graph-seat-dock']")).toBeNull();
+
+    await open();
+    fireEvent.click(q(container, "[data-testid='topology-rig-tab-table']")!);
+    await dropped();
+    fireEvent.click(q(container, "[data-testid='topology-rig-tab-graph']")!);
+    await graphFrame(container, "graph-view");
+    expect(q(container, "[data-testid='graph-seat-dock']")).toBeNull();
+
+    await open();
+    act(() => { void router.navigate({ to: "/topology/rig/$rigId", params: { rigId: "other-rig" } }); });
+    await dropped();
+    act(() => { void router.navigate({ to: "/topology/rig/$rigId", params: { rigId: "abc-rig" } }); });
+    await graphFrame(container, "graph-view");
+    expect(q(container, "[data-testid='graph-seat-dock']")).toBeNull();
+
+    await open();
+    act(() => { void router.navigate({ to: "/topology/pod/$rigId/$podName", params: { rigId: "abc-rig", podName: "core" } }); });
+    await dropped();
+  }, 30000);
+
+  it("a pointer change and a keyboard-height viewport keep the open dock and its socket", async () => {
+    const inputs = stubInputs(TOUCH_ONLY);
+    restores.push(inputs.restore);
+    details["core.lead"] = seatDetail("core.lead");
+    const { container } = renderAt("/topology", 1180, 820);
+    await graphFrame(container, "host-multi-rig-graph");
+    fireEvent.click(await desktopAgent(container, "core.lead"));
+    const dock = await seatDock(container, "local|abc-rig|core.lead");
+    await waitFor(() => expect(sockets).toHaveLength(1));
+    inputs.set(TOUCH_WITH_POINTER);
+    act(() => setViewportHeight(400));
+    expect(q(container, "[data-testid='graph-seat-dock']")).toBe(dock);
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0]!.closeCalled).toBe(false);
+  }, 20000);
+
+  it("a mouse-only desktop still navigates to the seat page; a phone keeps its modal terminal", async () => {
+    restores.push(stubInputs(MOUSE_ONLY).restore);
+    details["core.lead"] = seatDetail("core.lead");
+    const desktop = renderAt("/topology/rig/abc-rig", 1440, 900);
+    await graphFrame(desktop.container, "graph-view");
+    fireEvent.click(await desktopAgent(desktop.container, "core.lead"));
+    await waitFor(() => expect(desktop.router.state.location.pathname).toBe("/topology/seat/abc-rig/core.lead"));
+    expect(q(desktop.container, "[data-testid='graph-seat-dock']")).toBeNull();
+    desktop.unmount();
+
+    restores.push(stubInputs(TOUCH_ONLY).restore);
+    const phone = renderAt("/topology/rig/abc-rig", 430, 932);
+    tapNode(await seatChip(phone.container, "core.lead"));
+    expect((await terminalOverlay()).getAttribute("data-agent-key")).toContain("/agent/core.lead");
+    expect(q(phone.container, "[data-testid='graph-seat-dock']")).toBeNull();
+  }, 20000);
 });
 
 describe("node status tallies fit their fixed-height row", () => {

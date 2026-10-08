@@ -7,8 +7,12 @@ import type { Database } from "better-sqlite3";
 import { queryUsageSeries, computeTopBurn } from "../domain/usage-series.js";
 import { readTelemetryPage, TelemetryInputError, type TelemetrySource, type TelemetryStream } from "../domain/finite-telemetry.js";
 
+import type { ContextUsageStore } from "../domain/context-usage-store.js";
+import { queryPromptCacheUsage } from "../domain/prompt-cache-usage.js";
+
 export interface TelemetryRouteDeps {
   db: () => Database;
+  contextUsageStore?: Pick<ContextUsageStore, "getForNodes">;
   /** injectable clock so tests and VM seeds are deterministic */
   nowIso?: () => string;
   source?: TelemetrySource;
@@ -31,6 +35,17 @@ export function telemetryRoutes(deps: TelemetryRouteDeps): Hono {
       }
     });
   }
+
+  app.get("/usage/cache", (c) => {
+    try {
+      if (!deps.contextUsageStore) throw new Error("context telemetry unavailable");
+      return c.json(queryPromptCacheUsage(deps.db(), deps.contextUsageStore, now(), {
+        nodeId: c.req.query("nodeId") || undefined, rigId: c.req.query("rigId") || undefined,
+      }));
+    } catch {
+      return c.json({ code: "telemetry_read_unavailable", error: "Prompt cache observations could not be read." }, 503);
+    }
+  });
 
   app.get("/usage/series", (c) => {
     const seat = c.req.query("seat") || undefined;

@@ -34,6 +34,8 @@ interface SidecarRaw {
     total_output_tokens?: number;
     current_usage?: unknown;
   };
+  /** Allowlisted metadata from the managed collector; persisted alongside existing usage JSON. */
+  cache_metadata?: unknown;
   session_id?: string;
   session_name?: string;
   /** Managed seat generation inherited by the status-line collector. Lets consumers distinguish
@@ -214,7 +216,9 @@ export class ContextUsageStore {
       contextWindowSize: cw.context_window_size ?? null,
       totalInputTokens: cw.total_input_tokens ?? null,
       totalOutputTokens: cw.total_output_tokens ?? null,
-      currentUsage: this.normalizeCurrentUsage(cw.current_usage),
+      currentUsage: this.normalizeCurrentUsage(raw.cache_metadata && typeof cw.current_usage !== "string"
+        ? { ...(cw.current_usage && typeof cw.current_usage === "object" && !Array.isArray(cw.current_usage) ? cw.current_usage : {}), cache_metadata: raw.cache_metadata }
+        : cw.current_usage),
       transcriptPath: raw.transcript_path ?? null,
       sessionId: raw.session_id ?? null,
       sessionName: raw.session_name ?? null,

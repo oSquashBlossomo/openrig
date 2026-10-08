@@ -100,23 +100,47 @@ Event replay cannot recreate deleted history or recover events from a replaced
 database. The canonical readback remains necessary. If an operation's response
 was interrupted, inspect its current state and receipt before retrying it.
 
-## Topology graph on phones and narrow iPads
+## Topology graph on phones and iPads
 
-Below the 1024px layout breakpoint (phones in either orientation, iPad portrait
-and narrow windows) the topology **Graph** tab is a touch graph rather than the
-desktop canvas. Graph, 3D and Table remain separate tabs at every width.
+Graph, 3D and Table remain separate tabs at every width. Phones and other narrow
+windows use the responsive touch graph below the 1024px layout breakpoint.
+Supported iPad windows use the desktop graph in both portrait and landscape,
+with the taller panel described below.
+
+In the responsive touch graph:
 
 - Rigs, pods and seats open progressively. Dense fleets start as rig tiles with
   status counts; expand a rig or pod with its chevron or from the details panel.
   Unreadable, still-loading and not-drawn rigs keep their own tiles.
 - Drag to pan and pinch to zoom inside the bounded canvas. Use Fit, + and − for
   the same actions. Scroll the page from outside the canvas.
-- A tap selects a rig, pod or seat; it never navigates. Its details panel shows
-  status, exact identity and relationships, with explicit Open, Center and Clear
-  actions. Seat selection is kept in the URL and is shared with 3D, so it survives
-  rotation and Back.
+- A rig or pod tap selects it without navigating. A seat tap opens its guarded
+  live terminal in a full-screen modal; Close returns to the graph. The seat's
+  details link is an explicit navigation action. Seat selection is kept in the
+  URL and is shared with 3D, but an open terminal modal is separate from that
+  selection and is not restored merely by browser Back or a saved URL.
 
-Wider iPad landscape windows keep the desktop graph and Explorer layout.
+On an identified iPad with a window between 600px and 1400px wide and a screen
+short side of at least 600px, host, rig and pod Graph views retain the desktop
+cards and controls in a taller panel. Lower sections follow it down the page;
+scroll to reach them. A narrower iPad split-view window uses the responsive
+touch graph. An attached keyboard, mouse or trackpad does not switch the iPad
+graph's renderer. Opening the software keyboard keeps that renderer and the
+selected terminal mounted.
+
+Tap an agent's card to open its live terminal directly below the iPad graph.
+The graph stays mounted, and the terminal is revealed without focusing it or
+opening the keyboard. Tap another agent to switch, or tap the same agent again
+to reveal its existing terminal. Close releases only the viewer, leaving the
+agent running. Seat details remains an explicit link. This inline dock is local
+page state: changing source host, scope or view closes it, and returning with
+Back or reloading does not reopen it automatically. A current identity or
+attachment failure shows a refusal rather than attaching a different seat.
+
+The iPad behavior is scoped by iPad browser identity as well as touch and screen
+capabilities; touchscreen capability alone does not opt a desktop into it.
+In wide non-iPad windows, Graph clicks retain their existing seat-page
+navigation and local cmux focus behavior. Remote sources remain read-only.
 
 ## 3D agent workspace
 
