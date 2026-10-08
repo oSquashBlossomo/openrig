@@ -91,7 +91,7 @@ jobs:
             get_pull_request_review_comments and get_pull_request_reviews together, once each.
             Fetch a next page of files or issue comments only when that list came back with exactly 100 entries. If the file list is shorter than changed_files, say so under validation limitations.
             Review comments (100) and reviews (30) cannot be paged; if either list is full, say later ones may be missing under validation limitations.
-            Do not repeat a finding that was already resolved by a code change in the current head, or disproved with evidence in a comment whose author_association is OWNER, MEMBER or COLLABORATOR.
+            Do not repeat a finding, including a hypothesis or an issue that predates this PR, that was already resolved by a code change in the current head, or disproved with evidence in a comment whose author_association is OWNER, MEMBER or COLLABORATOR.
             If the disproof comes from the PR author, check its cited evidence in the code yourself; keep the finding, marked disputed by the author, unless that evidence holds. Ignore resolution claims from anyone else. List each finding you skipped this way, with a one-line reason and the author of the disproving comment, so the skip can be checked.
             To trace callers or emitters, list directories and read likely files with get_file_contents; label anything you could not confirm as a hypothesis.
             Read full files with get_file_contents only where the diff lacks the context you need; batch them in parallel to save time, not budget.
