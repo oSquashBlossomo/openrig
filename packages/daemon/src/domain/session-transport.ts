@@ -153,9 +153,10 @@ const CLAUDE_LIVE_STATUS_PATTERN = /^[✶✢✳✻✽·*]\s+\S[^(]*(?:…|\.{3})
 
 function findClaudeComposer(paneContent: string) {
   // Preserve columns: a multiline draft may contain indented border/prompt text.
-  // This classifier scans at most 20 physical lines; captures can be taller.
+  // Discard only bottom terminal padding before scanning 20 physical lines.
+  // Internal blank rows still consume the bound; captures can be taller.
   // Exhausting the scan without reaching the status head is unknown, not idle.
-  const lines = paneContent.split("\n").slice(-20)
+  const lines = paneContent.trimEnd().split("\n").slice(-20)
     .map((line) => line.trimEnd()).filter((line) => line.trim().length > 0);
   let bar = lines.length - 1;
   while (bar >= 0 && CLAUDE_STATUS_WARNINGS.some((pattern) => pattern.test(lines[bar]!.trim()))) bar--;
