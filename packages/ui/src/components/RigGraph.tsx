@@ -19,6 +19,7 @@ import { LOCAL_HOST_ID } from "../lib/host-param.js";
 import { projectRigGraph } from "./topology/rig-graph-projection.js";
 import { GraphPartialNotice } from "./topology/GraphPartialNotice.js";
 import { freshTopologyVisitState, topologyTarget, useKnownSelectedHost } from "./topology/topology-navigation.js";
+import type { GraphSeatSelection } from "./topology/GraphSeatDock.js";
 import {
   applyHotPotatoEdges,
   buildTopologySessionIndex,
@@ -112,6 +113,7 @@ export function RigGraph({
   rigName = null,
   showDiscovered = true,
   podScope,
+  onSeatSelect,
 }: {
   rigId: string | null;
   rigName?: string | null;
@@ -122,6 +124,10 @@ export function RigGraph({
    *  rig nodes are filtered out so the graph reads as a single-pod
    *  subset. Used by /topology/pod/$rigId/$podName graph view-mode. */
   podScope?: string;
+  /** Tablet Graph: an agent tap reports its exact seat here (the scope page
+   *  docks its terminal under the graph) instead of navigating to the seat
+   *  page or focusing its cmux surface. Placement taps are unchanged. */
+  onSeatSelect?: (seat: GraphSeatSelection) => void;
 }) {
   const { data, isPending: loading, error: queryError } = useRigGraph(rigId ?? "");
   const discoveredSessions = useDiscoveredSessionsConditional(showDiscovered);
@@ -170,7 +176,8 @@ export function RigGraph({
   // OPR.0.4.6.MH2 rev1-r2 B1: cmux focus is a LOCAL session action; under a
   // remote selection the node click still navigates (read drill-in) but the
   // bare-local focus POST must never fire.
-  const graphIsRemote = useSelectedHostId() !== LOCAL_HOST_ID;
+  const graphHostId = useSelectedHostId();
+  const graphIsRemote = graphHostId !== LOCAL_HOST_ID;
   const linkSource = useKnownSelectedHost();
   const [focusMessage, setFocusMessage] = useState<FocusMessage | null>(null);
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -443,6 +450,11 @@ export function RigGraph({
       if (typeof nodeData.logicalId !== "string" || !nodeData.logicalId) return;
       const logicalId = nodeData.logicalId;
 
+      if (onSeatSelect) {
+        onSeatSelect({ hostId: graphHostId, rigId, nodeId: node.id, logicalId });
+        return;
+      }
+
       // V1 polish slice Phase 5.1 P5.1-2: navigate to center page
       // (canonical agent-detail = LiveNodeDetails). Parity with Explorer
       // tree click + topology table row click (P5.1-7). Raw params through
@@ -485,7 +497,7 @@ export function RigGraph({
         showFocusMessage({ text: "Focus failed", type: "error" });
       }
     },
-    [placementMode, podMetaById, rigId, setPlacementTarget, navigate, setSelection, showFocusMessage, graphIsRemote, linkSource]
+    [placementMode, podMetaById, rigId, setPlacementTarget, navigate, setSelection, showFocusMessage, graphIsRemote, linkSource, onSeatSelect, graphHostId]
   );
 
   if (rigId === null) {

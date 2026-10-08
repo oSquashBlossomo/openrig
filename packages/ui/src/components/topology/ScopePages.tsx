@@ -49,6 +49,7 @@ import { useTopologyOverlay } from "./topology-overlay-context.js";
 // Graph and Table stay separate, explicit tabs at every width.
 import { useShellViewport } from "../../hooks/useShellViewport.js";
 import { cn } from "../../lib/utils.js";
+import { GraphSeatDock, useGraphSeatDock } from "./GraphSeatDock.js";
 import { PhoneTopologyGraph } from "./PhoneTopologyGraph.js";
 import { useNodeInventory } from "../../hooks/useNodeInventory.js";
 import { computeActivityRollup, formatRollupLabel } from "../../lib/activity-visuals.js";
@@ -264,6 +265,7 @@ function HostScopeContent({ nav }: { nav: TopologyNavigation }) {
   const liveCap = useTerminalCap();
 
   const remoteUnreachable = isRemote && !!rigsError;
+  const dock = useGraphSeatDock("host", isTouchTablet && active === "graph" && !remoteUnreachable);
   const remoteLoading = isRemote && !remoteUnreachable && (isPlaceholderData || (isFetching && rigs === undefined));
 
   return (
@@ -335,9 +337,12 @@ function HostScopeContent({ nav }: { nav: TopologyNavigation }) {
       ) : null}
       {!remoteUnreachable && active === "graph" ? (
         isWideLayout || isTouchTablet ? (
-          <GraphFrame tall={isTouchTablet}>
-            <HostMultiRigGraph />
-          </GraphFrame>
+          <>
+            <GraphFrame tall={isTouchTablet}>
+              <HostMultiRigGraph onSeatSelect={dock.open} />
+            </GraphFrame>
+            {dock.seat ? <GraphSeatDock seat={dock.seat} reveal={dock.reveal} from={nav.scope} onClose={dock.close} /> : null}
+          </>
         ) : (
           <PhoneGraphFrame>
             <PhoneTopologyGraph nav={nav} />
@@ -400,6 +405,7 @@ function RigScopeContent({ nav, rigId }: { nav: TopologyNavigation; rigId: strin
   const setActive = (view: TopologyRigPodScopeTab) => nav.replace({ view });
   const { isWideLayout, isTouchTablet } = useShellViewport();
   useOverlayForActiveTab(active);
+  const dock = useGraphSeatDock(`rig\u0000${rigId}`, isTouchTablet && active === "graph");
 
   const liveCap = useTerminalCap();
 
@@ -472,9 +478,12 @@ function RigScopeContent({ nav, rigId }: { nav: TopologyNavigation; rigId: strin
       <ActivityRollupBar rigId={rigId} />
       {active === "graph" ? (
         isWideLayout || isTouchTablet ? (
-          <GraphFrame tall={isTouchTablet}>
-            <RigGraph rigId={rigId} rigName={rig?.name ?? null} showDiscovered={false} />
-          </GraphFrame>
+          <>
+            <GraphFrame tall={isTouchTablet}>
+              <RigGraph rigId={rigId} rigName={rig?.name ?? null} showDiscovered={false} onSeatSelect={dock.open} />
+            </GraphFrame>
+            {dock.seat ? <GraphSeatDock seat={dock.seat} reveal={dock.reveal} from={nav.scope} onClose={dock.close} /> : null}
+          </>
         ) : (
           <PhoneGraphFrame>
             <PhoneTopologyGraph nav={nav} />
@@ -591,8 +600,12 @@ function PodScopeContent({ nav, rigId, podName }: { nav: TopologyNavigation; rig
   const setActive = (view: TopologyRigPodScopeTab) => nav.replace({ view });
   const { isWideLayout, isTouchTablet } = useShellViewport();
   useOverlayForActiveTab(active);
+  const dock = useGraphSeatDock(`pod\u0000${rigId}\u0000${podName}`, isTouchTablet && active === "graph");
+  // The same configured live-terminal cap as host and rig scope.
+  const liveCap = useTerminalCap();
 
   return (
+    <LiveTerminalProvider cap={liveCap}>
     <ScopeShell
       eyebrow="Topology · Pod"
       title={`${rigId} / ${podName}`}
@@ -603,9 +616,12 @@ function PodScopeContent({ nav, rigId, podName }: { nav: TopologyNavigation; rig
     >
       {active === "graph" ? (
         isWideLayout || isTouchTablet ? (
-          <GraphFrame tall={isTouchTablet}>
-            <RigGraph rigId={rigId} rigName={null} showDiscovered={false} podScope={podName} />
-          </GraphFrame>
+          <>
+            <GraphFrame tall={isTouchTablet}>
+              <RigGraph rigId={rigId} rigName={null} showDiscovered={false} podScope={podName} onSeatSelect={dock.open} />
+            </GraphFrame>
+            {dock.seat ? <GraphSeatDock seat={dock.seat} reveal={dock.reveal} from={nav.scope} onClose={dock.close} /> : null}
+          </>
         ) : (
           <PhoneGraphFrame>
             <PhoneTopologyGraph nav={nav} />
@@ -631,6 +647,7 @@ function PodScopeContent({ nav, rigId, podName }: { nav: TopologyNavigation; rig
         </div>
       ) : null}
     </ScopeShell>
+    </LiveTerminalProvider>
   );
 }
 

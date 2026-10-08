@@ -175,7 +175,7 @@ function renderAt(initialPath: string | string[], width: number, height?: number
     routeTree: rootRoute.addChildren(routes),
     history: createMemoryHistory({ initialEntries: Array.isArray(initialPath) ? initialPath : [initialPath] }),
   });
-  return { ...render(<RouterProvider router={router} />), router };
+  return { ...render(<RouterProvider router={router} />), router, queryClient };
 }
 
 const q = (c: HTMLElement, sel: string) => c.querySelector(sel) as HTMLElement | null;
@@ -718,6 +718,279 @@ describe("touch tablets keep the desktop graph in a tall frame", () => {
     same();
     unmount();
     expect(inputs.listeners(/any-pointer/)).toBe(0);
+  }, 20000);
+});
+
+/** A desktop-graph agent node by its served node id (host canvas ids are
+ *  rig-prefixed, so match the end of the React Flow wrapper's data-id). */
+async function desktopAgent(container: HTMLElement, nodeId: string) {
+  return waitFor(() => {
+    const el = qa(container, ".react-flow__node").find((n) => {
+      const id = n.getAttribute("data-id") ?? "";
+      return id === nodeId || id.endsWith(nodeId);
+    });
+    expect(el).toBeTruthy();
+    return el!;
+  }, { timeout: 5000 });
+}
+
+async function seatDock(container: HTMLElement, seatKey?: string) {
+  return waitFor(() => {
+    const el = q(container, "[data-testid='graph-seat-dock']");
+    expect(el).toBeTruthy();
+    if (seatKey) expect(el!.getAttribute("data-seat-key")).toBe(seatKey);
+    return el!;
+  }, { timeout: 5000 });
+}
+
+/** core.lead served under a node id that is NOT its logical id, so any
+ *  substitution of one for the other resolves the wrong seat (or none). */
+function servedIdDiffersFromLogicalId() {
+  // The detail read (by logical id) reports the served node id, which the
+  // guarded admission requires to equal the selected graph node's.
+  details["core.lead"] = { ...seatDetail("core.lead"), nodeId: "n-lead" };
+  const g = graphs["abc-rig"] as Graph;
+  graphs["abc-rig"] = {
+    nodes: g.nodes.map((n) => ((n as { id: string }).id === "core.lead" ? seat("n-lead", "pod-core", { logicalId: "core.lead", canonicalSessionName: "core.lead@acme" }) : n)),
+    edges: g.edges.map((e) => ({ ...(e as object), source: (e as { source: string }).source === "core.lead" ? "n-lead" : (e as { source: string }).source })),
+  };
+}
+
+const inputFrames = (i: number) => sockets[i]!.sent.filter((f) => /"type":"(input|text|keys)"/.test(f));
+const writes = () => mockFetch.mock.calls.filter(([url, init]) => /\/focus\b/.test(String(url)) || ((init as RequestInit | undefined)?.method ?? "GET") !== "GET");
+
+describe("tablet Graph: an agent tap docks its live terminal beneath the graph panel", () => {
+  const restores: Array<() => void> = [];
+  afterEach(() => { while (restores.length) restores.pop()!(); });
+
+  it.each([
+    ["host", "/topology", "host-multi-rig-graph", 834, 1194],
+    ["host", "/topology", "host-multi-rig-graph", 1194, 834],
+    ["rig", "/topology/rig/abc-rig", "graph-view", 834, 1194],
+    ["pod", "/topology/pod/abc-rig/core", "graph-view", 1180, 820],
+  ] as const)("%s scope (%s, %s) at %ix%i: the exact seat's guarded terminal opens under the still-mounted graph", async (_scope, path, renderer, w, h) => {
+    restores.push(stubInputs(TOUCH_ONLY).restore);
+    servedIdDiffersFromLogicalId();
+    const { container, router } = renderAt(path, w, h);
+    const frame = await graphFrame(container, renderer);
+    const graph = q(container, `[data-testid='${renderer}']`);
+    fireEvent.click(await desktopAgent(container, "n-lead"));
+    // Keyed by the served node id; the session/detail/link use the logical id.
+    const dock = await seatDock(container, "local|abc-rig|n-lead");
+    // Same route, same mounted graph (camera and expansion kept), no modal.
+    expect(router.state.location.pathname).toBe(path);
+    expect(q(container, `[data-testid='${renderer}']`)).toBe(graph);
+    expect(q(document.body, "[data-testid='phone-graph-terminal']")).toBeNull();
+    // Directly beneath the graph panel, ahead of Health/Recent.
+    expect(frame.nextElementSibling).toBe(dock);
+    const recent = q(container, "[data-testid='topology-recent-frame']");
+    if (recent) expect(dock.compareDocumentPosition(recent) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The guarded dock admits the exact pane; opening sends nothing,
+    // focuses no cmux surface and moves no focus into the terminal.
+    await waitFor(() => expect(within(dock).getByTestId("spatial-terminal-live").getAttribute("data-terminal-pane")).toBe("%1"));
+    await waitFor(() => expect(sockets).toHaveLength(1));
+    expect(sockets[0]!.url).toContain(encodeURIComponent("core.lead@acme"));
+    expect(inputFrames(0)).toEqual([]);
+    expect(writes()).toEqual([]);
+    expect(dock.contains(document.activeElement)).toBe(false);
+    expect(within(dock).getByTestId("graph-seat-dock-details").getAttribute("href")).toBe("/topology/seat/abc-rig/core.lead?sourceHost=local");
+    expect(within(dock).getByRole("button", { name: "Close terminal" })).toBeTruthy();
+  }, 20000);
+
+  it("another agent switches the one dock; close frees the socket and leaves the graph; reopen attaches again", async () => {
+    restores.push(stubInputs(TOUCH_ONLY).restore);
+    details["core.lead"] = seatDetail("core.lead");
+    details["ops.watch"] = seatDetail("ops.watch");
+    const { container } = renderAt("/topology/rig/abc-rig", 834, 1194);
+    await graphFrame(container, "graph-view");
+    const graph = q(container, "[data-testid='graph-view']");
+    fireEvent.click(await desktopAgent(container, "core.lead"));
+    await seatDock(container, "local|abc-rig|core.lead");
+    await waitFor(() => expect(sockets).toHaveLength(1));
+
+    fireEvent.click(await desktopAgent(container, "ops.watch"));
+    const dock = await seatDock(container, "local|abc-rig|ops.watch");
+    expect(qa(container, "[data-testid='graph-seat-dock']")).toHaveLength(1);
+    await waitFor(() => expect(sockets).toHaveLength(2));
+    expect(sockets[0]!.closeCalled).toBe(true);
+    expect(sockets[1]!.url).toContain(encodeURIComponent("ops.watch@acme"));
+
+    fireEvent.click(within(dock).getByTestId("graph-seat-dock-close"));
+    await waitFor(() => expect(q(container, "[data-testid='graph-seat-dock']")).toBeNull());
+    expect(sockets[1]!.closeCalled).toBe(true);
+    expect(q(container, "[data-testid='graph-view']")).toBe(graph);
+    // Closing stops nothing: no lifecycle or focus request was made.
+    expect(writes()).toEqual([]);
+
+    fireEvent.click(await desktopAgent(container, "core.lead"));
+    await seatDock(container, "local|abc-rig|core.lead");
+    await waitFor(() => expect(sockets).toHaveLength(3));
+    expect(sockets[2]!.url).toContain(encodeURIComponent("core.lead@acme"));
+  }, 20000);
+
+  it("re-tapping the open agent reveals its dock again with the same terminal and socket", async () => {
+    restores.push(stubInputs(TOUCH_ONLY).restore);
+    details["core.lead"] = seatDetail("core.lead");
+    const revealed: Array<{ el: HTMLElement; options: ScrollIntoViewOptions | boolean | undefined }> = [];
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = function (this: HTMLElement, options?: ScrollIntoViewOptions | boolean) { revealed.push({ el: this, options }); };
+    restores.push(() => { HTMLElement.prototype.scrollIntoView = original; });
+    const { container } = renderAt("/topology/rig/abc-rig", 834, 1194);
+    await graphFrame(container, "graph-view");
+    fireEvent.click(await desktopAgent(container, "core.lead"));
+    const dock = await seatDock(container, "local|abc-rig|core.lead");
+    await waitFor(() => expect(within(dock).getByTestId("spatial-terminal-live")).toBeTruthy());
+    await waitFor(() => expect(sockets).toHaveLength(1));
+    const live = within(dock).getByTestId("spatial-terminal-live");
+    const dockReveals = () => revealed.filter((r) => r.el === dock);
+    const reveals = () => dockReveals().length;
+    expect(reveals()).toBe(1);
+    fireEvent.click(await desktopAgent(container, "core.lead"));
+    await waitFor(() => expect(reveals()).toBe(2));
+    expect(q(container, "[data-testid='graph-seat-dock']")).toBe(dock);
+    expect(within(dock).getByTestId("spatial-terminal-live")).toBe(live);
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0]!.closeCalled).toBe(false);
+    expect(dock.contains(document.activeElement)).toBe(false);
+    // Every reveal aligns the dock's top (not "nearest"): the terminal that
+    // mounts taller after the read must not decide how much is revealed.
+    for (const r of dockReveals()) expect(r.options).toMatchObject({ block: "start" });
+  }, 20000);
+
+  it("a pod page detaches a seat the refreshed graph moved to another pod; a rig page keeps it", async () => {
+    restores.push(stubInputs(TOUCH_ONLY).restore);
+    servedIdDiffersFromLogicalId();
+    const moved = () => {
+      const g = graphs["abc-rig"] as Graph;
+      return { ...g, nodes: g.nodes.map((n) => ((n as { id: string }).id === "n-lead" ? { ...(n as object), parentId: "pod-ops" } : n)) };
+    };
+    const before = graphs["abc-rig"];
+    for (const [path, staysAttached] of [["/topology/pod/abc-rig/core", false], ["/topology/rig/abc-rig", true]] as const) {
+      graphs["abc-rig"] = before;
+      sockets.length = 0;
+      const { container, queryClient, unmount } = renderAt(path, 834, 1194);
+      await graphFrame(container, "graph-view");
+      fireEvent.click(await desktopAgent(container, "n-lead"));
+      const dock = await seatDock(container, "local|abc-rig|n-lead");
+      await waitFor(() => expect(within(dock).getByTestId("spatial-terminal-live")).toBeTruthy());
+      await waitFor(() => expect(sockets).toHaveLength(1));
+      graphs["abc-rig"] = moved();
+      await act(async () => { await queryClient.invalidateQueries({ queryKey: ["rig", "abc-rig", "graph"] }); });
+      if (staysAttached) {
+        // Same agent, same rig: still resolves; its terminal stays attached.
+        await waitFor(() => expect(within(dock).getByTestId("spatial-terminal-live")).toBeTruthy());
+        expect(q(container, "[data-testid='graph-seat-dock-unresolved']")).toBeNull();
+        expect(sockets[0]!.closeCalled).toBe(false);
+      } else {
+        await waitFor(() => expect(q(container, "[data-testid='graph-seat-dock-unresolved']")?.textContent).toContain("pod core"), { timeout: 5000 });
+        expect(q(container, "[data-testid='spatial-terminal-dock']")).toBeNull();
+        expect(sockets[0]!.closeCalled).toBe(true);
+      }
+      unmount();
+    }
+  }, 30000);
+
+  it("a stopped seat or failed detail read is refused; a seat dropped from the refreshed graph detaches", async () => {
+    restores.push(stubInputs(TOUCH_ONLY).restore);
+    details["core.worker"] = seatDetail("core.worker", null);
+    details["ops.watch"] = seatDetail("ops.watch");
+    const { container, queryClient } = renderAt("/topology/rig/abc-rig", 834, 1194);
+    await graphFrame(container, "graph-view");
+    fireEvent.click(await desktopAgent(container, "core.worker"));
+    let dock = await seatDock(container, "local|abc-rig|core.worker");
+    await waitFor(() => expect(within(dock).getByTestId("spatial-terminal-state").getAttribute("data-state")).toBe("no-pane"));
+    fireEvent.click(await desktopAgent(container, "core.lead")); // no detail served → 503
+    dock = await seatDock(container, "local|abc-rig|core.lead");
+    await waitFor(() => expect(within(dock).getByTestId("spatial-terminal-state").getAttribute("data-state")).toBe("unreadable"));
+    expect(sockets).toHaveLength(0);
+
+    fireEvent.click(await desktopAgent(container, "ops.watch"));
+    await seatDock(container, "local|abc-rig|ops.watch");
+    await waitFor(() => expect(sockets).toHaveLength(1));
+    // The served graph no longer has ops.watch: the dock detaches, never substitutes.
+    const g = graphs["abc-rig"] as Graph;
+    graphs["abc-rig"] = { nodes: g.nodes.filter((n) => (n as { id: string }).id !== "ops.watch"), edges: [] };
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ["rig", "abc-rig", "graph"] }); });
+    await waitFor(() => expect(q(container, "[data-testid='graph-seat-dock-unresolved']")).toBeTruthy(), { timeout: 5000 });
+    expect(q(container, "[data-testid='spatial-terminal-dock']")).toBeNull();
+    expect(sockets[0]!.closeCalled).toBe(true);
+  }, 25000);
+
+  it("host, scope, view and rig changes drop the dock (no stale or cross-host terminal)", async () => {
+    restores.push(stubInputs(TOUCH_ONLY).restore);
+    details["core.lead"] = seatDetail("core.lead");
+    summary = [{ id: "abc-rig", name: "acme", nodeCount: 3 }, { id: "other-rig", name: "other", nodeCount: 0 }];
+    graphs["other-rig"] = { nodes: [], edges: [] };
+    const { container, router, queryClient } = renderAt("/topology/rig/abc-rig", 834, 1194);
+    await graphFrame(container, "graph-view");
+    const open = async () => {
+      fireEvent.click(await desktopAgent(container, "core.lead"));
+      await seatDock(container, "local|abc-rig|core.lead");
+      await waitFor(() => expect(sockets.at(-1)!.closeCalled).toBe(false));
+    };
+    const dropped = async () => {
+      await waitFor(() => expect(q(container, "[data-testid='graph-seat-dock']")).toBeNull());
+      expect(sockets.at(-1)!.closeCalled).toBe(true);
+    };
+    await open();
+    // A different selected host: the dock is the old host's, so it goes.
+    act(() => queryClient.setQueryData(["hosts"], { ownName: "localhost", selected: "vps-a", hosts: [] }));
+    await dropped();
+    act(() => queryClient.setQueryData(["hosts"], { ownName: "localhost", selected: "local", hosts: [] }));
+    await graphFrame(container, "graph-view");
+    // Switching back to the same host does not resurrect it.
+    expect(q(container, "[data-testid='graph-seat-dock']")).toBeNull();
+
+    await open();
+    fireEvent.click(q(container, "[data-testid='topology-rig-tab-table']")!);
+    await dropped();
+    fireEvent.click(q(container, "[data-testid='topology-rig-tab-graph']")!);
+    await graphFrame(container, "graph-view");
+    expect(q(container, "[data-testid='graph-seat-dock']")).toBeNull();
+
+    await open();
+    act(() => { void router.navigate({ to: "/topology/rig/$rigId", params: { rigId: "other-rig" } }); });
+    await dropped();
+    act(() => { void router.navigate({ to: "/topology/rig/$rigId", params: { rigId: "abc-rig" } }); });
+    await graphFrame(container, "graph-view");
+    expect(q(container, "[data-testid='graph-seat-dock']")).toBeNull();
+
+    await open();
+    act(() => { void router.navigate({ to: "/topology/pod/$rigId/$podName", params: { rigId: "abc-rig", podName: "core" } }); });
+    await dropped();
+  }, 30000);
+
+  it("a pointer change and a keyboard-height viewport keep the open dock and its socket", async () => {
+    const inputs = stubInputs(TOUCH_ONLY);
+    restores.push(inputs.restore);
+    details["core.lead"] = seatDetail("core.lead");
+    const { container } = renderAt("/topology", 1180, 820);
+    await graphFrame(container, "host-multi-rig-graph");
+    fireEvent.click(await desktopAgent(container, "core.lead"));
+    const dock = await seatDock(container, "local|abc-rig|core.lead");
+    await waitFor(() => expect(sockets).toHaveLength(1));
+    inputs.set(TOUCH_WITH_POINTER);
+    act(() => setViewportHeight(400));
+    expect(q(container, "[data-testid='graph-seat-dock']")).toBe(dock);
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0]!.closeCalled).toBe(false);
+  }, 20000);
+
+  it("a mouse-only desktop still navigates to the seat page; a phone keeps its modal terminal", async () => {
+    restores.push(stubInputs(MOUSE_ONLY).restore);
+    details["core.lead"] = seatDetail("core.lead");
+    const desktop = renderAt("/topology/rig/abc-rig", 1440, 900);
+    await graphFrame(desktop.container, "graph-view");
+    fireEvent.click(await desktopAgent(desktop.container, "core.lead"));
+    await waitFor(() => expect(desktop.router.state.location.pathname).toBe("/topology/seat/abc-rig/core.lead"));
+    expect(q(desktop.container, "[data-testid='graph-seat-dock']")).toBeNull();
+    desktop.unmount();
+
+    restores.push(stubInputs(TOUCH_ONLY).restore);
+    const phone = renderAt("/topology/rig/abc-rig", 430, 932);
+    tapNode(await seatChip(phone.container, "core.lead"));
+    expect((await terminalOverlay()).getAttribute("data-agent-key")).toContain("/agent/core.lead");
+    expect(q(phone.container, "[data-testid='graph-seat-dock']")).toBeNull();
   }, 20000);
 });
 
