@@ -1,3 +1,5 @@
+import { NativeChatService } from "./domain/native-chat.js";
+import { nativeChatRoutes } from "./routes/native-chat.js";
 import { healthDiagnosisRoutes } from "./routes/health-diagnosis.js";
 import type { HealthDiagnosisService } from "./domain/health-diagnosis.js";
 import type { HealthPolicyStore } from "./domain/health-policy.js";
@@ -747,6 +749,9 @@ export function createApp(deps: AppDeps): Hono {
   app.route("/api/startup", startupRoutes);
   app.route("/api/transcripts", transcriptRoutes());
   app.route("/api/transport", transportRoutes({ bearerToken: deps.terminalBearerToken ?? null }));
+  app.route("/api/native-chat", nativeChatRoutes(new NativeChatService({ db: deps.rigRepo.db,
+    sessionRegistry: deps.sessionRegistry, tmux: deps.tmuxAdapter, contextUsageStore: deps.contextUsageStore,
+    agentActivityStore: deps.agentActivityStore }), deps.terminalBearerToken ?? null));
   // OPR.0.4.3.14 — manual compaction trigger (same terminal-bearer posture as
   // transport, since it drives a send into the target seat).
   app.route("/api/compaction", compactionRoutes({ bearerToken: deps.terminalBearerToken ?? null }));

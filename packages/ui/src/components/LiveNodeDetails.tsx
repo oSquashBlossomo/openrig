@@ -55,6 +55,7 @@ import { getRestoreStatusColorClass } from "../lib/restore-status-colors.js";
 import type { AgentSpecReview } from "../hooks/useSpecReview.js";
 import { RuntimeBadge, ToolMark } from "./graphics/RuntimeMark.js";
 import { postOpenCmux } from "../hooks/useCmuxLaunch.js";
+import { SeatChatTerminal } from "./native-chat/NativeChatPanel.js";
 
 export type LiveNodeDetailsTab = "overview" | "details";
 type Tab = LiveNodeDetailsTab;
@@ -491,7 +492,7 @@ function OverviewTab({ data, activityVisual, rigId, logicalId, sourceHost, detai
       <SeatOverviewSecondary data={data} showCurrentWork={sourceHost !== LOCAL_HOST_ID} />
       <SeatWorkPanel rigId={rigId} logicalId={logicalId} sourceHost={sourceHost} />
       <SeatHealthSection data={data} rigId={rigId} logicalId={logicalId} sourceHost={sourceHost} detailCurrent={detailCurrent} />
-      <InlineTerminal data={data} />
+      <SeatChat data={data} detailCurrent={detailCurrent} />
       <RecentEventsSection data={data} />
     </div>
   );
@@ -523,6 +524,27 @@ function DetailsTab({
       <ContextUsageSection data={data} />
       <TranscriptContent data={data} />
     </div>
+  );
+}
+
+/** Chat with this seat's native conversation, the inline terminal one click
+ *  away. Writing needs the detail's own node id and a current detail read. */
+function SeatChat({ data, detailCurrent }: { data: NodeDetailData; detailCurrent: boolean }) {
+  const hostId = useSelectedHostId();
+  return (
+    <SeatChatTerminal
+      layout="page"
+      target={{
+        hostId,
+        rigId: data.rigId,
+        nodeId: data.nodeId ?? null,
+        isRemote: hostId !== LOCAL_HOST_ID,
+        expectedSession: data.canonicalSessionName,
+        displayName: data.logicalId,
+        blockedReason: detailCurrent ? null : "The latest seat detail read failed, so this seat's identity is not current.",
+      }}
+      terminal={<InlineTerminal data={data} />}
+    />
   );
 }
 

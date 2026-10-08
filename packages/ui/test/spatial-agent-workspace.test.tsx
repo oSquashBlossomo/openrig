@@ -52,6 +52,9 @@ import { SpatialAgentWorkspace } from "../src/components/topology/spatial/Spatia
 import { LiveTerminalProvider, useLiveTerminal } from "../src/components/terminal/LiveTerminalProvider.js";
 import { readSpatialPalette } from "../src/components/topology/spatial/spatial-palette.js";
 import { buildSpatialModel, deriveSeatStatus, parseSpatialRig, type SpatialAgent } from "../src/lib/spatial-topology.js";
+import { setPreferredSeatView } from "../src/components/native-chat/NativeChatPanel.js";
+// These cover the terminal; seats open in Chat by default (native-chat-panel.test.tsx).
+setPreferredSeatView("terminal");
 
 // Two rigs whose seats share a logical id and display name: only rig, node
 // and session tell them apart.

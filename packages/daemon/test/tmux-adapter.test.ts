@@ -1310,3 +1310,25 @@ describe("TmuxAdapter", () => {
     });
   });
 });
+
+describe("asynchronous input-boundary observation", () => {
+  it("awaits the final paste guard after loading, and cleans the buffer without pasting on refusal", async () => {
+    const exec = vi.fn<ExecFn>().mockResolvedValue("");
+    const adapter = new TmuxAdapter(exec, {
+      writeFile: async () => {}, unlink: async () => {}, tmpName: () => "/tmp/fictional-chat-input", bufferName: () => "chat-input-test",
+    });
+    const result = await adapter.sendText("%1", "hello", async () => {
+      expect(exec.mock.calls.some(([cmd]) => cmd.includes("load-buffer"))).toBe(true);
+      await Promise.resolve(); throw new Error("native draft appeared");
+    });
+    expect(result.ok).toBe(false);
+    expect(exec.mock.calls.some(([cmd]) => cmd.includes("paste-buffer"))).toBe(false);
+    expect(exec.mock.calls.some(([cmd]) => cmd.includes("delete-buffer"))).toBe(true);
+  });
+  it("awaits an asynchronous key guard and writes no key if it refuses", async () => {
+    const exec = vi.fn<ExecFn>().mockResolvedValue("");
+    const adapter = new TmuxAdapter(exec);
+    await expect(adapter.sendKeys("%1", ["Escape"], async () => { await Promise.resolve(); throw new Error("native picker appeared"); })).rejects.toThrow("native picker appeared");
+    expect(exec).not.toHaveBeenCalled();
+  });
+});

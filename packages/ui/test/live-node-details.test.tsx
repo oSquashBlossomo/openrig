@@ -9,6 +9,9 @@ import {
 } from "../src/hooks/useTopologyActivity.js";
 import { buildTopologySessionIndex } from "../src/lib/topology-activity.js";
 import { createMockEventSourceClass, instances } from "./helpers/mock-event-source.js";
+import { setPreferredSeatView } from "../src/components/native-chat/NativeChatPanel.js";
+// These cover the terminal; seats open in Chat by default (native-chat-panel.test.tsx).
+setPreferredSeatView("terminal");
 
 const mockFetch = vi.fn();
 let OriginalEventSource: typeof EventSource | undefined;

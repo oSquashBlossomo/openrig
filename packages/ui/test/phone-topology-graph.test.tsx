@@ -44,6 +44,9 @@ import { HostScopePage, PodScopePage, RigScopePage } from "../src/components/top
 import { parseSpatialRig } from "../src/lib/spatial-topology.js";
 import { layoutPhoneGraph, phoneGraphColumns, readablePhoneViewport } from "../src/lib/phone-graph-layout.js";
 import { TallyRow } from "../src/components/topology/PhoneGraphNodes.js";
+import { setPreferredSeatView } from "../src/components/native-chat/NativeChatPanel.js";
+// These cover the terminal; seats open in Chat by default (native-chat-panel.test.tsx).
+setPreferredSeatView("terminal");
 
 const mockFetch = vi.fn();
 let OriginalEventSource: typeof EventSource | undefined;

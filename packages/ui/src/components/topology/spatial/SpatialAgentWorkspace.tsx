@@ -3,7 +3,9 @@
 // Selecting an exact seat opens ONE live terminal here immediately — no
 // "open terminal" gate — beside its served state: identity, a compact work
 // summary, and Work / Evidence / Relationships tabs. Contract:
-// docs/plans/spatial-redesign-terminal-contract.md.
+// docs/plans/spatial-redesign-terminal-contract.md. The terminal sits behind
+// a Chat / Terminal toggle (native-chat/NativeChatPanel.tsx); the last view
+// chosen applies to every seat, and the terminal mounts only when shown.
 //
 // Terminal admission (spatial-terminal-admission.ts): a CURRENT node-detail
 // read must confirm the exact host/rig/node/logical id/canonical session, an
@@ -33,6 +35,7 @@ import { shortQitemTail } from "../../../lib/activity-visuals.js";
 import type { SpatialAgent, SpatialModel, SpatialSeatStatus } from "../../../lib/spatial-topology.js";
 import type { TopologyScope } from "../../../lib/topology-location.js";
 import { cn } from "../../../lib/utils.js";
+import { SeatChatTerminal } from "../../native-chat/NativeChatPanel.js";
 import { TopologyLink, topologyTarget } from "../topology-navigation.js";
 import { hslCss, type SpatialPalette } from "./spatial-palette.js";
 import {
@@ -216,7 +219,7 @@ export function SpatialAgentWorkspace(props: SpatialAgentWorkspaceProps) {
       ) : null}
 
       {/* Keyed by the selected graph entry: a reselection starts admission over. */}
-      <SeatLiveTerminal key={`${hostId}|${agent.rigId}|${agent.nodeId}`} agent={agent} hostId={hostId} isRemote={isRemote} detailKey={detailKey} detailQuery={detailQuery} layout={layout} />
+      <SeatChatAndTerminal key={`${hostId}|${agent.rigId}|${agent.nodeId}`} agent={agent} hostId={hostId} isRemote={isRemote} detailKey={detailKey} detailQuery={detailQuery} layout={layout} />
 
       <dl data-testid="spatial-workspace-summary" className="mx-4 mt-3 grid grid-cols-[repeat(auto-fit,minmax(7.5rem,1fr))] border border-outline-variant font-mono text-[11px]">
         <SummaryCell label="Queue">
@@ -346,14 +349,39 @@ function transition(m: DockMachine, outcome: AdmissionVerdict | null, explicit: 
   return { ...m, everAdmitted: true, nextId: m.nextId + 1, dock: { kind: "admitted", seat: outcome.seat, id: m.nextId } };
 }
 
-export function SeatLiveTerminal({ agent, hostId, isRemote, detailKey, detailQuery, layout }: {
+interface SeatLiveTerminalProps {
   agent: SpatialAgent;
   hostId: string;
   isRemote: boolean;
   detailKey: readonly unknown[];
   detailQuery: DetailQuery;
   layout: "side" | "stacked";
-}) {
+}
+
+/** Chat / Terminal for the selected seat. Chat may write only while the same
+ *  current detail read the terminal admits from confirms this exact seat;
+ *  the terminal below is the unchanged guarded SeatLiveTerminal. */
+export function SeatChatAndTerminal(props: SeatLiveTerminalProps) {
+  const { agent, hostId, isRemote, detailQuery, layout } = props;
+  const verdict = precheckSeat(agent, hostId, isRemote) ?? readOutcome(agent, hostId, detailQuery);
+  return (
+    <SeatChatTerminal
+      layout={layout}
+      target={{
+        hostId,
+        rigId: agent.rigId,
+        nodeId: agent.nodeId,
+        isRemote,
+        expectedSession: agent.canonicalSessionName,
+        displayName: agent.displayName,
+        blockedReason: verdict === null ? "Verifying this seat's identity before sending…" : verdict.ok ? null : verdict.reason,
+      }}
+      terminal={<SeatLiveTerminal {...props} />}
+    />
+  );
+}
+
+export function SeatLiveTerminal({ agent, hostId, isRemote, detailKey, detailQuery, layout }: SeatLiveTerminalProps) {
   const precheck = precheckSeat(agent, hostId, isRemote);
   const [machine, setMachine] = useState<DockMachine>({ dock: { kind: "pending", retrying: false }, stamp: "", everAdmitted: false, nextId: 1 });
   const mountedRef = useRef(true);

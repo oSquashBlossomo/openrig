@@ -143,18 +143,30 @@ export class ContextUsageStore {
   }
 
   /** Read and parse a sidecar JSON file. Returns discriminated result. */
-  readSidecar(sessionName: string): { ok: true; data: SidecarRaw } | { ok: false; reason: "missing_sidecar" | "parse_error" } {
-    const canonical = this.readSidecarAt(this.getSidecarPath(sessionName));
+  readSidecar(sessionName: string, maxBytes?: number): { ok: true; data: SidecarRaw } | { ok: false; reason: "missing_sidecar" | "parse_error" } {
+    const canonical = this.readSidecarAt(this.getSidecarPath(sessionName), maxBytes);
     if (canonical.ok || canonical.reason !== "missing_sidecar") return canonical;
     return this.readSidecarAt(
-      telemetrySidecarPath(legacyContextUsageDirectory(this.stateDir), sessionName),
+      telemetrySidecarPath(legacyContextUsageDirectory(this.stateDir), sessionName), maxBytes,
     );
   }
 
-  private readSidecarAt(filePath: string): { ok: true; data: SidecarRaw } | { ok: false; reason: "missing_sidecar" | "parse_error" } {
+  private readSidecarAt(filePath: string, maxBytes?: number): { ok: true; data: SidecarRaw } | { ok: false; reason: "missing_sidecar" | "parse_error" } {
     try {
       if (!existsSync(filePath)) return { ok: false, reason: "missing_sidecar" };
-      const content = readFileSync(filePath, "utf-8");
+      let content: string;
+      if (maxBytes === undefined) content = readFileSync(filePath, "utf-8");
+      else {
+        // Chat polls need a bounded locator read as well as bounded transcript pages.
+        if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 1024 * 1024) return { ok: false, reason: "parse_error" };
+        const fd = openSync(filePath, "r");
+        try {
+          const buffer = Buffer.alloc(maxBytes + 1);
+          const count = readSync(fd, buffer, 0, buffer.length, 0);
+          if (count > maxBytes) return { ok: false, reason: "parse_error" };
+          content = buffer.subarray(0, count).toString("utf8");
+        } finally { closeSync(fd); }
+      }
       const parsed = JSON.parse(content) as SidecarRaw;
       return { ok: true, data: parsed };
     } catch {
