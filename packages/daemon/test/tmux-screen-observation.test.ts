@@ -19,7 +19,7 @@ describe("one-command screen observations", () => {
     expect(await tmux.capturePaneObservation("%7")).toEqual({ cursor: { x: 4, y: 1, width: 4, height: 2 }, snapshot: "abc \n    \n" });
     expect(calls).toHaveLength(1);
     expect(calls[0]!.filter(x => x === "%7")).toHaveLength(5);
-    expect(calls[0]!.filter(x => x === "show-options")).toHaveLength(3);
+    expect(calls[0]!.filter(x => x === "show-options")).toHaveLength(4);
     expect(calls[0]).toContain("-e"); expect(calls[0]).toContain("-N");
     expect(calls[0]!.join(" ")).not.toMatch(/set-option|resize|send-keys|pipe-pane/);
   });
@@ -37,6 +37,20 @@ describe("one-command screen observations", () => {
   });
   it.each(["after-show-options", "after-display-message", "after-capture-pane"])("refuses a nonempty inherited %s hook without returning its body", async hook => {
     const { tmux } = adapter(output => output.replace(`${hook}\n`, `${hook}[9] run-shell 'private-hook-content'\n`));
+    expect(await tmux.capturePaneObservation("%7")).toBeNull();
+  });
+  it.each(["show-options", "display-message", "capture-pane"])("refuses a %s command alias, including the alias reader itself", async command => {
+    const { tmux } = adapter(output => `${command}=run-shell 'private-alias-content'; ${command}\n${output}`);
+    expect(await tmux.capturePaneObservation("%7")).toBeNull();
+  });
+  it("allows unrelated aliases, including bodies which mention an observation command", async () => {
+    const { tmux, calls } = adapter(output => `splitp=split-window\ncustom=capture-pane -p\n${output}`);
+    expect((await tmux.capturePaneObservation("%7"))?.snapshot).toBe("abc \n    \n");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.slice(0, 6)).toEqual(["tmux", "show-options", "-sv", "command-alias", ";", "show-options"]);
+  });
+  it("refuses malformed alias output rather than claiming an atomic observation", async () => {
+    const { tmux } = adapter(output => `unparsed alias output\n${output}`);
     expect(await tmux.capturePaneObservation("%7")).toBeNull();
   });
   it.each([
