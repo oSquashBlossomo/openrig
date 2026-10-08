@@ -55,6 +55,8 @@ function lastRequest(raw: RecordValue | null, runtime: string | null) {
   const output = count(raw.output_tokens);
   let reasoning = codex ? count(raw.reasoning_output_tokens) : null;
   if (output !== null && reasoning !== null && reasoning > output) reasoning = null;
+  // Model/version or cumulative metadata alone does not establish a request.
+  if ([input, read, write, output, reasoning].every(value => value === null)) return null;
   return {
     inputTokens: total,
     uncachedInputTokens: codex ? (input !== null && read !== null ? input - read : null) : input,

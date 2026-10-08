@@ -168,6 +168,29 @@ describe("prompt cache telemetry (saved observations only)", () => {
     const row = (await read()).rows[0]!;
     expect(row.availability).toBe("unknown"); expect(row.reason).toBe("cache_fields_unavailable");
     expect(row.retention.state).toBe("unknown"); expect(row.cumulative).toBeNull();
+    expect(row.lastRequest).toBeNull();
+    expect(row.runtimeVersion).toBe("2.1.293");
+  });
+
+  it("retains cumulative cache evidence without claiming a last request when native current_usage is null", async () => {
+    const { node, raw } = seed();
+    store.persist(node.id, store.normalizeSample({ ...raw, context_window: { used_percentage: 0, current_usage: null } }));
+    const row = (await read()).rows[0]!;
+    expect(row.lastRequest).toBeNull();
+    expect(row.availability).toBe("known");
+    expect(row.cumulative).toMatchObject({ requests: 14, cacheWriteTokens: 352000 });
+    expect(row.retention).toMatchObject({ ttlSeconds: 3600, state: "warm_estimate" });
+  });
+
+  it("hides even an unexpired one-hour estimate once its sample reaches ten minutes", async () => {
+    seed();
+    vi.setSystemTime(Date.parse(NOW) + 599_999);
+    expect((await read()).rows[0]!.retention.state).toBe("warm_estimate");
+    vi.setSystemTime(Date.parse(NOW) + 600_000);
+    const row = (await read()).rows[0]!;
+    expect(row.reason).toBe("stale_sample");
+    expect(row.lastRequest).toBeNull(); expect(row.cumulative).toBeNull();
+    expect(row.retention).toMatchObject({ state: "unknown", ttlSeconds: null, expiresAt: null });
   });
 
   it("preserves legacy Claude cache counters without inventing native cumulative or TTL data", async () => {

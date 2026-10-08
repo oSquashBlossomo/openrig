@@ -17,7 +17,9 @@ native conversation IDs, transcript paths or prompt content are returned.
   A turn may make several requests. Claude uncached input, cache reads and cache
   writes form total input; Codex cached input is already part of total input.
   Missing fields are null, including Codex cache writes and Claude reasoning
-  output. A zero counter remains zero. `requestedAt` is unknown.
+  output. A zero counter remains zero. If no valid request counter was reported,
+  `lastRequest` itself is null, even when model/version or cumulative cache
+  metadata exists. `requestedAt` is unknown.
 - `cumulative` is Claude's reported main-conversation snapshot, never a sum of
   statusline polls. It is separate from last-request tokens. Native subagents
   are excluded; each OpenRig worker CLI is a separate seat, not a native subagent.
@@ -29,9 +31,12 @@ native conversation IDs, transcript paths or prompt content are returned.
   unrecognized categories are omitted, never replaced with prompt text.
 - `availability: unknown` carries a reason for missing, stale, malformed,
   unsupported or unattributable evidence. The existing ten-minute telemetry
-  freshness threshold is not the cache TTL. Attribution requires one running
-  occupant, the saved exact native ID, matching sidecar identity/source and the
-  existing generation guard. Stopped or ambiguous seats do not inherit old data.
+  freshness threshold is not the cache TTL: once a sample reaches ten minutes,
+  its counters and retention estimate are hidden as unknown, even if a reported
+  one-hour expiry is still in the future. A new attributable sample is required
+  to show them again; polling does not refresh the sample. Attribution requires
+  one running occupant, the saved exact native ID, matching sidecar identity/source
+  and the existing generation guard. Stopped or ambiguous seats do not inherit old data.
 - `subscriptionSavings` remains unknown. Token hit ratios are not quota credits,
   dollars saved, or proof of more completed work. No fleet-wide benefit is pooled.
 
@@ -53,9 +58,11 @@ bucket from these defaults or change them. See the native
 
 The existing managed Claude collector preserves the new fields when native
 statusline payloads supply them. Older saved samples continue to work with their
-available counters. No schema migration, new provider poll or telemetry upload
-is involved. A native statusline snapshot can follow compact/restart; OpenRig
-makes no universal claim that either resets every native cumulative field.
+available counters. The opaque `contextUsage.currentUsage` JSON can retain
+allowlisted metadata without native last-request counters; its presence alone
+is not request evidence. No schema migration, new provider poll or telemetry
+upload is involved. A native statusline snapshot can follow compact/restart;
+OpenRig makes no universal claim that either resets every native cumulative field.
 
 This slice performs no warming, settings writes, synthetic turns, compact,
 clear, fork, restart or API-credit fallback. Opening a terminal, polling this
