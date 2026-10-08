@@ -567,16 +567,37 @@ describe("camera controls never cover node controls (reserved space, measured su
   }, 15000);
 });
 
-/** Input capabilities as the browser reports them through media queries and
- *  navigator.maxTouchPoints. Hardware values are not observed here; these
- *  are the combinations the graph must handle. */
-type Inputs = { pointer: "coarse" | "fine"; hover: boolean; anyCoarse: boolean; anyFine: boolean; maxTouchPoints: number };
-const TOUCH_ONLY: Inputs = { pointer: "coarse", hover: false, anyCoarse: true, anyFine: false, maxTouchPoints: 5 };
+/** Input capabilities and device hints as the browser reports them through
+ *  media queries, navigator.maxTouchPoints, navigator.platform and the user
+ *  agent. Hardware values are not observed here; these are the combinations
+ *  the graph must handle. */
+type Inputs = {
+  pointer: "coarse" | "fine"; hover: boolean; anyCoarse: boolean; anyFine: boolean; maxTouchPoints: number;
+  platform: string; userAgent: string;
+};
+/** iPadOS Safari's default desktop-class identity (MacIntel + touch points). */
+const IPAD_DESKTOP_MODE = { platform: "MacIntel", userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15" };
+const TOUCH_ONLY: Inputs = { pointer: "coarse", hover: false, anyCoarse: true, anyFine: false, maxTouchPoints: 5, ...IPAD_DESKTOP_MODE };
 /** A touchscreen with an attached trackpad/mouse that became the primary pointer. */
-const TOUCH_WITH_POINTER: Inputs = { pointer: "fine", hover: true, anyCoarse: true, anyFine: true, maxTouchPoints: 5 };
+const TOUCH_WITH_POINTER: Inputs = { pointer: "fine", hover: true, anyCoarse: true, anyFine: true, maxTouchPoints: 5, ...IPAD_DESKTOP_MODE };
 /** Media queries report only the fine pointer; touch points remain. */
-const TOUCH_POINTS_ONLY: Inputs = { pointer: "fine", hover: true, anyCoarse: false, anyFine: true, maxTouchPoints: 5 };
-const MOUSE_ONLY: Inputs = { pointer: "fine", hover: true, anyCoarse: false, anyFine: true, maxTouchPoints: 0 };
+const TOUCH_POINTS_ONLY: Inputs = { pointer: "fine", hover: true, anyCoarse: false, anyFine: true, maxTouchPoints: 5, ...IPAD_DESKTOP_MODE };
+/** A Mac with a mouse/trackpad: MacIntel, no touch points. */
+const MOUSE_ONLY: Inputs = { pointer: "fine", hover: true, anyCoarse: false, anyFine: true, maxTouchPoints: 0, ...IPAD_DESKTOP_MODE };
+/** An iPad reporting its native (mobile) identity. */
+const IPAD_NATIVE: Inputs = {
+  pointer: "coarse", hover: false, anyCoarse: true, anyFine: false, maxTouchPoints: 5,
+  platform: "iPad", userAgent: "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+};
+/** A Windows touchscreen laptop/desktop (touch plus mouse/trackpad). */
+const WINDOWS_TOUCH: Inputs = {
+  pointer: "fine", hover: true, anyCoarse: true, anyFine: true, maxTouchPoints: 5,
+  platform: "Win32", userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+};
+/** A Linux touchscreen desktop. */
+const LINUX_TOUCH: Inputs = { ...WINDOWS_TOUCH, platform: "Linux x86_64", userAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36" };
+/** A MacIntel reporting a coarse pointer but no touch points: not an iPad. */
+const MAC_COARSE_NO_TOUCH: Inputs = { ...MOUSE_ONLY, anyCoarse: true };
 
 function stubInputs(initial: Inputs) {
   let inputs = initial;
@@ -608,6 +629,8 @@ function stubInputs(initial: Inputs) {
     },
   });
   Object.defineProperty(window.navigator, "maxTouchPoints", { configurable: true, get: () => inputs.maxTouchPoints });
+  Object.defineProperty(window.navigator, "platform", { configurable: true, get: () => inputs.platform });
+  Object.defineProperty(window.navigator, "userAgent", { configurable: true, get: () => inputs.userAgent });
   return {
     /** Devices connect/disconnect: no resize, only media-query change events. */
     set(next: Inputs) {
@@ -617,7 +640,7 @@ function stubInputs(initial: Inputs) {
     listeners: (pattern: RegExp) => [...listeners].filter(([q]) => pattern.test(q)).reduce((n, [, fns]) => n + fns.size, 0),
     restore() {
       Object.defineProperty(window, "matchMedia", { configurable: true, value: original });
-      delete (window.navigator as { maxTouchPoints?: number }).maxTouchPoints;
+      for (const k of ["maxTouchPoints", "platform", "userAgent"] as const) delete (window.navigator as unknown as Record<string, unknown>)[k];
     },
   };
 }
@@ -672,6 +695,50 @@ describe("touch tablets keep the desktop graph in a tall frame", () => {
     restores.push(stubInputs(inputs).restore);
     const { container } = renderAt("/topology", 834, 1194);
     expectTallFrame(container, await graphFrame(container, "host-multi-rig-graph"));
+  }, 15000);
+
+  it.each([
+    ["native iPad platform/UA", IPAD_NATIVE],
+    ["desktop-mode iPad (MacIntel + touch points) with an attached pointer", TOUCH_WITH_POINTER],
+  ] as const)("834x1194 and 1194x834, %s: the tall desktop graph and its under-graph dock", async (_label, inputs) => {
+    restores.push(stubInputs(inputs).restore);
+    details["core.lead"] = seatDetail("core.lead");
+    for (const [w, h] of [[834, 1194], [1194, 834]] as const) {
+      const { container, router, unmount } = renderAt("/topology/rig/abc-rig", w, h);
+      expectTallFrame(container, await graphFrame(container, "graph-view"));
+      fireEvent.click(await desktopAgent(container, "core.lead"));
+      await seatDock(container, "local|abc-rig|core.lead");
+      expect(router.state.location.pathname).toBe("/topology/rig/abc-rig");
+      unmount();
+    }
+  }, 20000);
+
+  it.each([
+    ["Windows touchscreen", 1280, 800, WINDOWS_TOUCH],
+    ["Windows touchscreen", 1368, 912, WINDOWS_TOUCH],
+    ["Linux touchscreen", 1280, 800, LINUX_TOUCH],
+    ["MacIntel with a coarse pointer but no touch points", 1280, 800, MAC_COARSE_NO_TOUCH],
+  ] as const)("%s at %ix%i keeps the desktop graph in the shared frame, and an agent tap still opens the seat page", async (_label, w, h, inputs) => {
+    restores.push(stubInputs(inputs).restore);
+    const { container, router } = renderAt("/topology/rig/abc-rig", w, h);
+    const frame = await graphFrame(container, "graph-view");
+    expect(frame.getAttribute("data-tall")).toBeNull();
+    expect(frame.className).toContain("min-h-0");
+    expect(frame.className).not.toContain("shrink-0");
+    fireEvent.click(await desktopAgent(container, "core.lead"));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/topology/seat/abc-rig/core.lead"));
+    expect(q(container, "[data-testid='graph-seat-dock']")).toBeNull();
+  }, 15000);
+
+  it.each([
+    ["Windows touchscreen", WINDOWS_TOUCH],
+    ["Linux touchscreen", LINUX_TOUCH],
+  ] as const)("%s at a tablet-sized 912x1368 below 1024px keeps the narrow (phone) graph, not the tablet desktop graph", async (_label, inputs) => {
+    restores.push(stubInputs(inputs).restore);
+    const { container } = renderAt("/topology/rig/abc-rig", 912, 1368);
+    await waitFor(() => expect(q(container, "[data-testid='phone-graph-canvas']")).toBeTruthy(), { timeout: 5000 });
+    expect(q(container, "[data-testid='topology-graph-frame']")).toBeNull();
+    expect(q(container, "[data-testid='graph-view']")).toBeNull();
   }, 15000);
 
   it("a mouse-only desktop keeps the shared frame; a narrow mouse-only window and touch phones keep the phone graph", async () => {

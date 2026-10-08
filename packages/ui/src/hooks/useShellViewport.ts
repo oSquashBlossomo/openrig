@@ -24,14 +24,27 @@ export interface ShellViewport {
   /** Live innerWidth in px; useful for mid-band decisions (e.g., 768
    *  iPad-portrait breakpoint between mobile and desktop). */
   innerWidth: number;
-  /** A touch-capable tablet in either orientation, never a phone: the
+  /** A touch-capable iPad in either orientation, never a phone: the
    *  viewport is at least 600px wide and the screen's short side is too
    *  (the screen, not the viewport height, so a soft keyboard never
    *  reclassifies it), up to iPad Pro landscape width, whatever its primary
-   *  pointer (an attached trackpad or mouse keeps it a tablet). Lets the
-   *  topology Graph keep the desktop canvas on a tablet below the 1024px
-   *  shell breakpoint without moving that breakpoint. */
+   *  pointer (an attached trackpad or mouse keeps it a tablet), and the
+   *  browser hints iPad (see isIPadHint). Lets the topology Graph keep the
+   *  desktop canvas on an iPad below the 1024px shell breakpoint without
+   *  moving that breakpoint. Windows/Linux/Android touch devices keep their
+   *  ordinary layout. */
   isTouchTablet: boolean;
+}
+
+/** iPad hint, a LAYOUT heuristic only (never an identity or authorization
+ *  claim): an iPad platform or user agent, or iPadOS Safari's default
+ *  desktop-class identity — "MacIntel" with more than one touch point.
+ *  Browser-reported hints are not a guarantee of device type; a plain UA
+ *  check would miss desktop mode. */
+function isIPadHint(nav: Navigator | undefined): boolean {
+  if (!nav) return false;
+  if (/iPad/.test(nav.platform ?? "") || /iPad/.test(nav.userAgent ?? "")) return true;
+  return nav.platform === "MacIntel" && (nav.maxTouchPoints ?? 0) > 1;
 }
 
 function readViewport(): ShellViewport {
@@ -44,7 +57,7 @@ function readViewport(): ShellViewport {
   return {
     isWideLayout: innerWidth >= WIDE_LAYOUT_BREAKPOINT,
     innerWidth,
-    isTouchTablet: isTablet && touchCapable && innerWidth <= TOUCH_TABLET_MAX_WIDTH,
+    isTouchTablet: isTablet && touchCapable && innerWidth <= TOUCH_TABLET_MAX_WIDTH && isIPadHint(window.navigator),
   };
 }
 
