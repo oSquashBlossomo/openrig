@@ -160,15 +160,22 @@ type XtermText = {
   rows: number;
   hasSelection(): boolean;
   getSelection(): string;
-  buffer: { active: { viewportY: number; getLine(y: number): { translateToString(trimRight?: boolean): string } | undefined } };
+  buffer: { active: { viewportY: number; getLine(y: number): { isWrapped: boolean; translateToString(trimRight?: boolean): string } | undefined } };
 };
 
-/** What Copy takes: the selection, else the rows on screen. */
-function terminalCopyText(term: XtermText): { text: string; what: string } {
+/** What Copy takes: the selection, else the rows on screen as logical lines.
+ *  A soft-wrapped row (isWrapped) continues the previous line, as in xterm's
+ *  own selection; trimming each row drops only unwritten padding. */
+export function terminalCopyText(term: XtermText): { text: string; what: string } {
   if (term.hasSelection()) return { text: term.getSelection(), what: "the selection" };
   const buf = term.buffer.active;
   const lines: string[] = [];
-  for (let y = buf.viewportY; y < buf.viewportY + term.rows; y++) lines.push(buf.getLine(y)?.translateToString(true) ?? "");
+  for (let y = buf.viewportY; y < buf.viewportY + term.rows; y++) {
+    const line = buf.getLine(y);
+    const text = line?.translateToString(true) ?? "";
+    if (line?.isWrapped && lines.length > 0) lines[lines.length - 1] += text;
+    else lines.push(text);
+  }
   return { text: lines.join("\n").replace(/\s+$/, ""), what: "the visible screen" };
 }
 
