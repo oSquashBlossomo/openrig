@@ -954,10 +954,14 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
     }
   }, [setClipboard]);
 
-  const deliverPaste = useCallback((raw: string) => {
+  // A refused fallback Send keeps its box and exact draft to edit and retry.
+  const deliverPaste = useCallback((raw: string, retainOnFailure = false) => {
     const text = raw.replace(/\r\n?/g, "\n");
     const sent = sendInput(text, true);
-    setClipboard(sent ? `Pasted ${[...text].length} characters (not submitted; press Enter when ready).` : "Paste not sent; nothing reached the terminal.");
+    setClipboard(
+      sent ? `Pasted ${[...text].length} characters (not submitted; press Enter when ready).` : "Paste not sent; nothing reached the terminal.",
+      !sent && retainOnFailure ? { mode: "paste", text: raw } : null,
+    );
     return sent;
   }, [sendInput, setClipboard]);
 
@@ -1134,7 +1138,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
               type="button"
               aria-label="Send paste"
               disabled={!inputReady || !box.text}
-              onClick={() => { clipboardOpRef.current++; if (deliverPaste(box.text)) setClipboardState(null); }}
+              onClick={() => { clipboardOpRef.current++; if (deliverPaste(box.text, true)) setClipboardState(null); }}
               className={buttonClass}
             >
               Send

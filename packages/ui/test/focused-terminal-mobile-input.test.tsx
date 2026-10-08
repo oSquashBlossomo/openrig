@@ -608,6 +608,27 @@ it.each([
   expect(s.sockets[0].sent).toEqual([]);
 });
 
+it("a refused fallback Send keeps the exact draft and the limit warning; a smaller edit then sends once", async () => {
+  setClipboard(undefined);
+  const view = render(<FocusedTerminal sessionName="fixture" />);
+  ready(s.sockets[0]);
+  fireEvent.click(tools(view).getByRole("button", { name: /^paste/i }));
+  // 4-byte characters over the 256 KiB encoded limit, with line breaks (LF:
+  // a textarea value never holds CR).
+  const oversized = `${"😀".repeat(66 * 1024)}\nlast ✓`;
+  typeDraft(view, oversized);
+  fireEvent.click(view.getByRole("button", { name: /send paste/i }));
+  expect(s.sockets[0].sent).toEqual([]);
+  expect(draft(view)).toBe(oversized);
+  expect(view.getByTestId("focused-terminal-input-warning-fixture").textContent).toMatch(/256 KiB/);
+  expect(view.getByTestId("focused-terminal-clipboard-fixture").textContent).toMatch(/not sent/i);
+
+  typeDraft(view, "smaller ✓\nline");
+  fireEvent.click(view.getByRole("button", { name: /send paste/i }));
+  expect(frames(s.sockets[0])).toEqual([{ type: "text", text: "smaller ✓\nline" }]);
+  expect(view.queryByRole("textbox", { name: /text to paste/i })).toBeNull();
+});
+
 it("clears a paste box when the session changes", async () => {
   setClipboard(undefined);
   const view = render(<FocusedTerminal sessionName="a" />);
