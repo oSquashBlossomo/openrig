@@ -31,8 +31,9 @@ interface AnchorRect {
 interface PopoverPosition {
   left: number;
   top: number;
-  /** Visible-viewport bound; the class max-height covers the first paint. */
+  /** Visible-viewport bounds; the class max sizes cover the first paint. */
   maxHeight?: number;
+  maxWidth?: number;
 }
 
 interface ViewportSize {
@@ -73,11 +74,14 @@ function rectFromElement(el: HTMLElement | null): AnchorRect {
   };
 }
 
-/** The visible viewport height and offset: a phone's software keyboard
- *  shrinks (and may pan) the visual viewport without a window resize. */
-function visibleViewport(): ViewportSize & { top: number } {
+/** The visible viewport size and offsets: a phone's software keyboard and
+ *  pinch zoom/pan shrink and move the visual viewport without a window
+ *  resize. Without the API, the window. */
+function visibleViewport(): ViewportSize & { top: number; left: number } {
   const vv = window.visualViewport;
-  return { width: window.innerWidth, height: vv?.height ?? window.innerHeight, top: vv?.offsetTop ?? 0 };
+  return vv
+    ? { width: vv.width, height: vv.height, top: vv.offsetTop, left: vv.offsetLeft }
+    : { width: window.innerWidth, height: window.innerHeight, top: 0, left: 0 };
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -140,8 +144,16 @@ export function TerminalPreviewPopover({
     // Place within the visible band (visual-viewport coordinates), then
     // convert back to the layout viewport that position:fixed uses.
     const view = visibleViewport();
-    const next = computeTerminalPopoverPosition({ ...anchor, top: anchor.top - view.top, bottom: anchor.bottom - view.top }, width, height, view);
-    setPosition({ left: next.left, top: next.top + view.top, maxHeight: view.height - POPOVER_MARGIN * 2 });
+    const next = computeTerminalPopoverPosition(
+      { left: anchor.left - view.left, right: anchor.right - view.left, top: anchor.top - view.top, bottom: anchor.bottom - view.top },
+      width, height, view,
+    );
+    setPosition({
+      left: next.left + view.left,
+      top: next.top + view.top,
+      maxHeight: view.height - POPOVER_MARGIN * 2,
+      maxWidth: view.width - POPOVER_MARGIN * 2,
+    });
   }, [open]);
 
   useEffect(() => {
@@ -252,7 +264,7 @@ export function TerminalPreviewPopover({
         "cursor-default select-text font-mono text-[8px] text-stone-50",
         popoverClassName,
       )}
-      style={{ left: position.left, top: position.top, maxHeight: position.maxHeight }}
+      style={{ left: position.left, top: position.top, maxHeight: position.maxHeight, maxWidth: position.maxWidth }}
       onClick={(event) => event.stopPropagation()}
       onPointerDown={(event) => event.stopPropagation()}
     >
@@ -270,6 +282,8 @@ export function TerminalPreviewPopover({
         className="max-w-[calc(100vw-2rem)]"
         style={{
           width: `${LIVE_TERMINAL_COLS}ch`,
+          // The class's 1rem inset inside the outer cap, in visible-viewport px.
+          maxWidth: position.maxWidth === undefined ? undefined : position.maxWidth - 16,
           fontFamily: LIVE_TERMINAL_FONT_FAMILY,
           fontSize: `${LIVE_TERMINAL_FONT_SIZE}px`,
         }}

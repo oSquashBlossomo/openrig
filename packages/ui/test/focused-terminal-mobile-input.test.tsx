@@ -15,6 +15,7 @@
 import React from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, within } from "@testing-library/react";
+import { createRoot } from "react-dom/client";
 
 const s = vi.hoisted(() => ({
   sockets: [] as any[],
@@ -45,6 +46,11 @@ vi.mock("@xterm/xterm", () => ({ Terminal: class {
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 
 import { FocusedTerminal } from "../src/components/terminal/FocusedTerminal.js";
+
+// React's scheduler captured the real setImmediate when it loaded; tests that
+// step it must yield real macrotasks (fake timers replace the global).
+const realSetImmediate = setImmediate;
+const macrotask = () => new Promise<void>((resolve) => { realSetImmediate(() => resolve()); });
 
 class FakeVisualViewport extends EventTarget {
   width = 390; height = 844; offsetTop = 0; offsetLeft = 0; scale = 1;
@@ -464,7 +470,8 @@ it("Paste reads once on tap and sends one literal text frame: Unicode and line b
   await flush();
   expect(readText).toHaveBeenCalledTimes(1);
   expect(frames(s.sockets[0])).toEqual([{ type: "text", text: "héllo\nwörld 👋\nend" }]);
-  expect(view.getByTestId("focused-terminal-clipboard-fixture").textContent).toMatch(/pasted.*not submitted/i);
+  expect(view.getByTestId("focused-terminal-clipboard-fixture").textContent).toBe("Sent 17 characters; no Enter key added. The receiving program controls newline handling.");
+  expect(tools(view).getByRole("button", { name: /^paste/i }).title).toBe("Paste clipboard text literally; no Enter key is added");
 });
 
 it.each([
@@ -492,12 +499,13 @@ it("Paste over the input limit is refused visibly and sends nothing", async () =
   await flush();
   expect(s.sockets[0].sent).toEqual([]);
   expect(view.getByTestId("focused-terminal-input-warning-fixture").textContent).toMatch(/256 KiB/);
-  expect(view.getByTestId("focused-terminal-clipboard-fixture").textContent).not.toMatch(/pasted/i);
+  expect(view.getByTestId("focused-terminal-clipboard-fixture").textContent).not.toMatch(/sent \d+ characters/i);
 });
 
+let resolveDeferred: (text: string) => void = () => {};
 function deferredClipboard() {
   let resolve!: (text: string) => void;
-  setClipboard({ readText: vi.fn(() => new Promise<string>((r) => { resolve = r; })) });
+  setClipboard({ readText: vi.fn(() => new Promise<string>((r) => { resolve = r; resolveDeferred = r; })) });
   return (text: string) => act(async () => { resolve(text); await Promise.resolve(); await Promise.resolve(); });
 }
 
@@ -524,6 +532,46 @@ it("drops a late clipboard result after a reconnect, and never replays it", asyn
   await answer("late");
   expect(s.sockets.flatMap((w) => w.sent)).toEqual([]);
   expect(view.getByTestId("focused-terminal-clipboard-fixture").textContent).toMatch(/discarded/i);
+});
+
+// A non-urgent update commits B before React runs passive effects (old
+// socket cleanup, generation bump). A clipboard read settling in that window
+// still sees A's live socket; the committed identity alone must drop it.
+it("drops a paste read that settles after B commits but before passive effects run", async () => {
+  const answer = deferredClipboard();
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  try {
+    act(() => { root.render(<FocusedTerminal sessionName="a" />); });
+    ready(s.sockets[0]);
+    fireEvent.click(within(container).getByRole("button", { name: /^paste/i }));
+    const actEnv = (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
+    (globalThis as any).IS_REACT_ACT_ENVIRONMENT = false;
+    try {
+      root.render(<FocusedTerminal sessionName="b" />);
+      // Step React's scheduler task by task until B is committed; passive
+      // effects run in a later task.
+      for (let i = 0; i < 10 && !container.querySelector('[data-testid="focused-terminal-b"]'); i++) await macrotask();
+      expect(container.querySelector('[data-testid="focused-terminal-b"]')).not.toBeNull();
+      // Passive cleanup has not run: A's socket is still the live one.
+      expect(s.sockets[0].readyState).toBe(1);
+      expect(s.sockets).toHaveLength(1);
+      resolveDeferred("late from a");
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+      expect(s.sockets[0].sent).toEqual([]);
+    } finally {
+      (globalThis as any).IS_REACT_ACT_ENVIRONMENT = actEnv;
+    }
+    for (let i = 0; i < 3; i++) await macrotask();
+    // Passive effects have now run: A's socket closed, B's opened, nothing sent.
+    expect(s.sockets[0].readyState).toBe(3);
+    expect(s.sockets.flatMap((w) => w.sent)).toEqual([]);
+    void answer;
+  } finally {
+    try { act(() => { root.unmount(); }); }
+    finally { container.remove(); }
+  }
 });
 
 it("drops a late clipboard result after unmount", async () => {

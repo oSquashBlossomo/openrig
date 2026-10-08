@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useRef, useCallback, useState, type CSSProperties } from "react";
 import { Terminal } from "@xterm/xterm";
 import { readTerminalBearerToken } from "../mission-control/missionControlAuth.js";
 import { useDaemonHealthSignal } from "../../hooks/useDaemonHealth.js";
@@ -934,8 +934,14 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
   // Clipboard intent counter: each Copy/Paste tap, draft edit, Send, Close
   // and session change takes it, so a slower completion of an older
   // operation finds itself superseded and changes nothing, not even UI.
+  // A layout effect: it runs in the commit of a new identity (never for an
+  // abandoned render), before passive cleanup retires the old socket, so a
+  // read settling in between cannot reach the previous seat.
   const clipboardOpRef = useRef(0);
-  useEffect(() => { clipboardOpRef.current++; }, [identity]);
+  useLayoutEffect(() => {
+    clipboardOpRef.current++;
+    return () => { clipboardOpRef.current++; };
+  }, [identity]);
 
   // Explicit taps only: nothing reads or writes the clipboard on its own.
   const copyToClipboard = useCallback(async () => {
@@ -959,7 +965,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
     const text = raw.replace(/\r\n?/g, "\n");
     const sent = sendInput(text, true);
     setClipboard(
-      sent ? `Pasted ${[...text].length} characters (not submitted; press Enter when ready).` : "Paste not sent; nothing reached the terminal.",
+      sent ? `Sent ${[...text].length} characters; no Enter key added. The receiving program controls newline handling.` : "Paste not sent; nothing reached the terminal.",
       !sent && retainOnFailure ? { mode: "paste", text: raw } : null,
     );
     return sent;
@@ -1090,7 +1096,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
         <button
           type="button"
           aria-label="Paste"
-          title={inputReady ? "Paste clipboard text without submitting it" : notConnected}
+          title={inputReady ? "Paste clipboard text literally; no Enter key is added" : notConnected}
           disabled={!inputReady}
           onMouseDown={(event) => event.preventDefault()}
           onClick={() => void pasteFromClipboard()}

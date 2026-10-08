@@ -119,4 +119,43 @@ describe("Terminal popover follows the visible viewport", () => {
       delete (window as any).visualViewport;
     }
   });
+
+  // Pinch zoom + horizontal pan: the visible band is narrower than the layout
+  // viewport and offset to the right; the popover and its 90ch content must
+  // stay inside it on both axes.
+  it("stays inside a zoomed, horizontally panned visual viewport; falls back to the window without one", () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: 1024 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, writable: true, value: 768 });
+    const vv = Object.assign(new EventTarget(), { width: 200, height: 400, offsetTop: 100, offsetLeft: 600, scale: 5 });
+    Object.defineProperty(window, "visualViewport", { configurable: true, value: vv });
+    try {
+      const view = render(<TerminalPreviewPopover rigId="r1" logicalId="z" sessionName="z@r" testIdPrefix="pz" />);
+      screen.getByTestId("pz-terminal-open").parentElement!.getBoundingClientRect = () =>
+        ({ left: 620, right: 640, top: 150, bottom: 170, width: 20, height: 20, x: 620, y: 150, toJSON() {} }) as DOMRect;
+      fireEvent.click(screen.getByTestId("pz-terminal-open"));
+      const popover = screen.getByTestId("pz-terminal-popover");
+      const left = Number.parseFloat(popover.style.left);
+      expect(left).toBeGreaterThanOrEqual(608);
+      expect(popover.style.maxWidth).toBe("184px");
+      expect(left + 184).toBeLessThanOrEqual(792);
+      expect((popover.firstElementChild as HTMLElement).style.maxWidth).toBe("168px");
+      const top = Number.parseFloat(popover.style.top);
+      expect(top).toBeGreaterThanOrEqual(108);
+      view.unmount();
+
+      // No visual viewport (fallback): the window bounds, as before.
+      delete (window as any).visualViewport;
+      render(<TerminalPreviewPopover rigId="r1" logicalId="w" sessionName="w@r" testIdPrefix="pw" />);
+      screen.getByTestId("pw-terminal-open").parentElement!.getBoundingClientRect = () =>
+        ({ left: 20, right: 40, top: 150, bottom: 170, width: 20, height: 20, x: 20, y: 150, toJSON() {} }) as DOMRect;
+      fireEvent.click(screen.getByTestId("pw-terminal-open"));
+      const fallback = screen.getByTestId("pw-terminal-popover");
+      expect(fallback.style.left).toBe("48px");
+      expect(fallback.style.top).toBe("150px");
+      expect(fallback.style.maxWidth).toBe("1008px");
+      expect(fallback.style.maxHeight).toBe("752px");
+    } finally {
+      delete (window as any).visualViewport;
+    }
+  });
 });
