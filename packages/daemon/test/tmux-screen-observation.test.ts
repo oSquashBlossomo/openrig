@@ -20,7 +20,7 @@ describe("one-command screen observations", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]!.filter(x => x === "%7")).toHaveLength(5);
     expect(calls[0]!.filter(x => x === "show-options")).toHaveLength(4);
-    expect(calls[0]).toContain("-e"); expect(calls[0]).toContain("-N");
+    expect(calls[0]).not.toContain("-e"); expect(calls[0]).toContain("-N");
     expect(calls[0]!.join(" ")).not.toMatch(/set-option|resize|send-keys|pipe-pane/);
   });
   it("uses exact dotted session targets on the shell path too", async () => {

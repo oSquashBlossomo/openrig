@@ -1113,6 +1113,8 @@ export class TmuxAdapter {
 
   /** Observe the screen and its cursor/geometry in one non-yielding tmux command
    * group. This is NOT a pipe-byte watermark: callers still fence before streaming.
+   * Keep capturePaneScreen's plain-text contract: SGR state spans captured rows,
+   * which are not independently styled when the painter reorders pending wrap.
    * After-command hooks and command aliases can yield. Check both in the same
    * group, including the reader itself, and reject relevant overrides rather
    * than modifying them or returning a mixed observation. Hook/alias values never
@@ -1125,7 +1127,7 @@ export class TmuxAdapter {
     const format = `${marker}|#{pane_id}|${CURSOR_FORMAT}`;
     const argv = ["tmux", "show-options", "-sv", "command-alias", ";",
       ...hooks.flatMap(hook => ["show-options", "-A", "-t", target, hook, ";"]),
-      "display-message", "-p", "-t", target, format, ";", "capture-pane", "-p", "-e", "-N", "-t", target];
+      "display-message", "-p", "-t", target, format, ";", "capture-pane", "-p", "-N", "-t", target];
     try {
       const output = (await this.run(argv)).replace(/\r\n/g, "\n");
       const prefix = hooks.join("\n") + "\n";
