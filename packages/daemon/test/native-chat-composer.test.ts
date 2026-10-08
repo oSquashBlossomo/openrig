@@ -94,3 +94,25 @@ it("counts wide Unicode cells and rejects loss of a literal trailing space at th
   expect(matches(withSpace, "codex", cursor(3, 1), text + " ")).toBe(true);
   expect(matches(pane, "codex", cursor(79), text)).toBe(false);
 });
+
+// Captured native Claude idle footer, with unrelated conversation rows omitted.
+it("recognizes the exact remote-control hint below the observed empty Claude frame", () => {
+  const lines = Array.from({ length: 24 }, () => "");
+  lines[15] = "● Completed response.";
+  lines[17] = "───────────────────────────────────────────────── proof-claude@native-chat-lab ─";
+  lines[18] = "❯\u00a0                  ";
+  lines[19] = "─".repeat(80);
+  lines[20] = "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents                           ";
+  lines[21] = "                        control this session from your phone · /remote-control  ";
+  const pane = lines.join("\n");
+  expect(matches(pane, "claude-code", cursor(2, 18), "")).toBe(true);
+  expect(matches(pane, "claude-code", cursor(3, 18), "")).toBe(false);
+  expect(matches(pane.replace(lines[18]!, "❯\u00a0draft"), "claude-code", cursor(7, 18), "")).toBe(false);
+  expect(matches(pane.replace(lines[18]!, "❯\u00a0hello  "), "claude-code", cursor(7, 18), "hello")).toBe(true);
+  expect(matches(pane.replace(lines[18]!, "❯\u00a0hello  "), "claude-code", cursor(7, 18), "hello ")).toBe(false);
+  for (const suffix of ["Proceed?", "control this session from your phone · /remote-control now",
+    "control this session from your phone · /remote-control\nUnexpected footer"]) {
+    expect(matches(pane.replace(lines[21]!, suffix), "claude-code", cursor(2, 18), "")).toBe(false);
+  }
+  expect(matches(pane.replace(lines[20]!, "Unknown mode (shift+tab to cycle)"), "claude-code", cursor(2, 18), "")).toBe(false);
+});

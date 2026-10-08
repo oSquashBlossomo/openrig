@@ -301,3 +301,14 @@ it("submits the actual Codex Unicode paragraph whose next word would exceed its 
   expect(f.tmux.sendText).toHaveBeenCalledWith("%1", text, expect.any(Function));
   expect(f.tmux.sendKeys).toHaveBeenCalledWith("%1", ["Enter"], expect.any(Function));
 });
+
+it("reads and submits the same Claude owner with the exact noninteractive idle hint", async () => {
+  const f = fixture("claude-code");
+  const screen = (text: string) => `Completed response\n────────────────────\n❯\u00a0${text}\n────────────────────\n⏵⏵ auto mode on (shift+tab to cycle) · ← for agents\n  control this session from your phone · /remote-control`;
+  f.setPane(screen(""));
+  const view = await f.service.read(f.node.id);
+  expect(view.availability.canSend).toBe(true);
+  f.tmux.sendText.mockImplementation(async (_target, text, before) => { await before?.(); f.setPane(screen(text)); return { ok: true }; });
+  expect((await f.service.send(f.node.id, { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "hello" })).state).toBe("submitted");
+  expect(f.tmux.sendKeys).toHaveBeenCalledWith("%1", ["Enter"], expect.any(Function));
+});

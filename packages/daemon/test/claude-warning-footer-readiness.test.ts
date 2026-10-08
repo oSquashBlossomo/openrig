@@ -428,3 +428,28 @@ describe("Claude physical scan window excludes only bottom terminal padding", ()
     expect(classifyPaneActivity([...quiet24, workingRows[0]!].join("\n")).state).toBe("agent_active");
   });
 });
+
+// Exact noninteractive native Claude hint observed after an idle acceptance turn.
+describe("Claude idle remote-control hint", () => {
+  const hint = "control this session from your phone · /remote-control";
+  const auto = "⏵⏵ auto mode on (shift+tab to cycle) · ← for agents";
+  it("recognizes the framed empty auto composer and shares it with structural activity", async () => {
+    const content = modePane(auto, [hint]);
+    expect(classifyPaneActivity(content).state).toBe("agent_idle");
+    const service = new SeatStructuralActivityService({ capturePaneContent: async () => content });
+    expect((await service.pollSeat("seat@rig"))?.state).toBe("agent_idle");
+  });
+  it("keeps live work and questions ahead of the exact idle hint", () => {
+    expect(classifyPaneActivity(modePane(auto, [hint], "❯\u00a0", workingRows[0])).state).toBe("agent_active");
+    expect(classifyPaneActivity(modePane(auto, [hint], "❯\u00a0", "Do you want to proceed?\n❯ 1. Yes\n  2. No")).state).toBe("attention");
+  });
+  it("does not promote drafts, incomplete frames or extra/near-match footers", () => {
+    for (const content of [
+      modePane(auto, [hint], "❯ unfinished message"),
+      modePane(auto, [hint]).replace(border, ""),
+      modePane(auto, [hint + " now"]),
+      modePane(auto, [hint, "Unexpected footer"]),
+      modePane(auto, [hint], "❯\u00a0", workingRows[0] + "\n" + "  prior output\n".repeat(21)),
+    ]) expect(classifyPaneActivity(content).state, content).not.toBe("agent_idle");
+  });
+});

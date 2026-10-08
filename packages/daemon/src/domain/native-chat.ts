@@ -70,6 +70,9 @@ export function nativeChatComposerMatches(pane: string, runtime: Runtime, cursor
   if (runtime === "codex" && lines.slice(end + 1).some(line => !/^ *$/.test(line))) return false;
   if (runtime === "claude-code") {
     const footer = lines.slice(end + 1).filter(line => line.trim());
+    // Native idle promotion, only after a recognized mode row; not arbitrary footer text.
+    if (footer.length === 2 && footer[1]!.trim() === "control this session from your phone · /remote-control"
+      && /^(?:-- [A-Z]+ -- )?(?:⏵⏵ (?:accept edits|bypass permissions|auto mode) on\b|⏸ plan mode on\b|\? for shortcuts\b)/.test(footer[0]!.trim())) footer.pop();
     if (footer.length !== 1 || !/(?:shift\+tab to cycle|\? for shortcuts)/i.test(footer[0]!)) return false;
   }
   const below = lines.slice(cursor.y + 1, end);
