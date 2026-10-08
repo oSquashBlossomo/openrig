@@ -27,10 +27,13 @@ it("keeps two live viewers and every pipe byte through repeated real native resi
     await native(["new-session", "-d", "-x", "90", "-y", "27", "-s", "resize@fixture", `exec '${process.execPath}' '${writer}'`]);
     const identity = async () => (await native(["display-message", "-p", "-t", "=resize@fixture:0.0", "#{pane_id}|#{pane_pid}"])).trim();
     const before = await identity();
+    // Both viewers must be established raw viewers before resize output begins.
+    // Busy attach may now return earlier in authoritative snapshot-only mode.
+    await vi.waitFor(async () => expect(await native(["capture-pane", "-p", "-t", "=resize@fixture:0.0"])).toContain("BASELINE"));
     const tmux = new TmuxAdapter(async () => { throw Error("unexpected default shell execution"); }, undefined, async args => {
       if (args[1] === "pipe-pane") args.length === 5 ? pipeStarts++ : pipeStops++;
       const output = await native(args.slice(1));
-      if (resizing && args[1] === "capture-pane" && !args.includes("-S")) {
+      if (resizing && args.includes("capture-pane") && !args.includes("-S")) {
         // Inject the owner's real native resize between real before/after
         // geometry probes. Neither cursor nor snapshot is mocked.
         width = width === 90 ? 91 : 90;
@@ -81,6 +84,7 @@ it("keeps two live viewers and every pipe byte through repeated real native resi
     expect(viewers.map(viewer => viewer.closed)).toEqual([[], []]);
   } finally {
     resizing = false; broker?.dispose();
+    await broker?.waitForShutdown();
     await native(["kill-server"]).catch(() => {});
     rmSync(home, { recursive: true, force: true });
   }

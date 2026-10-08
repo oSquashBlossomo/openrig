@@ -59,6 +59,13 @@ seconds in the background replaces the connection and rechecks admission.
 The daemon also detects unresponsive WebSocket viewers with ping/pong heartbeats.
 These steps replace the browser connection, not the agent process.
 
+A continuously redrawing terminal can connect using periodic snapshots of the
+native screen. The viewer starts receiving raw output only when a quiet capture
+matches the pipe position; existing viewers keep their output stream. Snapshots
+do not pause the agent or resize its pane. If custom tmux after-command hooks or
+aliases for observation commands prevent a consistent screen observation, attachment uses the bounded quiet-screen
+check and may require a retry once the terminal settles.
+
 Input is paused during recovery and is never queued for later replay. After a
 disconnect, inspect the terminal before resending a command whose result is
 uncertain. If Retry continues to fail through an HTTPS proxy, check the exact

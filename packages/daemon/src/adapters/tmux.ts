@@ -1111,6 +1111,51 @@ export class TmuxAdapter {
     }
   }
 
+  /** Observe the screen and its cursor/geometry in one non-yielding tmux command
+   * group. This is NOT a pipe-byte watermark: callers still fence before streaming.
+   * Keep capturePaneScreen's plain-text contract: SGR state spans captured rows,
+   * which are not independently styled when the painter reorders pending wrap.
+   * After-command hooks and command aliases can yield. Check both in the same
+   * group, including the reader itself, and reject relevant overrides rather
+   * than modifying them or returning a mixed observation. Hook/alias values never
+   * leave this adapter. tmux cmdq_next processes the unmodified normal-return
+   * commands together before servicing more pane output. */
+  async capturePaneObservation(paneId: string): Promise<{ snapshot: string; cursor: TmuxCursorPosition } | null> {
+    const target = exactTarget(paneId, "pane");
+    const hooks = ["after-show-options", "after-display-message", "after-capture-pane"];
+    const marker = `__openrig_screen_${randomUUID().replace(/-/g, "")}__`;
+    const format = `${marker}|#{pane_id}|${CURSOR_FORMAT}`;
+    const argv = ["tmux", "show-options", "-sv", "command-alias", ";",
+      ...hooks.flatMap(hook => ["show-options", "-A", "-t", target, hook, ";"]),
+      "display-message", "-p", "-t", target, format, ";", "capture-pane", "-p", "-N", "-t", target];
+    try {
+      const output = (await this.run(argv)).replace(/\r\n/g, "\n");
+      const prefix = hooks.join("\n") + "\n";
+      const hookStart = output.indexOf(prefix);
+      if (hookStart < 0) return null;
+      const aliases = output.slice(0, hookStart);
+      if (aliases && (!aliases.endsWith("\n") || aliases.slice(0, -1).split("\n").some(alias => {
+        const equals = alias.indexOf("=");
+        return equals < 1 || ["show-options", "display-message", "capture-pane"].includes(alias.slice(0, equals));
+      }))) return null;
+      const metadataStart = hookStart + prefix.length;
+      const end = output.indexOf("\n", metadataStart);
+      if (end < 0) return null;
+      const [tag, nativePane, ...fields] = output.slice(metadataStart, end).split("|");
+      if (tag !== marker || !/^%\d+$/.test(nativePane ?? "") || fields.length !== 4
+        || fields.some(value => !/^\d+$/.test(value)) || /^%\d+$/.test(paneId) && paneId !== nativePane) return null;
+      const [x, y, width, height] = fields.map(Number) as [number, number, number, number];
+      if (![x, y, width, height].every(Number.isSafeInteger) || width < 1 || height < 1 || x > width || y >= height) return null;
+      const snapshot = output.slice(end + 1);
+      // A complete visible capture has exactly height newline-terminated rows.
+      // Refuse partial responses or extra hook output, preserving written spaces.
+      if (!snapshot.endsWith("\n") || snapshot.split("\n").length !== height + 1) return null;
+      return { snapshot, cursor: { x, y, width, height } };
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * Get the current cursor coordinates and pane geometry. Coordinates are
    * zero-based. Returns null if unavailable or if tmux yields non-finite /
