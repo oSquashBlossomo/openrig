@@ -562,3 +562,64 @@ describe("native chat: review follow-ups", () => {
     expect(screen.queryByTestId("native-chat-blocked")).toBeNull();
   });
 });
+
+describe("native chat: follow across reflow", () => {
+  // jsdom has no layout: the observer and the history geometry are stubbed,
+  // the panel's scroll/follow logic is real.
+  const observers: Array<{ cb: () => void; targets: Element[]; disconnected: boolean }> = [];
+  function geometry(el: HTMLElement) {
+    const g = { top: 0, height: 500, content: 1000 };
+    Object.defineProperty(el, "clientHeight", { configurable: true, get: () => g.height });
+    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => g.content });
+    Object.defineProperty(el, "scrollTop", { configurable: true, get: () => g.top, set: (v: number) => { g.top = Math.max(0, Math.min(v, g.content - g.height)); } });
+    return g;
+  }
+  const reflow = () => act(() => { for (const o of observers) if (!o.disconnected && o.targets.length) o.cb(); });
+
+  beforeEach(() => {
+    observers.length = 0;
+    vi.stubGlobal("ResizeObserver", class {
+      entry: { cb: () => void; targets: Element[]; disconnected: boolean };
+      constructor(cb: () => void) { this.entry = { cb, targets: [], disconnected: false }; observers.push(this.entry); }
+      observe(el: Element) { this.entry.targets.push(el); }
+      unobserve() {}
+      disconnect() { this.entry.disconnected = true; }
+    });
+  });
+
+  it("stays at the new bottom when following, keeps a reader's place with an accurate Latest button, and disconnects on unmount", async () => {
+    pages.set("n1", page("n1", { messages: [msg("m1", "assistant", "first"), msg("m2", "assistant", "latest reply")] }));
+    const view = renderChat(target("n1"));
+    await screen.findByText("latest reply");
+    const history = screen.getByTestId("native-chat-history");
+    expect(observers.some((o) => o.targets.includes(history) && !o.disconnected)).toBe(true);
+    const g = geometry(history);
+
+    // Following: a narrower width makes the text taller; stay at the bottom.
+    g.top = 500;
+    g.content = 2156;
+    reflow();
+    expect(g.top).toBe(2156 - 500);
+    expect(screen.queryByTestId("native-chat-latest")).toBeNull();
+
+    // Reading earlier: the place is kept and Latest is offered.
+    g.top = 726;
+    fireEvent.scroll(history);
+    expect(screen.getByTestId("native-chat-latest")).toBeTruthy();
+    g.content = 3000;
+    reflow();
+    expect(g.top).toBe(726);
+    expect(screen.getByTestId("native-chat-latest")).toBeTruthy();
+
+    // A reflow that leaves the reader at the end resumes following.
+    g.content = 1240;
+    reflow();
+    expect(screen.queryByTestId("native-chat-latest")).toBeNull();
+    g.content = 1800;
+    reflow();
+    expect(g.top).toBe(1300);
+
+    view.unmount();
+    expect(observers.every((o) => o.disconnected)).toBe(true);
+  });
+});

@@ -288,6 +288,27 @@ function ChatBody({ target, nodeId, layout, onOpenTerminal }: { target: SeatChat
       el.scrollTop = el.scrollHeight;
     }
   }, [messages, pendingRows.length]);
+  // Reflow without a scroll event (width change, rotation, a tool card or
+  // receipt opening): keep following at the new bottom, or keep the reader's
+  // place and report accurately whether they are at the end.
+  const historyMounted = !!data && !refused;
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!historyMounted || !el || typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver(() => {
+      if (followRef.current) {
+        el.scrollTop = el.scrollHeight;
+        return;
+      }
+      const end = el.scrollHeight - el.scrollTop - el.clientHeight < 32;
+      followRef.current = end;
+      setAtEnd(end);
+    });
+    observer.observe(el);
+    const list = el.querySelector("ol");
+    if (list) observer.observe(list);
+    return () => observer.disconnect();
+  }, [historyMounted]);
 
   // Why Send is off (first reason wins). Reading never stops for these.
   const inFlight = slot.pending && slot.pending.phase !== "submitted" ? slot.pending : null;
