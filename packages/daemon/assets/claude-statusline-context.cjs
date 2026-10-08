@@ -40,6 +40,7 @@ process.stdin.on("end", () => {
         total_output_tokens: contextWindow.total_output_tokens ?? null,
         current_usage: contextWindow.current_usage ?? null,
       },
+      cache_metadata: cacheMetadata(raw),
       session_id: raw.session_id ?? null,
       session_name: raw.session_name ?? null,
       occupant_generation: process.env.OPENRIG_OCCUPANT_GENERATION || process.env.RIGGED_OCCUPANT_GENERATION || null,
@@ -74,6 +75,38 @@ process.stdin.on("end", () => {
     process.exit(0);
   }
 });
+
+// Only native cache facts, never arbitrary statusline payloads or prompt content.
+// https://code.claude.com/docs/en/statusline#prompt-cache-fields
+function cacheMetadata(raw) {
+  const result = {};
+  const identifier = (v) => typeof v === "string" && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(v);
+  if (identifier(raw.version)) result.runtime_version = raw.version;
+  if (identifier(raw.model?.id)) result.model_id = raw.model.id;
+  const cache = raw.prompt_cache;
+  if (cache && typeof cache === "object" && !Array.isArray(cache)) {
+    const out = {};
+    for (const key of ["warm", "caching_observed"]) if (typeof cache[key] === "boolean") out[key] = cache[key];
+    if (cache.ttl === "5m" || cache.ttl === "1h") out.ttl = cache.ttl;
+    for (const key of ["expires_at", "requests", "misses", "expected_rebuilds", "hit_ratio", "cache_write_tokens", "miss_recache_tokens", "last_miss_at", "recache_tokens_if_cold"]) {
+      if (cache[key] === null || typeof cache[key] === "number" && Number.isFinite(cache[key]) && cache[key] >= 0) out[key] = cache[key];
+    }
+    const causes = ["tools_changed", "system_prompt_changed", "ttl_expired_5m", "ttl_expired_1h", "likely_server_side"];
+    if (cache.last_miss_cause === null) out.last_miss_cause = null;
+    else if (cache.last_miss_cause && typeof cache.last_miss_cause === "object") {
+      const cause = cache.last_miss_cause;
+      out.last_miss_cause = { causes: Array.isArray(cause.causes) ? cause.causes.filter((c) => causes.includes(c)) : [] };
+      for (const key of ["tools_added", "tools_removed", "system_char_delta"]) {
+        if (Number.isSafeInteger(cause[key]) && (key === "system_char_delta" || cause[key] >= 0)) out.last_miss_cause[key] = cause[key];
+      }
+    }
+    if (cache.miss_causes && typeof cache.miss_causes === "object") {
+      out.miss_causes = Object.fromEntries(causes.filter((c) => Number.isSafeInteger(cache.miss_causes[c]) && cache.miss_causes[c] >= 0).map((c) => [c, cache.miss_causes[c]]));
+    }
+    result.prompt_cache = out;
+  }
+  return result;
+}
 
 function resolveOutputPath(target, raw) {
   if (target.endsWith(".json")) {
