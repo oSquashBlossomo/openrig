@@ -394,3 +394,62 @@ describe("first guarded Claude send with retained warning-shaped composer", () =
     if (prior) expect(f.store.getLatestForNode({ sessionName: f.name })).toMatchObject({ state: "unknown", reason: "generation_mismatch", stale: true });
   });
 });
+
+// Sanitized 24-row Claude 2.1.294 idle screen: no promotional banner, and tmux
+// preserves the unused rows below the mode footer. Internal gaps remain real rows.
+const quiet24 = [
+  "sh-3.2$ ( . '/tmp/private/launch-script' )", "wrapped shell launch history",
+  " ▐▛███▛█   Claude Code v2.1.294         ",
+  "▝▜██████▀  Opus 5.5 with high effort · Claude Max                               ",
+  " ▝▝   ▝▝   /tmp/private/work-claude                                 ", "", "",
+  "───────────────────────────────────────────────── proof-claude@native-chat-lab ─",
+  "❯\u00a0                  ", border,
+  "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents                           ",
+  ...Array.from({ length: 13 }, () => ""),
+];
+describe("Claude physical scan window excludes only bottom terminal padding", () => {
+  it("recognizes the exact quiet 24-row screen through classifier and structural consumer", async () => {
+    const content = quiet24.join("\n") + "\n";
+    expect(classifyPaneActivity(content)).toMatchObject({ state: "agent_idle", reason: "idle_prompt" });
+    expect(await new SeatStructuralActivityService({ capturePaneContent: async () => content }).pollSeat("seat@rig"))
+      .toMatchObject({ state: "agent_idle", reason: "idle_prompt" });
+  });
+  it("keeps current live work authoritative with the same bottom padding", () => {
+    const rows = [...quiet24]; rows[3] = workingRows[0]!;
+    expect(classifyPaneActivity(rows.join("\n"))).toMatchObject({ state: "agent_active", reason: "mid_work_pattern" });
+  });
+  it.each(["", "  prior task output"])("retains the 20-physical-row bound across internal %j rows", internal => {
+    const rows = [...quiet24.slice(0, 5), ...Array.from({ length: 21 }, () => internal), ...quiet24.slice(7)];
+    expect(classifyPaneActivity(rows.join("\n"))).toMatchObject({ state: "unknown", reason: "no_activity_signal" });
+  });
+  it("keeps native questions and later nonblank work ahead of an idle-looking padded frame", () => {
+    const question = [...quiet24]; question[3] = "Do you want to proceed?";
+    expect(classifyPaneActivity(question.join("\n")).state).toBe("attention");
+    expect(classifyPaneActivity([...quiet24, workingRows[0]!].join("\n")).state).toBe("agent_active");
+  });
+});
+
+// Exact noninteractive native Claude hint observed after an idle acceptance turn.
+describe("Claude idle remote-control hint", () => {
+  const hint = "control this session from your phone · /remote-control";
+  const auto = "⏵⏵ auto mode on (shift+tab to cycle) · ← for agents";
+  it("recognizes the framed empty auto composer and shares it with structural activity", async () => {
+    const content = modePane(auto, [hint]);
+    expect(classifyPaneActivity(content).state).toBe("agent_idle");
+    const service = new SeatStructuralActivityService({ capturePaneContent: async () => content });
+    expect((await service.pollSeat("seat@rig"))?.state).toBe("agent_idle");
+  });
+  it("keeps live work and questions ahead of the exact idle hint", () => {
+    expect(classifyPaneActivity(modePane(auto, [hint], "❯\u00a0", workingRows[0])).state).toBe("agent_active");
+    expect(classifyPaneActivity(modePane(auto, [hint], "❯\u00a0", "Do you want to proceed?\n❯ 1. Yes\n  2. No")).state).toBe("attention");
+  });
+  it("does not promote drafts, incomplete frames or extra/near-match footers", () => {
+    for (const content of [
+      modePane(auto, [hint], "❯ unfinished message"),
+      modePane(auto, [hint]).replace(border, ""),
+      modePane(auto, [hint + " now"]),
+      modePane(auto, [hint, "Unexpected footer"]),
+      modePane(auto, [hint], "❯\u00a0", workingRows[0] + "\n" + "  prior output\n".repeat(21)),
+    ]) expect(classifyPaneActivity(content).state, content).not.toBe("agent_idle");
+  });
+});

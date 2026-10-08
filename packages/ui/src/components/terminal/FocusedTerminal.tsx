@@ -281,6 +281,23 @@ export function scrollTerminalViewportToPrompt(terminalHost: HTMLElement, allowe
   };
 }
 
+/** A native command handed over from Chat and owned above this viewer, so a
+ *  remount or reconnect never replays it. It is only shown in a local box:
+ *  the operator's Paste command runs the owner's fresh check, then sends the
+ *  text as one literal frame with no Enter. Running it stays native (Enter,
+ *  pickers, confirmations in this terminal). */
+export interface StagedCommand {
+  /** One explicit handoff; the owner retires it once pasted or closed. */
+  id: string;
+  text: string;
+  /** The session it was bound to; a viewer of any other session ignores it. */
+  sessionName: string;
+  /** Fresh native identity check (session, conversation, owner) before every paste. */
+  check: () => Promise<true | { refuse: string }>;
+  onPasted: (id: string) => void;
+  onDismiss: (id: string) => void;
+}
+
 interface FocusedTerminalProps {
   sessionName: string;
   daemonBaseUrl?: string;
@@ -323,9 +340,11 @@ interface FocusedTerminalProps {
    *  shown. Lets a host that admitted this viewer release it and offer its
    *  own retry. Not called for a beforeConnect refusal: its owner knows. */
   onClosed?: (reason: string) => void;
+  /** A command staged from Chat for this session (see StagedCommand). */
+  command?: StagedCommand | null;
 }
 
-export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", initialText, beforeConnect, autoFocus = true, onClosed }: FocusedTerminalProps) {
+export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", initialText, beforeConnect, autoFocus = true, onClosed, command = null }: FocusedTerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   // OPR.0.4.0.39: the fit wrapper fills the available container; the inner
   // containerRef holds the natural-sized xterm. We measure the wrapper (available)
@@ -1031,6 +1050,37 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
     deliverPaste(text);
   }, [deliverPaste, setClipboard]);
 
+  // Paste command: an explicit tap, checked by the owner, then the same
+  // literal paste path. The check is bound to this tap, socket and command:
+  // anything superseding it (another clipboard action, a switch, reconnect,
+  // unmount, a replaced or closed command) sends nothing.
+  const commandRef = useRef(command);
+  commandRef.current = command;
+  const [checkingCommand, setCheckingCommand] = useState(false);
+  const pasteCommand = useCallback(async () => {
+    const staged = commandRef.current;
+    if (!staged || staged.sessionName !== sessionName || !ownsLiveSeat()) return;
+    const op = ++clipboardOpRef.current;
+    const gen = generationRef.current, ws = wsRef.current;
+    setCheckingCommand(true);
+    setClipboard("Checking this seat's native conversation before pasting…");
+    let verdict: true | { refuse: string };
+    try {
+      verdict = await staged.check();
+    } catch (err) {
+      verdict = { refuse: err instanceof Error ? err.message : "the check failed." };
+    }
+    if (!mountedRef.current) return;
+    setCheckingCommand(false);
+    if (clipboardOpRef.current !== op) return;
+    if (commandRef.current?.id !== staged.id) { setClipboard("Command not pasted: it was closed or replaced while checking. Nothing was sent."); return; }
+    if (generationRef.current !== gen || wsRef.current !== ws) { setClipboard("Command not pasted: the terminal reconnected while checking. Nothing was sent; tap Paste command again."); return; }
+    if (verdict !== true) { setClipboard(`Command not pasted: ${verdict.refuse} Nothing was sent.`); return; }
+    if (!sendInput(staged.text, true)) { setClipboard("Command not pasted; nothing reached the terminal."); return; }
+    setClipboard("Pasted into the agent's input; no Enter added. Review it, then press Enter or use the agent's own menu here. OpenRig does not confirm whether the command ran.");
+    staged.onPasted(staged.id);
+  }, [sessionName, sendInput, setClipboard]);
+
   if (error) {
     return (
       <div
@@ -1194,6 +1244,37 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
     </div>
   ) : null;
 
+  const commandLine = command && command.sessionName === sessionName ? (
+    <div data-testid={`focused-terminal-command-${sessionName}`} className="sticky left-0 flex max-w-full shrink-0 flex-col gap-1 bg-stone-900/90 px-2 py-1 font-mono text-[11px] leading-snug text-stone-200">
+      <div>Command from Chat. Paste command types it into the agent&apos;s input without Enter; then run it with Enter or the agent&apos;s own menu.</div>
+      {/* Wraps by the row's own width: a narrow host (phone, 3D side panel)
+          puts the actions under a full-width command so its arguments show. */}
+      <div className="flex flex-wrap items-end justify-end gap-1">
+        <textarea
+          aria-label="Native command"
+          readOnly
+          value={command.text}
+          rows={2}
+          className="max-h-24 min-w-[min(100%,24rem)] flex-1 resize-none rounded border border-stone-700 bg-stone-950 p-1 text-[16px] text-stone-100 [field-sizing:content]"
+        />
+        <button
+          type="button"
+          aria-label="Paste command"
+          title={inputReady ? "Check this seat again, then paste the command without Enter" : notConnected}
+          disabled={!inputReady || checkingCommand}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => void pasteCommand()}
+          className={buttonClass}
+        >
+          Paste command
+        </button>
+        <button type="button" aria-label="Close native command" onClick={() => command.onDismiss(command.id)} className={buttonClass}>
+          Close
+        </button>
+      </div>
+    </div>
+  ) : null;
+
   const inputWarningLine = inputWarning ? (
     <div
       data-testid={`focused-terminal-input-warning-${sessionName}`}
@@ -1231,6 +1312,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
           {liveTerminal}
         </div>
         {inputWarningLine}
+        {commandLine}
         {clipboardLine}
         {keyBar}
       </div>
@@ -1265,6 +1347,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
         {liveTerminal}
       </div>
       {inputWarningLine}
+      {commandLine}
       {clipboardLine}
       {keyBar}
     </div>

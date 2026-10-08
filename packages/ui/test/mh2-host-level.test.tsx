@@ -47,6 +47,9 @@ vi.mock("../src/hooks/useDiscovery.js", async (importActual) => {
 });
 import { TopologyTab } from "../src/components/slices/tabs/TopologyTab.js";
 import { LiveNodeDetails } from "../src/components/LiveNodeDetails.js";
+import { setPreferredSeatView } from "../src/components/native-chat/NativeChatPanel.js";
+// These cover the terminal; seats open in Chat by default (native-chat-panel.test.tsx).
+setPreferredSeatView("terminal");
 
 const mockFetch = vi.fn();
 globalThis.fetch = mockFetch as unknown as typeof fetch;

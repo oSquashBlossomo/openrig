@@ -55,6 +55,8 @@ import { getRestoreStatusColorClass } from "../lib/restore-status-colors.js";
 import type { AgentSpecReview } from "../hooks/useSpecReview.js";
 import { RuntimeBadge, ToolMark } from "./graphics/RuntimeMark.js";
 import { postOpenCmux } from "../hooks/useCmuxLaunch.js";
+import { SeatChatTerminal } from "./native-chat/NativeChatPanel.js";
+import type { StagedCommand } from "./terminal/FocusedTerminal.js";
 
 export type LiveNodeDetailsTab = "overview" | "details";
 type Tab = LiveNodeDetailsTab;
@@ -491,7 +493,7 @@ function OverviewTab({ data, activityVisual, rigId, logicalId, sourceHost, detai
       <SeatOverviewSecondary data={data} showCurrentWork={sourceHost !== LOCAL_HOST_ID} />
       <SeatWorkPanel rigId={rigId} logicalId={logicalId} sourceHost={sourceHost} />
       <SeatHealthSection data={data} rigId={rigId} logicalId={logicalId} sourceHost={sourceHost} detailCurrent={detailCurrent} />
-      <InlineTerminal data={data} />
+      <SeatChat data={data} detailCurrent={detailCurrent} />
       <RecentEventsSection data={data} />
     </div>
   );
@@ -526,12 +528,33 @@ function DetailsTab({
   );
 }
 
+/** Chat with this seat's native conversation, the inline terminal one click
+ *  away. Writing needs the detail's own node id and a current detail read. */
+function SeatChat({ data, detailCurrent }: { data: NodeDetailData; detailCurrent: boolean }) {
+  const hostId = useSelectedHostId();
+  return (
+    <SeatChatTerminal
+      layout="page"
+      target={{
+        hostId,
+        rigId: data.rigId,
+        nodeId: data.nodeId ?? null,
+        isRemote: hostId !== LOCAL_HOST_ID,
+        expectedSession: data.canonicalSessionName,
+        displayName: data.logicalId,
+        blockedReason: detailCurrent ? null : "The latest seat detail read failed, so this seat's identity is not current.",
+      }}
+      terminal={(command) => <InlineTerminal data={data} command={command} />}
+    />
+  );
+}
+
 // V0.3.1 slice 25 — Inline black-glass terminal. Renders the same
 // SessionPreviewPane the old Terminal tab rendered, but embedded
 // directly in Overview rather than behind a tab. The black-glass
 // chrome class is preserved verbatim so the visual feel matches the
 // pre-slice-25 terminal tab.
-function InlineTerminal({ data }: { data: NodeDetailData }) {
+function InlineTerminal({ data, command }: { data: NodeDetailData; command: StagedCommand | null }) {
   // OPR.0.4.6.MH2 rev1-r2 B1: the inline terminal is a LOCAL session surface
   // (session-name preview + click-to-live typeable xterm). Under a remote
   // selection a same-named LOCAL session must never render beneath the
@@ -570,6 +593,7 @@ function InlineTerminal({ data }: { data: NodeDetailData }) {
         terminalKey={`node-detail:${data.canonicalSessionName}`}
         testIdPrefix="node-detail-terminal"
         fit="contain"
+        command={command}
       />
     </div>
   );
