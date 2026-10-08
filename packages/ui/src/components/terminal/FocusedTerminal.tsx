@@ -441,6 +441,14 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
     (termRef.current as { scrollToBottom(): void } | null)?.scrollToBottom();
     scrollOffsetRef.current = 0;
     for (const frame of frames) wsc.send(frame);
+    // Accepted input brings this viewer's prompt into view in its actual
+    // scroll owner (a toolbar key moves no caret, so nothing else would);
+    // the reveal is tracked so a wheel/touch takeover or teardown cancels it.
+    const host = containerRef.current;
+    if (host) {
+      const gen = generationRef.current;
+      promptScrollCancelsRef.current.add(scrollTerminalViewportToPrompt(host, () => generationRef.current === gen && scrollOffsetRef.current === 0));
+    }
     return true;
   }, []);
 
@@ -485,7 +493,9 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
     termRef.current = null;
   }, []);
 
-  const scrollOwner = useCallback(() => fitWrapperRef.current ?? containerRef.current, []);
+  // The element actually scrolled/panned: the fit wrapper, the natural
+  // keyboard wrapper while it bounds the pane, otherwise the host.
+  const scrollOwner = useCallback(() => (containerRef.current ? terminalScrollOwner(containerRef.current) : fitWrapperRef.current), []);
 
   const trackPromptScroll = useCallback((cancel: () => void) => {
     promptScrollCancelsRef.current.add(cancel);
@@ -854,8 +864,9 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
 
   // User scroll/pan/selection/typing on the scroll owner ends the initial prompt
   // reveal (wheel/touch/pointer) and marks offsets as user-owned for restores.
+  const keyboardBounded = keyboard !== null;
   useEffect(() => {
-    const owner = fitWrapperRef.current ?? containerRef.current;
+    const owner = scrollOwner();
     if (!owner) return undefined;
     const takeOver = () => {
       userScrollEpochRef.current++;
@@ -874,7 +885,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
       owner.removeEventListener("pointerdown", takeOver, options);
       owner.removeEventListener("keydown", keyIntent, options);
     };
-  }, [fit, error, sessionName, cancelPromptScrolls]);
+  }, [fit, error, sessionName, cancelPromptScrolls, scrollOwner, keyboardBounded]);
 
   // Software keyboard: track focus in this input area and the visual
   // viewport (resize and offset-only movement). Other viewers never react.
