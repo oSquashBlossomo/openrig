@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useCallback, useState, type CSSProperties } from "react";
 import { Terminal } from "@xterm/xterm";
 import { readTerminalBearerToken } from "../mission-control/missionControlAuth.js";
 import { useDaemonHealthSignal } from "../../hooks/useDaemonHealth.js";
@@ -51,6 +51,8 @@ const ESCAPE_SEQ_MAP: Record<string, string> = {
   "\x1b[6~": "PgDn",
   "\x1b[3~": "DC",
   "\x1b[2~": "IC",
+  "\x1b[Z": "BTab",
+  "\x1b[1;2D": "S-Left",
 };
 
 // OPR.0.4.3.21 — the broker's GENERIC fallback close reason (see
@@ -95,12 +97,87 @@ const TERMINAL_KEYS = [
   { label: "Ctrl+C", name: "Interrupt (Ctrl+C)", data: "\x03", title: "Interrupt: send Ctrl+C to the running program" },
   { label: "Esc", name: "Escape", data: "\x1b", title: "Send Escape" },
   { label: "Tab", name: "Tab", data: "\t", title: "Send Tab" },
+  { label: "⇧Tab", name: "Shift+Tab", data: "\x1b[Z", title: "Send Shift+Tab" },
   { label: "↑", name: "Up arrow", data: "\x1b[A", title: "Send Up arrow" },
   { label: "↓", name: "Down arrow", data: "\x1b[B", title: "Send Down arrow" },
+  { label: "⇧←", name: "Shift+Left arrow", data: "\x1b[1;2D", title: "Send Shift+Left arrow" },
   { label: "Enter", name: "Enter", data: "\r", title: "Send Enter" },
 ] as const;
 
 type WsMessage = { type: "keys"; keys: string[] } | { type: "text"; text: string };
+
+// A software keyboard shrinks the visual viewport, not the layout viewport
+// (iOS Safari, and Chrome's default), so dvh-sized layouts stay covered.
+// Less occlusion than this is browser chrome or an accessory bar.
+const KEYBOARD_MIN_OCCLUSION_PX = 100;
+
+type KeyboardBand = { top: number; height: number };
+/** The band plus how this input area fits it: `cap` = max-height, `lift` =
+ *  relative upward shift when no ancestor can scroll it far enough. */
+type KeyboardFit = KeyboardBand & { cap: number; lift: number };
+
+/** The visible band above a software keyboard while focus is inside `area`
+ *  (terminal input, clipboard box or keys), in client coordinates; null
+ *  otherwise. Pinch zoom also shrinks the visual viewport; it is left alone. */
+function keyboardBand(area: HTMLElement): KeyboardBand | null {
+  const vv = window.visualViewport;
+  if (!vv || vv.scale > 1.01 || !area.contains(document.activeElement)) return null;
+  const layoutHeight = Math.max(window.innerHeight, document.documentElement.clientHeight);
+  if (layoutHeight - vv.height < KEYBOARD_MIN_OCCLUSION_PX) return null;
+  return { top: Math.round(vv.offsetTop), height: Math.floor(vv.height) };
+}
+
+const clipsY = (node: Element) => /hidden|clip|auto|scroll|overlay/.test(getComputedStyle(node).overflowY);
+const scrollsY = (node: HTMLElement) => /auto|scroll|overlay/.test(getComputedStyle(node).overflowY) && node.scrollHeight > node.clientHeight;
+
+/** The part of the band visible through `from` and its ancestors: the band
+ *  intersected with every clipping box (a scroller below the shell header,
+ *  a fixed popover). */
+function visibleBox(from: HTMLElement | null, band: KeyboardBand): { top: number; bottom: number } {
+  let top = band.top, bottom = band.top + band.height;
+  for (let node = from; node; node = node.parentElement) {
+    if (!clipsY(node)) continue;
+    const box = node.getBoundingClientRect();
+    top = Math.max(top, box.top + node.clientTop);
+    bottom = Math.min(bottom, box.top + node.clientTop + node.clientHeight);
+  }
+  return { top, bottom };
+}
+
+/** Scroll each scrollable ancestor so the element sits in that ancestor's
+ *  visible part of the band, bottom (prompt row and keys) first. */
+function revealInBand(el: HTMLElement, band: KeyboardBand): void {
+  for (let node = el.parentElement; node; node = node.parentElement) {
+    if (!scrollsY(node)) continue;
+    const { top, bottom } = visibleBox(node, band);
+    const rect = el.getBoundingClientRect();
+    const delta = rect.bottom > bottom ? rect.bottom - bottom : rect.top < top ? rect.top - top : 0;
+    if (Math.abs(delta) >= 1) node.scrollTop += delta;
+  }
+}
+
+type XtermText = {
+  rows: number;
+  hasSelection(): boolean;
+  getSelection(): string;
+  buffer: { active: { viewportY: number; getLine(y: number): { isWrapped: boolean; translateToString(trimRight?: boolean): string } | undefined } };
+};
+
+/** What Copy takes: the selection, else the rows on screen as logical lines.
+ *  A soft-wrapped row (isWrapped) continues the previous line, as in xterm's
+ *  own selection; trimming each row drops only unwritten padding. */
+export function terminalCopyText(term: XtermText): { text: string; what: string } {
+  if (term.hasSelection()) return { text: term.getSelection(), what: "the selection" };
+  const buf = term.buffer.active;
+  const lines: string[] = [];
+  for (let y = buf.viewportY; y < buf.viewportY + term.rows; y++) {
+    const line = buf.getLine(y);
+    const text = line?.translateToString(true) ?? "";
+    if (line?.isWrapped && lines.length > 0) lines[lines.length - 1] += text;
+    else lines.push(text);
+  }
+  return { text: lines.join("\n").replace(/\s+$/, ""), what: "the visible screen" };
+}
 
 export function mapXtermInput(data: string): WsMessage[] {
   const messages: WsMessage[] = [];
@@ -260,6 +337,14 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
   fitRef.current = fit;
   const termRef = useRef<unknown>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  // Input ownership. `committedIdentityRef` is the seat the committed UI shows
+  // (set in a layout effect, never during render); `liveIdentityRef` is the
+  // seat whose xterm and socket the mount effect created (cleared by its
+  // cleanup). Between a new seat's commit and the old seat's passive teardown
+  // they differ, and no input, paste or Copy may use the old seat.
+  const committedIdentityRef = useRef<string | null>(null);
+  const liveIdentityRef = useRef<string | null>(null);
+  const ownsLiveSeat = () => liveIdentityRef.current !== null && liveIdentityRef.current === committedIdentityRef.current;
   // OPR.0.4.4.20 delta-C: once-per-mount guard for the initial-text frame —
   // a WS reconnect must never re-send the preamble into the pane.
   const initialTextSentRef = useRef(false);
@@ -280,6 +365,8 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
   // Pending delayed prompt reveals; cancelled on unmount, session change and
   // when the user takes over scrolling.
   const promptScrollCancelsRef = useRef(new Set<() => void>());
+  // The latest accepted input's reveal; the next accepted input supersedes it.
+  const inputRevealRef = useRef<(() => void) | null>(null);
   // Bumped by user scroll/pan/key intent on the scroll owner. Output and
   // geometry restores only put back offsets the user did not change.
   const userScrollEpochRef = useRef(0);
@@ -294,6 +381,20 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
   const [status, setStatus] = useState<string | null>(null);
   // A local input refusal; the connection stays usable.
   const [inputWarning, setInputWarning] = useState<string | null>(null);
+  // Clipboard outcome and the fallback text box (copy: read-only text for the
+  // device's own Copy; paste: text the operator pastes, then sends). Both
+  // belong to the session they were made on, like errors.
+  const [clipboardState, setClipboardState] = useState<{ identity: string; notice: string | null; box: { mode: "copy" | "paste"; text: string } | null } | null>(null);
+  const clipboard = clipboardState?.identity === identity ? clipboardState : null;
+  const setClipboard = useCallback((notice: string | null, box: { mode: "copy" | "paste"; text: string } | null = null) => setClipboardState({ identity, notice, box }), [identity]);
+  // The whole input area (terminal, clipboard box, keys). While focus is in it
+  // under a software keyboard, `keyboard` fits it into the visible band.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [keyboard, setKeyboard] = useState<KeyboardFit | null>(null);
+  // Text focus in the area: the Keyboard control then offers Hide.
+  const [inputFocused, setInputFocused] = useState(false);
+  // Band height whose prompt reveal already ran (offset-only moves skip it).
+  const promptRevealedForRef = useRef<number | null>(null);
   const [retryEpoch, setRetryEpoch] = useState(0);
   // Consecutive sockets that ended before native geometry.
   const failedAttemptsRef = useRef(0);
@@ -326,14 +427,14 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
   // live only on the current socket after it delivered native geometry;
   // anything earlier is dropped, never queued or replayed. A paste is one
   // literal text frame; typed data maps CR to Enter and controls to keys.
-  const sendInput = useCallback((data: string, paste = false) => {
+  const sendInput = useCallback((data: string, paste = false): boolean => {
     const wsc = wsRef.current;
-    if (!wsc || wsc.readyState !== WebSocket.OPEN || !geometryRef.current) return;
+    if (!wsc || wsc.readyState !== WebSocket.OPEN || !geometryRef.current || !ownsLiveSeat()) return false;
     const frames = (paste ? [{ type: "text", text: data } as WsMessage] : mapXtermInput(data)).map((msg) => JSON.stringify(msg));
     // OPR.0.4.0.39: typing returns to the live bottom before sending input;
     // that frame counts toward the same budget.
     if (scrollOffsetRef.current > 0) frames.unshift(JSON.stringify({ type: "scroll", offset: 0 }));
-    if (encodedBytes(frames) > MAX_INPUT_EVENT_BYTES) { setInputWarning(INPUT_TOO_LARGE); return; }
+    if (encodedBytes(frames) > MAX_INPUT_EVENT_BYTES) { setInputWarning(INPUT_TOO_LARGE); return false; }
     setInputWarning(null);
     // xterm's own scroller can consume a native wheel into local history
     // without reaching the broker wheel handler; key controls must return
@@ -342,6 +443,20 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
     (termRef.current as { scrollToBottom(): void } | null)?.scrollToBottom();
     scrollOffsetRef.current = 0;
     for (const frame of frames) wsc.send(frame);
+    // Accepted input brings this viewer's prompt into view in its actual
+    // scroll owner (a toolbar key moves no caret, so nothing else would);
+    // the reveal is tracked so a wheel/touch takeover or teardown cancels it,
+    // and it supersedes (cancels and retires) the previous input's reveal.
+    const host = containerRef.current;
+    if (host) {
+      const prior = inputRevealRef.current;
+      if (prior) { prior(); promptScrollCancelsRef.current.delete(prior); }
+      const gen = generationRef.current;
+      const cancel = scrollTerminalViewportToPrompt(host, () => generationRef.current === gen && scrollOffsetRef.current === 0);
+      inputRevealRef.current = cancel;
+      promptScrollCancelsRef.current.add(cancel);
+    }
+    return true;
   }, []);
 
   // OPR.0.4.0.39 (selection fix): size the xterm to its container by FONT SIZE (not a
@@ -385,7 +500,9 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
     termRef.current = null;
   }, []);
 
-  const scrollOwner = useCallback(() => fitWrapperRef.current ?? containerRef.current, []);
+  // The element actually scrolled/panned: the fit wrapper, the natural
+  // keyboard wrapper while it bounds the pane, otherwise the host.
+  const scrollOwner = useCallback(() => (containerRef.current ? terminalScrollOwner(containerRef.current) : fitWrapperRef.current), []);
 
   const trackPromptScroll = useCallback((cancel: () => void) => {
     promptScrollCancelsRef.current.add(cancel);
@@ -625,6 +742,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
   useEffect(() => {
     if (!containerRef.current) return;
     mountedRef.current = true;
+    liveIdentityRef.current = identity;
     generationRef.current++;
     const currentGen = generationRef.current;
     naturalSizeRef.current = null;
@@ -727,6 +845,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
       cleanedUp = true;
       host.removeEventListener("paste", onPaste, true);
       mountedRef.current = false;
+      liveIdentityRef.current = null;
       generationRef.current++;
       if (reconnectTimerRef.current) { clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = null; }
       cancelPromptScrolls();
@@ -734,7 +853,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
       if (activeWs) { activeWs.close(); wsRef.current = null; }
       disposeTerminal();
     };
-  }, [admitAndConnect, disposeTerminal, trackPromptScroll, cancelPromptScrolls, retryEpoch, setError, sendInput]);
+  }, [admitAndConnect, disposeTerminal, trackPromptScroll, cancelPromptScrolls, retryEpoch, setError, sendInput, identity]);
 
   // OPR.0.4.0.39 (selection fix): refit the xterm fontSize when its container resizes
   // (responsive grid columns, window resize, node-detail panel). Observes the fit
@@ -752,8 +871,9 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
 
   // User scroll/pan/selection/typing on the scroll owner ends the initial prompt
   // reveal (wheel/touch/pointer) and marks offsets as user-owned for restores.
+  const keyboardBounded = keyboard !== null;
   useEffect(() => {
-    const owner = fitWrapperRef.current ?? containerRef.current;
+    const owner = scrollOwner();
     if (!owner) return undefined;
     const takeOver = () => {
       userScrollEpochRef.current++;
@@ -772,7 +892,144 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
       owner.removeEventListener("pointerdown", takeOver, options);
       owner.removeEventListener("keydown", keyIntent, options);
     };
-  }, [fit, error, sessionName, cancelPromptScrolls]);
+  }, [fit, error, sessionName, cancelPromptScrolls, scrollOwner, keyboardBounded]);
+
+  // Software keyboard: track focus in this input area and the visual
+  // viewport (resize and offset-only movement). Other viewers never react.
+  useEffect(() => {
+    const area = rootRef.current;
+    if (!area) return undefined;
+    const vv = window.visualViewport;
+    let frame = 0;
+    const measure = () => {
+      frame = 0;
+      const active = document.activeElement;
+      setInputFocused(active instanceof HTMLTextAreaElement && area.contains(active));
+      const next = keyboardBand(area);
+      setKeyboard((prev) => {
+        if (!next) return null;
+        if (prev?.height !== next.height) return { ...next, cap: next.height, lift: 0 };
+        return prev.top === next.top ? prev : { ...prev, top: next.top };
+      });
+    };
+    const schedule = () => { if (!frame) frame = requestAnimationFrame(measure); };
+    area.addEventListener("focusin", schedule);
+    area.addEventListener("focusout", schedule);
+    vv?.addEventListener("resize", schedule);
+    vv?.addEventListener("scroll", schedule);
+    // Focus (autoFocus) or a keyboard may already be present before these
+    // listeners attach; measure once now.
+    schedule();
+    return () => {
+      area.removeEventListener("focusin", schedule);
+      area.removeEventListener("focusout", schedule);
+      vv?.removeEventListener("resize", schedule);
+      vv?.removeEventListener("scroll", schedule);
+      cancelAnimationFrame(frame);
+      setKeyboard(null);
+      setInputFocused(false);
+    };
+  }, [identity, error, fit]);
+
+  // Fit the input area into the band, one pass per frame until stable:
+  // scroll ancestors, cap its height to what is visible (font fitting and
+  // panning absorb it; the native pane is never resized), then lift it when
+  // no ancestor can scroll far enough (end of page, fixed popover). A new
+  // band height reveals the prompt row, never during history reading.
+  useEffect(() => {
+    const area = rootRef.current;
+    if (!keyboard) { promptRevealedForRef.current = null; return undefined; }
+    if (!area) return undefined;
+    const gen = generationRef.current;
+    const frame = requestAnimationFrame(() => {
+      if (generationRef.current !== gen || !area.isConnected) return;
+      revealInBand(area, keyboard);
+      const visible = visibleBox(area.parentElement, keyboard);
+      const rect = area.getBoundingClientRect();
+      const room = Math.max(0, Math.floor(visible.bottom - visible.top));
+      if (rect.height > room + 1 && keyboard.cap > room) {
+        setKeyboard((prev) => (prev && prev.height === keyboard.height ? { ...prev, cap: room } : prev));
+        return;
+      }
+      const fittedTop = Math.min(Math.max(rect.top, visible.top), visible.bottom - rect.height);
+      const lift = Math.max(0, Math.round(keyboard.lift + rect.top - fittedTop));
+      if (lift !== keyboard.lift) {
+        setKeyboard((prev) => (prev && prev.height === keyboard.height ? { ...prev, lift } : prev));
+        return;
+      }
+      if (promptRevealedForRef.current === keyboard.height) return;
+      promptRevealedForRef.current = keyboard.height;
+      if (containerRef.current && scrollOffsetRef.current === 0) {
+        trackPromptScroll(scrollTerminalViewportToPrompt(containerRef.current, () => generationRef.current === gen && scrollOffsetRef.current === 0));
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [keyboard, trackPromptScroll]);
+
+  // Clipboard intent counter: each Copy/Paste tap, draft edit, Send, Close
+  // and session change takes it, so a slower completion of an older
+  // operation finds itself superseded and changes nothing, not even UI.
+  // A layout effect: it runs in the commit of a new identity (never for an
+  // abandoned render), before passive cleanup retires the old socket, so a
+  // read settling in between cannot reach the previous seat.
+  const clipboardOpRef = useRef(0);
+  useLayoutEffect(() => {
+    committedIdentityRef.current = identity;
+    clipboardOpRef.current++;
+    return () => { clipboardOpRef.current++; };
+  }, [identity]);
+
+  // Explicit taps only: nothing reads or writes the clipboard on its own.
+  const copyToClipboard = useCallback(async () => {
+    const term = termRef.current as XtermText | null;
+    if (!term || !ownsLiveSeat()) return;
+    const op = ++clipboardOpRef.current;
+    const owns = () => mountedRef.current && clipboardOpRef.current === op;
+    const { text, what } = terminalCopyText(term);
+    if (!text) { setClipboard("Nothing to copy: the screen is empty."); return; }
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("clipboard unavailable");
+      await navigator.clipboard.writeText(text);
+      if (owns()) setClipboard(`Copied ${what} to the clipboard.`);
+    } catch {
+      if (owns()) setClipboard(`Not copied: this browser did not allow clipboard access here. Tap the box to select it all, then use your device's Copy.`, { mode: "copy", text });
+    }
+  }, [setClipboard]);
+
+  // A refused fallback Send keeps its box and exact draft to edit and retry.
+  const deliverPaste = useCallback((raw: string, retainOnFailure = false) => {
+    const text = raw.replace(/\r\n?/g, "\n");
+    const sent = sendInput(text, true);
+    setClipboard(
+      sent ? `Sent ${[...text].length} characters; no Enter key added. The receiving program controls newline handling.` : "Paste not sent; nothing reached the terminal.",
+      !sent && retainOnFailure ? { mode: "paste", text: raw } : null,
+    );
+    return sent;
+  }, [sendInput, setClipboard]);
+
+  // The read is bound to this mount, generation and socket: a result that
+  // arrives after a switch, reconnect or unmount is dropped, never delivered.
+  // Superseded by a newer clipboard intent, it is dropped silently.
+  const pasteFromClipboard = useCallback(async () => {
+    const op = ++clipboardOpRef.current;
+    const gen = generationRef.current, ws = wsRef.current;
+    const owns = () => mountedRef.current && clipboardOpRef.current === op;
+    if (!navigator.clipboard?.readText) {
+      setClipboard("Reading the clipboard is not available here. Paste into the box, then Send.", { mode: "paste", text: "" });
+      return;
+    }
+    let text: string;
+    try {
+      text = await navigator.clipboard.readText();
+    } catch {
+      if (owns()) setClipboard("Clipboard access was refused. Paste into the box, then Send.", { mode: "paste", text: "" });
+      return;
+    }
+    if (!owns()) return;
+    if (generationRef.current !== gen || wsRef.current !== ws) { setClipboard("Clipboard paste discarded: the terminal reconnected or changed before the clipboard answered. Nothing was sent."); return; }
+    if (!text) { setClipboard("The clipboard has no text to paste."); return; }
+    deliverPaste(text);
+  }, [deliverPaste, setClipboard]);
 
   if (error) {
     return (
@@ -837,28 +1094,105 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
   // reconnecting or wake status). mouseDown is prevented so a click keeps
   // focus (and a phone's soft keyboard) where the operator was typing.
   const inputReady = geometryReady && status === null;
+  const buttonClass = "min-h-[44px] min-w-[44px] shrink-0 rounded border border-stone-700 bg-stone-900 px-2 font-mono text-[11px] text-stone-200 hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-40";
+  const notConnected = "Available once the live terminal is connected";
+  // One scrolling row, so a phone keeps the most terminal above its keyboard.
+  // Keyboard toggles: a trusted tap focuses the xterm input (showing the
+  // software keyboard), or dismisses it when text input here has focus. It
+  // never sends bytes.
   const keyBar = (
-    <div
-      role="group"
-      aria-label={`Terminal keys for ${sessionName}`}
-      className="sticky left-0 flex max-w-full shrink-0 flex-wrap gap-1 bg-stone-950/85 p-1"
-    >
-      {TERMINAL_KEYS.map((key) => (
+    <div className="sticky left-0 flex max-w-full shrink-0 gap-1 overflow-x-auto bg-stone-950/85 p-1">
+      <div role="group" aria-label={`Terminal input for ${sessionName}`} className="flex shrink-0 gap-1">
         <button
-          key={key.name}
           type="button"
-          aria-label={key.name}
-          title={inputReady ? key.title : "Available once the live terminal is connected"}
+          aria-label={inputFocused ? "Hide keyboard" : "Show keyboard"}
+          title={inputFocused ? "Hide the keyboard" : inputReady ? "Focus the terminal and show the keyboard" : notConnected}
+          disabled={!inputFocused && !inputReady}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => {
+            const active = document.activeElement;
+            if (inputFocused && active instanceof HTMLElement && rootRef.current?.contains(active)) active.blur();
+            else (termRef.current as { focus(): void } | null)?.focus();
+          }}
+          className={buttonClass}
+        >
+          {inputFocused ? "Hide keyboard" : "Keyboard"}
+        </button>
+        <button
+          type="button"
+          aria-label="Copy"
+          title={geometryReady ? "Copy the selection, or the visible screen when nothing is selected" : notConnected}
+          disabled={!geometryReady}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => void copyToClipboard()}
+          className={buttonClass}
+        >
+          Copy
+        </button>
+        <button
+          type="button"
+          aria-label="Paste"
+          title={inputReady ? "Paste clipboard text literally; no Enter key is added" : notConnected}
           disabled={!inputReady}
           onMouseDown={(event) => event.preventDefault()}
-          onClick={() => sendInput(key.data)}
-          className="min-h-[44px] min-w-[44px] rounded border border-stone-700 bg-stone-900 px-2 font-mono text-[11px] text-stone-200 hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-40"
+          onClick={() => void pasteFromClipboard()}
+          className={buttonClass}
         >
-          {key.label}
+          Paste
         </button>
-      ))}
+      </div>
+      <div role="group" aria-label={`Terminal keys for ${sessionName}`} className="flex shrink-0 gap-1">
+        {TERMINAL_KEYS.map((key) => (
+          <button
+            key={key.name}
+            type="button"
+            aria-label={key.name}
+            title={inputReady ? key.title : notConnected}
+            disabled={!inputReady}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => sendInput(key.data)}
+            className={buttonClass}
+          >
+            {key.label}
+          </button>
+        ))}
+      </div>
     </div>
   );
+
+  const box = clipboard?.box ?? null;
+  const clipboardLine = clipboard ? (
+    <div className="sticky left-0 flex max-w-full shrink-0 flex-col gap-1 bg-stone-900/90 px-2 py-1 font-mono text-[11px] leading-snug text-stone-200">
+      {clipboard.notice ? <div data-testid={`focused-terminal-clipboard-${sessionName}`} role="status">{clipboard.notice}</div> : null}
+      {box ? (
+        <div className="flex items-end gap-1">
+          <textarea
+            aria-label={box.mode === "copy" ? "Text to copy" : "Text to paste"}
+            readOnly={box.mode === "copy"}
+            value={box.text}
+            rows={2}
+            onFocus={box.mode === "copy" ? (event) => event.currentTarget.select() : undefined}
+            onChange={(event) => { clipboardOpRef.current++; setClipboard(clipboard.notice, { mode: "paste", text: event.target.value }); }}
+            className="min-w-0 flex-1 resize-none rounded border border-stone-700 bg-stone-950 p-1 text-[16px] text-stone-100"
+          />
+          {box.mode === "paste" ? (
+            <button
+              type="button"
+              aria-label="Send paste"
+              disabled={!inputReady || !box.text}
+              onClick={() => { clipboardOpRef.current++; if (deliverPaste(box.text, true)) setClipboardState(null); }}
+              className={buttonClass}
+            >
+              Send
+            </button>
+          ) : null}
+          <button type="button" aria-label="Close" onClick={() => { clipboardOpRef.current++; setClipboardState(null); }} className={buttonClass}>
+            Close
+          </button>
+        </div>
+      ) : null}
+    </div>
+  ) : null;
 
   const inputWarningLine = inputWarning ? (
     <div
@@ -870,13 +1204,50 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
     </div>
   ) : null;
 
-  if (fit === "natural") return <>{statusLine}{liveTerminal}{inputWarningLine}{keyBar}</>;
+  // Under a software keyboard the whole input area is capped to the visible
+  // band (and lifted when nothing can scroll it there), opaque over what it
+  // covers. Relative offset, not a transform: xterm hit-testing stays exact.
+  const keyboardStyle: CSSProperties | undefined = keyboard ? {
+    display: "flex",
+    flexDirection: "column",
+    maxHeight: `${keyboard.cap}px`,
+    position: "relative",
+    top: keyboard.lift ? `${-keyboard.lift}px` : undefined,
+    zIndex: 1,
+    backgroundColor: LIVE_TERMINAL_RENDER_BACKGROUND,
+  } : undefined;
+  const areaTestId = `focused-terminal-input-area-${sessionName}`;
+
+  // Natural mode keeps native geometry; only under a keyboard does its
+  // terminal part become a bounded local scroll area so the keys stay visible.
+  if (fit === "natural") {
+    return (
+      <div ref={rootRef} data-testid={areaTestId} style={keyboardStyle}>
+        <div
+          {...(keyboard ? { [TERMINAL_SCROLL_OWNER_ATTR]: "" } : {})}
+          style={keyboard ? { minHeight: 0, overflow: "auto" } : undefined}
+        >
+          {statusLine}
+          {liveTerminal}
+        </div>
+        {inputWarningLine}
+        {clipboardLine}
+        {keyBar}
+      </div>
+    );
+  }
 
   const geometryLabel = nativeGeometry ? `, native ${nativeGeometry.cols} by ${nativeGeometry.rows}` : "";
   // The key bar sits outside the scroll owner, so it is never panned away and
-  // contain fitting measures only the space left above it.
+  // contain fitting measures only the space left above it. Under a software
+  // keyboard the root is capped to the visible band; the fit wrapper shrinks.
   return (
-    <div className={fit === "contain" ? "flex h-full w-full min-w-0 flex-col" : "w-full min-w-0"}>
+    <div
+      ref={rootRef}
+      data-testid={areaTestId}
+      className={fit === "contain" ? "flex h-full w-full min-w-0 flex-col" : "flex w-full min-w-0 flex-col"}
+      style={keyboardStyle}
+    >
       <div
         ref={fitWrapperRef}
         {...{ [TERMINAL_SCROLL_OWNER_ATTR]: "" }}
@@ -894,6 +1265,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
         {liveTerminal}
       </div>
       {inputWarningLine}
+      {clipboardLine}
       {keyBar}
     </div>
   );

@@ -31,6 +31,9 @@ interface AnchorRect {
 interface PopoverPosition {
   left: number;
   top: number;
+  /** Visible-viewport bounds; the class max sizes cover the first paint. */
+  maxHeight?: number;
+  maxWidth?: number;
 }
 
 interface ViewportSize {
@@ -69,6 +72,16 @@ function rectFromElement(el: HTMLElement | null): AnchorRect {
     top: rect?.top ?? POPOVER_MARGIN,
     bottom: rect?.bottom ?? POPOVER_MARGIN,
   };
+}
+
+/** The visible viewport size and offsets: a phone's software keyboard and
+ *  pinch zoom/pan shrink and move the visual viewport without a window
+ *  resize. Without the API, the window. */
+function visibleViewport(): ViewportSize & { top: number; left: number } {
+  const vv = window.visualViewport;
+  return vv
+    ? { width: vv.width, height: vv.height, top: vv.offsetTop, left: vv.offsetLeft }
+    : { width: window.innerWidth, height: window.innerHeight, top: 0, left: 0 };
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -125,10 +138,22 @@ export function TerminalPreviewPopover({
 
   const updatePosition = useCallback(() => {
     if (!open) return;
-    const nextAnchor = rectFromElement(rootRef.current);
+    const anchor = rectFromElement(rootRef.current);
     const width = popoverRef.current?.offsetWidth || FALLBACK_POPOVER_WIDTH;
     const height = popoverRef.current?.offsetHeight || FALLBACK_POPOVER_HEIGHT;
-    setPosition(computeTerminalPopoverPosition(nextAnchor, width, height));
+    // Place within the visible band (visual-viewport coordinates), then
+    // convert back to the layout viewport that position:fixed uses.
+    const view = visibleViewport();
+    const next = computeTerminalPopoverPosition(
+      { left: anchor.left - view.left, right: anchor.right - view.left, top: anchor.top - view.top, bottom: anchor.bottom - view.top },
+      width, height, view,
+    );
+    setPosition({
+      left: next.left + view.left,
+      top: next.top + view.top,
+      maxHeight: view.height - POPOVER_MARGIN * 2,
+      maxWidth: view.width - POPOVER_MARGIN * 2,
+    });
   }, [open]);
 
   useEffect(() => {
@@ -166,12 +191,17 @@ export function TerminalPreviewPopover({
       ? null
       : new ResizeObserver(handleViewportChange);
     if (popoverRef.current) observer?.observe(popoverRef.current);
+    const vv = window.visualViewport;
     window.addEventListener("resize", handleViewportChange);
     window.addEventListener("scroll", handleViewportChange, true);
+    vv?.addEventListener("resize", handleViewportChange);
+    vv?.addEventListener("scroll", handleViewportChange);
     return () => {
       observer?.disconnect();
       window.removeEventListener("resize", handleViewportChange);
       window.removeEventListener("scroll", handleViewportChange, true);
+      vv?.removeEventListener("resize", handleViewportChange);
+      vv?.removeEventListener("scroll", handleViewportChange);
     };
   }, [open, updatePosition]);
 
@@ -226,7 +256,10 @@ export function TerminalPreviewPopover({
         // smoked-glass surface, while the xterm renderer itself stays opaque for
         // reliable erase/redraw. The popover drops its redundant bg so the wrapper
         // remains the single terminal plate.
-        "nodrag nopan fixed z-[1000] max-h-[calc(100vh-1rem)] max-w-[calc(100vw-1rem)] overflow-hidden p-1.5 backdrop-blur-sm",
+        // The visible-viewport cap scrolls on both axes, so native rows, wide
+        // columns and the toolbar stay reachable where nothing inside fits
+        // them (pinch zoom gets no keyboard fitting).
+        "nodrag nopan fixed z-[1000] max-h-[calc(100vh-1rem)] max-w-[calc(100vw-1rem)] overflow-auto p-1.5 backdrop-blur-sm",
         // OPR.0.4.0.39: the shell sizes to the terminal (w-max) for BOTH static + live
         // - no reshape on go-live, no loose empty width. The inner is the canonical
         // geometry width so the shell tracks the column count automatically.
@@ -234,7 +267,7 @@ export function TerminalPreviewPopover({
         "cursor-default select-text font-mono text-[8px] text-stone-50",
         popoverClassName,
       )}
-      style={{ left: position.left, top: position.top }}
+      style={{ left: position.left, top: position.top, maxHeight: position.maxHeight, maxWidth: position.maxWidth }}
       onClick={(event) => event.stopPropagation()}
       onPointerDown={(event) => event.stopPropagation()}
     >
@@ -252,6 +285,8 @@ export function TerminalPreviewPopover({
         className="max-w-[calc(100vw-2rem)]"
         style={{
           width: `${LIVE_TERMINAL_COLS}ch`,
+          // The class's 1rem inset inside the outer cap, in visible-viewport px.
+          maxWidth: position.maxWidth === undefined ? undefined : position.maxWidth - 16,
           fontFamily: LIVE_TERMINAL_FONT_FAMILY,
           fontSize: `${LIVE_TERMINAL_FONT_SIZE}px`,
         }}

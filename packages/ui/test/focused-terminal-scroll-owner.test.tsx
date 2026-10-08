@@ -3,7 +3,7 @@
 // may act. The real-renderer metric correction lives in
 // focused-terminal-xterm-metrics.test.tsx; browser layout is root-verified.
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { act, cleanup, render } from "@testing-library/react";
+import { act, cleanup, render, fireEvent } from "@testing-library/react";
 
 interface FakeTerm {
   host: HTMLElement;
@@ -35,7 +35,7 @@ vi.mock("@xterm/xterm", () => ({ Terminal: class {
     // A browser can move the scroll owner while xterm parses (e.g. stale caret
     // reveal); model that as a jump the completion callback must undo.
     const parent = this.fake.host.parentElement;
-    const owner = parent?.dataset.testid?.startsWith("focused-terminal-fit-") ? parent : null;
+    const owner = parent?.hasAttribute("data-terminal-scroll-owner") ? parent : null;
     if (owner) owner.scrollTop = 0;
     if (this.fake.deferWrites) this.fake.pendingWrites.push(() => done?.());
     else done?.();
@@ -160,7 +160,9 @@ it("keeps two viewers of one pane independent: one viewer's typing, history and 
   await act(async () => { termA!.wheelHandler!(new WheelEvent("wheel", { deltaY: -1 })); });
   for (const socket of [socketA, socketB]) await send(socket, { type: "output", data: "shared reply" });
   await advance(100);
-  expect(a.wrapper.scrollTop).toBe(200);
+  // A's own accepted typing revealed A's prompt (356); A's history wheel and
+  // the shared output then kept it there. B never moved.
+  expect(a.wrapper.scrollTop).toBe(356);
   expect(b.wrapper.scrollTop).toBe(0);
   expect(socketA.sent).toEqual([
     JSON.stringify({ type: "text", text: "ok" }),
@@ -202,4 +204,72 @@ it("ignores a replaced session's late write callback and pending reveals", async
   await act(async () => { for (const flush of state.terms[0]!.pendingWrites) flush(); });
   expect(wrapper.scrollTop).toBe(0);
   expect(writes.slice(before).includes(77)).toBe(false);
+});
+
+
+it.each(["key", "typing"])("natural keyboard viewport returns to the prompt after user pan and %s input", async (kind) => {
+  const vv = Object.assign(new EventTarget(), { width: 390, height: 150, offsetTop: 0, offsetLeft: 0, scale: 1 });
+  Object.defineProperty(window, "visualViewport", { configurable: true, value: vv });
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 844 });
+  try {
+    const view = render(<FocusedTerminal sessionName="fixture" fit="natural" autoFocus={false} />);
+    const host = view.getByTestId("focused-terminal-fixture");
+    const owner = host.parentElement!;
+    layout(owner, host, {scrollHeight:900,clientHeight:100});
+    await advance(1);
+    await send(state.sockets[0], {type:"geometry",cols:90,rows:4});
+    act(() => state.terms[0]!.textarea.focus());
+    await advance(100);
+    expect(owner.style.overflow).toBe("auto");
+    expect(owner.hasAttribute("data-terminal-scroll-owner")).toBe(true);
+    // Stop the initial reveal window, then model an operator panning to older rows.
+    await advance(3000);
+    act(() => owner.dispatchEvent(new Event("touchstart", {bubbles:true})));
+    owner.scrollTop=40;
+    // Output alone keeps the reader's pan on this owner (the fake write jumps it to 0).
+    await send(state.sockets[0], {type:"output",data:"reply"});
+    await advance(100);
+    expect(owner.scrollTop).toBe(40);
+    if(kind === "key") fireEvent.click(view.getByRole("button",{name:/^enter$/i}));
+    else act(() => state.terms[0]!.dataHandler!("x"));
+    await advance(100);
+    expect(state.sockets[0].sent).toEqual([JSON.stringify(kind === "key" ? {type:"keys",keys:["Enter"]} : {type:"text",text:"x"})]);
+    // Accepted input reveals the prompt: cursor 600 + line 14 - client 100 + 3 lines = 556.
+    expect(owner.scrollTop).toBe(556);
+    expect(host.scrollTop).toBe(0);
+    // Keyboard hidden: the bound and its ownership are removed; output and
+    // input fall back to the plain natural layout without stray frames.
+    act(() => { vv.height = 844; vv.dispatchEvent(new Event("resize")); });
+    await advance(100);
+    expect(owner.hasAttribute("data-terminal-scroll-owner")).toBe(false);
+    expect(owner.style.overflow).toBe("");
+    await send(state.sockets[0], {type:"output",data:"after keyboard"});
+    await advance(100);
+    expect(state.sockets[0].sent).toHaveLength(1);
+  } finally { delete (window as any).visualViewport; }
+});
+
+// Each accepted input supersedes the previous input's prompt reveal: rapid
+// typing keeps one reveal's worth of pending work, sends every frame once,
+// still lands on the prompt, and teardown leaves nothing behind.
+it("rapid accepted input keeps one pending prompt reveal; frames exact; unmount leaves no reveal work", async () => {
+  const { mounted, wrapper, writes } = mountViewer("fixture");
+  await advance(1);
+  await send(state.sockets[0], { type: "geometry", cols: 155, rows: 37 });
+  await advance(3000);
+  wrapper.scrollTop = 40;
+  const baseline = vi.getTimerCount();
+  await act(async () => { for (let i = 0; i < 100; i++) state.terms[0]!.dataHandler!("x"); });
+  // One input reveal's frame + 50ms pass, not one per keystroke.
+  expect(vi.getTimerCount() - baseline).toBeLessThanOrEqual(2);
+  expect(state.sockets[0].sent).toEqual(Array.from({ length: 100 }, () => JSON.stringify({ type: "text", text: "x" })));
+  await advance(100);
+  expect(wrapper.scrollTop).toBe(356);
+  expect(vi.getTimerCount()).toBe(baseline);
+  // A last reveal in flight is cancelled by unmount.
+  await act(async () => { state.terms[0]!.dataHandler!("y"); });
+  const before = writes.length;
+  mounted.unmount();
+  await advance(100);
+  expect(writes.length).toBe(before);
 });
