@@ -423,7 +423,9 @@ export function SeatLiveTerminal({ agent, hostId, isRemote, detailKey, detailQue
   const canRetry = !precheck && refusal !== null;
 
   return (
-    <div data-testid="spatial-terminal-dock" className="mx-4 mt-2 border border-outline-variant bg-[hsl(var(--spatial-terminal-ground))]">
+    // spatial-terminal-surface: the bordered surface shared by every dock
+    // state (verifying, refused, released, admitted); a host may size it.
+    <div data-testid="spatial-terminal-dock" className="spatial-terminal-surface mx-4 mt-2 border border-outline-variant bg-[hsl(var(--spatial-terminal-ground))]">
       <div className="flex items-center gap-2 border-b border-outline-variant px-3 py-1.5 font-mono text-[9px] uppercase tracking-[0.16em] text-on-surface-variant">
         <span className="min-w-0 flex-1 truncate">Live terminal · {agent.displayName}</span>
         {seat ? <span className="truncate normal-case tracking-normal" title={`${seat.session} ${seat.pane}`}>{seat.session}</span> : null}
