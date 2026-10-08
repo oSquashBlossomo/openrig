@@ -57,6 +57,15 @@ export function nativeChatComposerMatches(pane: string, runtime: Runtime, cursor
     if (runtime === "claude-code" ? /^[─═-]{10,}$/.test(lines[i]!.trim())
       : /^\s*(?:\? for shortcuts|\d+% context left|· Context \[)/.test(lines[i]!)) { end = i; break; }
   }
+  const codexModelFooter = /^  \S[^\r\n]* · (?:\/|~\/)[^\r\n]+ *$/;
+  if (runtime === "codex" && end < 0) {
+    // The native TUI hides shortcuts while editing. Its final model/cwd row
+    // still bounds the input, but only across a wholly blank separator.
+    let last = lines.length - 1;
+    while (last >= 0 && /^ *$/.test(lines[last]!)) last--;
+    if (last > cursor.y + 1 && codexModelFooter.test(lines[last]!)
+      && lines.slice(cursor.y + 1, last).every(line => /^ *$/.test(line))) end = last;
+  }
   if (end < 0 || cursor.y >= end) return false;
   if (runtime === "codex" && lines.slice(end + 1).some(line => !/^ *$/.test(line))) return false;
   if (runtime === "claude-code") {
@@ -67,7 +76,7 @@ export function nativeChatComposerMatches(pane: string, runtime: Runtime, cursor
   // Codex 0.161 places model/effort/cwd between a blank separator and shortcuts.
   // Never strip a metadata-looking row inside the composer or under its cursor.
   if (runtime === "codex" && below.length >= 2 && below.slice(0, -1).every(line => /^ *$/.test(line))
-    && /^  \S[^\r\n]* · (?:\/|~\/)[^\r\n]+ *$/.test(below.at(-1)!)) below.pop();
+    && codexModelFooter.test(below.at(-1)!)) below.pop();
   if (below.some(line => !/^ *$/.test(line))) return false;
   const rows = lines.slice(at, cursor.y + 1);
   if (!text) {

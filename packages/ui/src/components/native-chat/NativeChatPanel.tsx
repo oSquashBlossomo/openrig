@@ -494,7 +494,20 @@ function ChatBody({ target, nodeId, layout, onOpenTerminal }: { target: SeatChat
           ) : null}
           <ol className="space-y-2">
             {messages.map((m) => <MessageRow key={m.id} message={m} agentName={target.displayName} />)}
-            {pendingRows.map((p) => (
+            {pendingRows.map((p) => p.phase === "submitted" ? (
+              // A submitted receipt is not another message: the native record
+              // may already be in the timeline above, and only the daemon may
+              // mark it observed. Collapsed; its text and detail on demand.
+              <li key={p.requestId} data-testid="native-chat-pending" data-phase="submitted" className="ml-auto max-w-[92%]">
+                <details data-testid="native-chat-receipt" className="border border-dashed border-outline-variant">
+                  <summary className="cursor-pointer px-2 py-1 font-mono text-[9px] uppercase tracking-[0.12em] text-on-surface-variant">Delivery receipt · submitted</summary>
+                  <div className="space-y-1.5 border-t border-dashed border-outline-variant px-3 py-2">
+                    <MessageText text={p.text} />
+                    <p data-testid="native-chat-receipt-detail" className="font-mono text-[10px] text-on-surface-variant">{p.detail || "The daemon gave no further detail."}</p>
+                  </div>
+                </details>
+              </li>
+            ) : (
               <li key={p.requestId} data-testid="native-chat-pending" data-phase={p.phase} className="ml-auto max-w-[92%] border border-dashed border-outline-variant px-3 py-2">
                 <div className="mb-1 font-mono text-[9px] uppercase tracking-[0.12em] text-on-surface-variant">You · {phaseLabel(p.phase)}</div>
                 <MessageText text={p.text} />
@@ -581,7 +594,7 @@ function phaseLabel(phase: PendingPhase): string {
   switch (phase) {
     case "posting": return "sending…";
     case "sending": return "sending to the terminal…";
-    case "submitted": return "submitted, waiting for the native record";
+    case "submitted": return "submitted";
     case "unknown": return "outcome unknown";
     case "indeterminate": return "unconfirmed";
     case "failed": return "not sent";

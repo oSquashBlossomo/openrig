@@ -403,6 +403,30 @@ describe("native chat: review follow-ups", () => {
   const busy = { state: "busy" as const, detail: "working", canSend: false, canInterrupt: true };
   const latestKey = ["native-chat", "local", "rig-1", "n1"];
 
+  it("a submitted receipt the daemon could not observe is a collapsed receipt, not a second message or a waiting promise", async () => {
+    const detail = "Submitted without a pre-send history watermark, so this receipt cannot be matched to a saved record.";
+    pages.set("n1", page("n1", {
+      messages: [msg("u1", "user", "Résumé the plan ✓"), msg("a1", "assistant", "Here it is.")],
+      requests: [receipt("4d0a5f5e-0000-4000-8000-000000000003", "Résumé the plan ✓", "submitted", detail)],
+    }));
+    renderChat(target("n1"));
+    await screen.findByText("Here it is.");
+    const row = screen.getByTestId("native-chat-pending");
+    expect(row.getAttribute("data-phase")).toBe("submitted");
+    const details = within(row).getByTestId("native-chat-receipt") as HTMLDetailsElement;
+    expect(details.open).toBe(false);
+    expect(details.querySelector("summary")!.textContent).toBe("Delivery receipt · submitted");
+    // Expanding shows the sent text and the daemon's own detail.
+    expect(within(details).getByText("Résumé the plan ✓")).toBeTruthy();
+    expect(within(details).getByTestId("native-chat-receipt-detail").textContent).toBe(detail);
+    expect(screen.getByTestId("native-chat-history").textContent).not.toMatch(/waiting for the native record/i);
+    expect(screen.getAllByTestId("native-chat-message").filter((el) => el.getAttribute("data-role") === "user")).toHaveLength(1);
+    // A submitted receipt does not hold the composer.
+    await type("next paragraph");
+    expect(sendButton().disabled).toBe(false);
+    expect(posts).toHaveLength(0);
+  });
+
   it("an empty view adopts the first populated page and its cursor, with no gap note", async () => {
     pages.set("n1", page("n1"));
     const view = renderChat(target("n1"));

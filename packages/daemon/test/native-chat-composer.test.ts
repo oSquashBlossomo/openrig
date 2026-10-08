@@ -40,3 +40,28 @@ it("keeps incomplete, collapsed, extra-row and moved-cursor forms out of the sup
   expect(matches("❯ hello", "claude-code", cursor(7), "hello")).toBe(false);
   expect(matches("› 1. Yes\n? for shortcuts", "codex", cursor(2), "")).toBe(false);
 });
+
+it("recognizes the actual Codex nonempty composer when shortcuts disappear but the model footer remains framed", () => {
+  const text = "Reply exactly CHAT_CODEX_366815_OK.";
+  const lines = Array.from({ length: 24 }, () => "");
+  lines[1] = "  >_ OpenAI Codex (v0.161.0)";
+  lines[20] = `› ${text}   `;
+  lines[22] = "  GPT-6.1-Sol high · /tmp/chat-proof/work-codex                        ";
+  lines[23] = "                    ";
+  const pane = lines.join("\n");
+  expect(matches(pane, "codex", cursor(37, 20), text)).toBe(true);
+  expect(matches(pane, "codex", cursor(36, 20), text)).toBe(false);
+  expect(matches(pane, "codex", cursor(38, 20), text)).toBe(false);
+  expect(matches(pane, "codex", cursor(2, 20), "")).toBe(false);
+  expect(matches(pane, "codex", cursor(37, 22), text)).toBe(false);
+});
+it.each([
+  "› hello\n  GPT-6.1-Sol high · /tmp/proof\n",
+  "› hello\nHUMAN DRAFT\n  GPT-6.1-Sol high · /tmp/proof\n",
+  "› hello\n\n  GPT-6.1-Sol high · /tmp/proof\nHUMAN DRAFT",
+  "› hello\n\n  GPT-6.1-Sol high · relative/path\n",
+  "› hello\n\n  not a native footer\n",
+  "› 1. Yes\n\n  GPT-6.1-Sol high · /tmp/proof\n",
+])("does not promote an unframed or false metadata footer into composer proof (%j)", pane => {
+  expect(matches(pane, "codex", cursor(7), "hello")).toBe(false);
+});

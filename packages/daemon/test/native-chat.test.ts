@@ -212,7 +212,7 @@ it.each(["codex", "claude-code"] as const)("admits the actual padded %s empty la
   const view = await f.service.read(f.node.id);
   expect(view.availability.canSend).toBe(true);
   const text = "Hello native  ";
-  f.tmux.sendText.mockImplementation(async (_target, value, before) => { await before?.(); snapshot = claude ? nativeClaude(["❯\u00a0" + value + "    "]) : "› " + value + "    \n\n  GPT-6.1-Sol high · /tmp/chat-proof\n  ? for shortcuts   "; x = 2 + stringWidth(value); return { ok: true }; });
+  f.tmux.sendText.mockImplementation(async (_target, value, before) => { await before?.(); snapshot = claude ? nativeClaude(["❯\u00a0" + value + "    "]) : "› " + value + "    \n\n  GPT-6.1-Sol high · /tmp/chat-proof\n                    "; x = 2 + stringWidth(value); return { ok: true }; });
   expect((await f.service.send(f.node.id, { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text })).state).toBe("submitted");
   expect(f.tmux.sendKeys).toHaveBeenCalledWith("%1", ["Enter"], expect.any(Function));
 });
@@ -279,4 +279,12 @@ it("retains fresh receipt and owner identity when the normal resolver persists t
   const after = await service.read(f.node.id);
   expect(after.identity.ownerKey).toBe(view.identity.ownerKey); expect(after.requests[0]!.requestId).toBe(request.requestId);
   expect((await service.send(f.node.id, request)).state).toBe("submitted"); expect(f.tmux.sendText).toHaveBeenCalledTimes(1);
+});
+it("does not submit a newly appeared native question despite a valid model-only Codex footer", async () => {
+  const f = fixture(), view = await f.service.read(f.node.id);
+  f.tmux.sendText.mockImplementation(async (_target, text, before) => {
+    await before?.(); f.setPane(`Do you want to proceed?\n› ${text}\n\n  GPT-6.1-Sol high · /tmp/proof\n`); return { ok: true };
+  });
+  const result = await f.service.send(f.node.id, { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "hello" });
+  expect(result.state).toBe("indeterminate"); expect(f.tmux.sendKeys).not.toHaveBeenCalled();
 });
