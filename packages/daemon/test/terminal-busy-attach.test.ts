@@ -1,6 +1,8 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { appendFileSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { TerminalSessionBroker, type BrokerTmux, type TerminalSubscriber } from "../src/terminal/TerminalSessionBroker.js";
+const { Terminal } = createRequire(import.meta.url)("@xterm/xterm") as typeof import("@xterm/xterm");
 
 const brokers: TerminalSessionBroker[] = [];
 afterEach(() => { brokers.splice(0).forEach(b => b.dispose()); });
@@ -9,10 +11,9 @@ function viewer() {
   const sub: TerminalSubscriber = { send: s => output.push(s), close: (code, reason) => closed.push({ code, reason }), geometry: (cols, rows) => geometry.push({ cols, rows }) };
   return { sub, output, closed, geometry };
 }
-function fixture(plain = false) {
+function fixture(plain = false, cursor = { x: 7, y: 1, width: 90, height: 27 }) {
   let busy = false, frame = 0, observations = 0;
   let broker: TerminalSessionBroker;
-  const cursor = { x: 7, y: 1, width: 90, height: 27 };
   const stop = vi.fn(async () => ({ ok: true as const }));
   const capture = () => {
     observations++;
@@ -67,6 +68,13 @@ it("returns a history viewer to busy live snapshots without a quiet-screen refus
   a.output.length = 0; await f.broker.scroll(a.sub, 0);
   await vi.waitFor(() => expect(a.output.length).toBeGreaterThanOrEqual(4));
   expect(a.closed).toEqual([]); expect(a.output.every(s => s.startsWith("\x1b[2J"))).toBe(true);
+  f.setBusy(false);
+  // A snapshot already in flight is not evidence that the quiet fence completed.
+  const state = f.broker as unknown as { snapshotOnly: Map<TerminalSubscriber, unknown> };
+  await vi.waitFor(() => expect(state.snapshotOnly.has(a.sub)).toBe(false));
+  appendFileSync(f.broker.pipeOutputPath!, "HISTORY_RETURN_RAW");
+  await vi.waitFor(() => expect(a.output).toContain("HISTORY_RETURN_RAW"));
+  expect(a.output.join("")).not.toContain("\x1b[3J");
 });
 
 it("stops busy snapshots, its pipe and all observation work after the last detach", async () => {
@@ -125,6 +133,47 @@ it("defers safe newcomer history replay until the quiet fence and sends it once"
   await vi.waitFor(() => expect(joining.output.filter(s => !s.startsWith("\x1b[2J") && s.includes("EARLIER"))).toHaveLength(1));
   await new Promise(resolve => setTimeout(resolve, 120));
   expect(joining.output.filter(s => s.includes("EARLIER"))).toHaveLength(1);
+});
+
+it("replays deferred history into a clean xterm buffer, without temporary snapshots entering scrollback", async () => {
+  const f = fixture(true, { x: 7, y: 1, width: 24, height: 4 }), live = viewer(), joining = viewer();
+  await f.broker.attach(live.sub);
+  const earlier = Array.from({ length: 8 }, (_, n) => `EARLIER-${n}\r\n`).join("");
+  appendFileSync(f.broker.pipeOutputPath!, earlier);
+  await vi.waitFor(() => expect(live.output).toContain(earlier));
+  const observe = f.tmux.capturePaneObservation!;
+  f.tmux.capturePaneObservation = async name => {
+    const screen = (await observe(name))!;
+    return { ...screen, snapshot: `\x1b[31;44m${screen.snapshot}` };
+  };
+  f.setBusy(true); await f.broker.attach(joining.sub);
+  await vi.waitFor(() => expect(joining.output.length).toBeGreaterThanOrEqual(3));
+  f.setBusy(false);
+  await vi.waitFor(() => expect(joining.output.filter(s => s.includes("EARLIER-0"))).toHaveLength(1));
+  const retainedHistory = readFileSync(f.broker.pipeOutputPath!, "utf8");
+  const finalSnapshot = joining.output.at(-1)!;
+  expect(finalSnapshot).toMatch(/^\x1b\[2J/);
+  appendFileSync(f.broker.pipeOutputPath!, "AFTER_FENCE\r\n");
+  await vi.waitFor(() => expect(joining.output).toContain("AFTER_FENCE\r\n"));
+  const actual = new Terminal({ cols: 24, rows: 4 }), fresh = new Terminal({ cols: 24, rows: 4 });
+  const write = (term: typeof actual, data: string) => new Promise<void>(resolve => term.write(data, resolve));
+  const buffer = (term: typeof actual) => ({
+    rows: Array.from({ length: term.buffer.active.length }, (_, row) => {
+      const line = term.buffer.active.getLine(row)!, cell = line.getCell(0)!;
+      return { text: line.translateToString(true), fg: [cell.getFgColorMode(), cell.getFgColor()], bg: [cell.getBgColorMode(), cell.getBgColor()] };
+    }),
+    baseY: term.buffer.active.baseY, cursorX: term.buffer.active.cursorX, cursorY: term.buffer.active.cursorY,
+  });
+  try {
+    for (const data of joining.output) await write(actual, data);
+    await write(fresh, retainedHistory + finalSnapshot + "AFTER_FENCE\r\n");
+    expect(buffer(actual)).toEqual(buffer(fresh));
+    expect(joining.output.filter(s => s.includes("EARLIER-0"))).toHaveLength(1);
+    expect(joining.output.filter(s => s === "AFTER_FENCE\r\n")).toHaveLength(1);
+    expect(live.output.filter(s => s === "AFTER_FENCE\r\n")).toHaveLength(1);
+    expect(live.output.join("")).not.toContain("\x1b[3J");
+    expect([live.closed, joining.closed]).toEqual([[], []]);
+  } finally { actual.dispose(); fresh.dispose(); }
 });
 
 

@@ -519,7 +519,9 @@ export class TerminalSessionBroker {
       else {
         if (this.snapshotOnly.get(sub)?.replayHistory) {
           const history = this.history.join("");
-          if (isSafeHistoryReplay(history)) { try { sub.send(history); } catch { this.detach(sub); continue; } }
+          // This newcomer has only provisional screen paints, not shared history.
+          // Replay from a clean buffer so those paints cannot become scrollback.
+          if (isSafeHistoryReplay(history)) { try { sub.send(`\x1b[0m\x1b[2J\x1b[3J\x1b[H${history}`); } catch { this.detach(sub); continue; } }
         }
         try { sub.send(screenSnapshotEscape(screen.snapshot, screen.cursor)); } catch { this.detach(sub); }
         this.scrollOffsets.delete(sub);
