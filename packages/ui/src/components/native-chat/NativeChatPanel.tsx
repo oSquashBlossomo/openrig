@@ -3,7 +3,7 @@
 // the daemon's guarded transport to the same tmux harness. The Terminal stays
 // one click away and is the only path for native approvals, questions,
 // pickers and slash commands — chat never draws approval cards from screen
-// text. Contract: work/native-chat-20261008/API-CONTRACT.md; client rules in
+// text. See docs/reference/native-chat.md; client rules in
 // lib/native-chat.ts.
 //
 // Identity: the panel is keyed by host/rig/node, reads only that node, and

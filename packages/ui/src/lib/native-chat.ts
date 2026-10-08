@@ -185,6 +185,10 @@ export function composeRefusal(text: string): string | null {
   // Same set the daemon refuses: C0 (tab included) except LF, DEL and C1.
   // CR is checked after the CRLF→LF normalization a send applies.
   if (/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/.test(text.replace(/\r\n?/g, "\n"))) return "Tabs and other control characters are terminal keys; use the Terminal for them.";
+  // v1 sends one paragraph: the terminal view cannot tell a typed line break
+  // from wrapping, so any CR/LF (after the same normalization) stays in the
+  // draft, unchanged, for the Terminal.
+  if (/[\r\n]/.test(text)) return "Multi-line input goes through the Terminal. Your draft stays here; send one paragraph in Chat or open Terminal for multiple lines.";
   if (new TextEncoder().encode(text).length > NATIVE_CHAT_MAX_BYTES) return "Messages are limited to 32 KiB; paste longer input in the Terminal.";
   return null;
 }

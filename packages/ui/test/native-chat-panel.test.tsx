@@ -93,27 +93,27 @@ describe("native chat: send and reply", () => {
 
     let release!: (r: Reply) => void;
     postReplies.push(new Promise((res) => { release = res; }));
-    await type("Please summarize\r\nthe plan");
+    await type("Please summarize the plan");
     fireEvent.click(sendButton());
 
     await waitFor(() => expect(posts).toHaveLength(1));
     const sent = posts[0]!;
     expect(sent.url).toBe("/api/native-chat/n1/messages");
-    expect(sent.body).toEqual({ requestId: expect.stringMatching(/^[0-9a-f-]{36}$/), ownerKey: "owner-n1", text: "Please summarize\nthe plan" });
+    expect(sent.body).toEqual({ requestId: expect.stringMatching(/^[0-9a-f-]{36}$/), ownerKey: "owner-n1", text: "Please summarize the plan" });
     // While the request is out, the draft is locked and Send is off.
     expect(input().readOnly).toBe(true);
     expect(sendButton().disabled).toBe(true);
     expect(screen.getByTestId("native-chat-pending").getAttribute("data-phase")).toBe("posting");
 
     const id = sent.body.requestId as string;
-    await act(async () => release({ status: 200, body: { request: receipt(id, "Please summarize\nthe plan", "submitted") } }));
+    await act(async () => release({ status: 200, body: { request: receipt(id, "Please summarize the plan", "submitted") } }));
     await waitFor(() => expect(input().value).toBe(""));
     expect(screen.getByTestId("native-chat-pending").getAttribute("data-phase")).toBe("submitted");
 
     // The native record and the reply arrive; the receipt is observed.
     pages.set("n1", page("n1", {
-      messages: [msg("m1", "assistant", "Hello from the agent"), msg("m2", "user", "Please summarize\nthe plan"), msg("m3", "assistant", "Here is the plan.")],
-      requests: [receipt(id, "Please summarize\nthe plan", "observed")],
+      messages: [msg("m1", "assistant", "Hello from the agent"), msg("m2", "user", "Please summarize the plan"), msg("m3", "assistant", "Here is the plan.")],
+      requests: [receipt(id, "Please summarize the plan", "observed")],
     }));
     expect(await screen.findByText("Here is the plan.", undefined, { timeout: 4000 })).toBeTruthy();
     await waitFor(() => expect(screen.queryByTestId("native-chat-pending")).toBeNull());
@@ -504,14 +504,37 @@ describe("native chat: review follow-ups", () => {
     expect(input().value).toBe("hello");
   });
 
-  it("refuses the same control characters as the daemon (tab, C0, DEL, C1), allowing LF and CRLF", () => {
+  it("refuses the same control characters as the daemon (tab, C0, DEL, C1) and any line break", () => {
     expect(composeRefusal("a\tb")).toMatch(/control characters/);
     expect(composeRefusal("a\u0085b")).toMatch(/control characters/);
     expect(composeRefusal("a\u007fb")).toMatch(/control characters/);
     expect(composeRefusal("a\u001bb")).toMatch(/control characters/);
-    expect(composeRefusal("line one\nline two")).toBeNull();
-    // A send turns CRLF and lone CR into LF before it leaves the browser.
-    expect(composeRefusal("line one\r\nline two")).toBeNull();
-    expect(composeRefusal("line one\rline two")).toBeNull();
+    expect(composeRefusal("one long paragraph that the native composer may wrap on screen")).toBeNull();
+    for (const text of ["line one\nline two", "line one\r\nline two", "line one\rline two", "trailing\n"]) {
+      expect(composeRefusal(text)).toMatch(/Multi-line input goes through the Terminal/);
+    }
+  });
+
+  it("keeps a multi-line draft exactly, sends nothing and offers the Terminal; one paragraph can send", async () => {
+    pages.set("n1", page("n1"));
+    renderChat(target("n1"));
+    // Textareas report line breaks as LF; CRLF/CR are covered above.
+    const draft = "first line\n  indented second line\n";
+    await type(draft);
+    expect(sendButton().disabled).toBe(true);
+    expect(screen.getByTestId("native-chat-blocked").textContent).toContain("Multi-line input goes through the Terminal");
+    fireEvent.keyDown(input(), { key: "Enter" });
+    fireEvent.submit(input().closest("form")!);
+    expect(posts).toHaveLength(0);
+    expect(input().value).toBe(draft);
+    fireEvent.click(screen.getByTestId("native-chat-open-terminal"));
+    expect(screen.getByTestId("fake-terminal")).toBeTruthy();
+    expect(posts).toHaveLength(0);
+    fireEvent.click(screen.getByTestId("seat-view-chat"));
+    await waitFor(() => expect(input().value).toBe(draft));
+
+    await type("one ordinary paragraph that may wrap visually in the native composer");
+    expect(sendButton().disabled).toBe(false);
+    expect(screen.queryByTestId("native-chat-blocked")).toBeNull();
   });
 });
