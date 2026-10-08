@@ -100,8 +100,10 @@ export function GraphSeatDock({ seat, reveal, from, onClose }: {
       // Reserve the stacked frame plus dock chrome while detail is pending,
       // so the explicit reveal can reach its final position before it mounts.
       // The dock's stacked frame is taller than the shared default (the 3D
-      // workspace and phone modal keep theirs).
-      className="shrink-0 scroll-mb-4 min-h-[calc(max(24rem,72svh)+6rem)] border-t border-outline-variant bg-background [&_.spatial-terminal-frame--stacked]:h-[max(24rem,72svh)]"
+      // workspace and phone modal keep theirs), and its visible terminal
+      // surface keeps that frame plus its title bar in every state
+      // (verifying, refused, released), not only once admitted.
+      className="shrink-0 scroll-mb-4 min-h-[calc(max(24rem,72svh)+6rem)] border-t border-outline-variant bg-background [&_.spatial-terminal-frame--stacked]:h-[max(24rem,72svh)] [&_.spatial-terminal-surface]:min-h-[calc(max(24rem,72svh)+2rem)]"
       // The dock's terminal ground normally comes from the 3D atelier theme.
       style={{ marginLeft: "var(--header-anchor-offset, 0px)", "--spatial-terminal-ground": "24 10% 4.5%" } as CSSProperties}
     >
