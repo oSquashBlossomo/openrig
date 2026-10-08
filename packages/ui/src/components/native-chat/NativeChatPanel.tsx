@@ -15,7 +15,7 @@
 
 import { useEffect, useLayoutEffect, useReducer, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, CornerDownLeft, Square, SquareTerminal } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronRight, Square, SquareTerminal } from "lucide-react";
 import { DisplayTime } from "../time/DisplayTime.js";
 import { cn } from "../../lib/utils.js";
 import {
@@ -483,66 +483,73 @@ function ChatBody({ target, nodeId, layout, onOpenTerminal }: { target: SeatChat
           aria-label={`Conversation with ${target.displayName}`}
           aria-live="polite"
           aria-relevant="additions"
-          className={cn("native-chat-history overflow-y-auto overscroll-contain px-3 py-2", HISTORY_HEIGHT[layout])}
+          className={cn("native-chat-history overflow-y-auto overscroll-contain px-3 py-4 sm:px-4", HISTORY_HEIGHT[layout])}
         >
           {d.history.state !== "available" ? (
-            <p data-testid="native-chat-history-note" className="mb-2 font-mono text-[10px] text-on-surface-variant">
+            <p data-testid="native-chat-history-note" className={NOTE}>
               {d.history.state === "partial" ? "Partial history" : "History unavailable"}{d.history.detail ? `: ${d.history.detail}` : "."}
             </p>
           ) : null}
           {olderCursor ? (
-            <div className="mb-2 flex justify-center">
+            <div className="mb-3 flex justify-center">
               <button type="button" data-testid="native-chat-older" disabled={older.loading} onClick={() => void loadOlder()}
-                className="min-h-8 border border-outline-variant px-3 font-mono text-[10px] uppercase tracking-[0.08em] text-on-surface hover:bg-surface-low disabled:opacity-50">
+                className="min-h-8 rounded-full border border-outline-variant px-3.5 text-[12px] text-on-surface-variant hover:bg-surface-low hover:text-on-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-on-surface disabled:opacity-50">
                 {older.loading ? "Loading…" : "Load earlier messages"}
               </button>
             </div>
           ) : null}
           {jumped ? (
-            <p data-testid="native-chat-jumped" role="status" className="mb-2 font-mono text-[10px] text-on-surface-variant">
+            <p data-testid="native-chat-jumped" role="status" className={NOTE}>
               More messages arrived than one refresh returns, so this view moved to the latest messages.{" "}
               {olderCursor ? "Load earlier messages to see what came before them." : "Earlier messages are in the native record and Terminal."}
             </p>
           ) : null}
           {trimmed || atLimit ? (
-            <p data-testid="native-chat-limit" className="mb-2 font-mono text-[10px] text-on-surface-variant">
+            <p data-testid="native-chat-limit" className={NOTE}>
               This view keeps the latest {NATIVE_CHAT_VIEW_LIMIT} messages{trimmed ? "; earlier ones were removed from it" : ""}. The full conversation stays in the native record and Terminal.
             </p>
           ) : null}
-          {older.error ? <p role="alert" className="mb-2 font-mono text-[10px] text-tertiary">{older.error}</p> : null}
+          {older.error ? <p role="alert" className={cn(NOTE, "text-tertiary")}>{older.error}</p> : null}
           {messages.length === 0 && pendingRows.length === 0 ? (
-            <p className="py-6 text-center font-mono text-[11px] text-on-surface-variant">No messages in this conversation yet.</p>
+            <p className="py-8 text-center text-[13px] text-on-surface-variant">No messages in this conversation yet.</p>
           ) : null}
-          <ol className="space-y-2">
-            {messages.map((m) => <MessageRow key={m.id} message={m} agentName={target.displayName} />)}
+          <ol>
+            {messages.map((m, i) => (
+              <MessageRow key={m.id} message={m} agentName={target.displayName} first={i === 0 || speaker(messages[i - 1]!) !== speaker(m)} />
+            ))}
             {pendingRows.map((p) => p.phase === "submitted" ? (
               // A submitted receipt is not another message: the native record
               // may already be in the timeline above, and only the daemon may
-              // mark it observed. Collapsed; its text and detail on demand.
-              <li key={p.requestId} data-testid="native-chat-pending" data-phase="submitted" className="ml-auto max-w-[92%]">
-                <details data-testid="native-chat-receipt" className="border border-dashed border-outline-variant">
-                  <summary className="cursor-pointer px-2 py-1 font-mono text-[9px] uppercase tracking-[0.12em] text-on-surface-variant">Delivery receipt · submitted</summary>
-                  <div className="space-y-1.5 border-t border-dashed border-outline-variant px-3 py-2">
+              // mark it observed. A quiet collapsed note; text and detail on demand.
+              <li key={p.requestId} data-testid="native-chat-pending" data-phase="submitted" className="mt-1.5 flex justify-end">
+                <details data-testid="native-chat-receipt" className="group max-w-[85%] text-right">
+                  <summary className="inline-flex min-h-6 cursor-pointer list-none items-center gap-1 rounded-full px-2 text-[11px] text-on-surface-variant hover:text-on-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-on-surface [&::-webkit-details-marker]:hidden">
+                    <ChevronRight aria-hidden="true" className="h-3 w-3 transition-transform group-open:rotate-90" />Delivery receipt · submitted
+                  </summary>
+                  <div className="mt-1 space-y-1.5 rounded-[14px] border border-dashed border-outline-variant px-3 py-2 text-left">
                     <MessageText text={p.text} />
-                    <p data-testid="native-chat-receipt-detail" className="font-mono text-[10px] text-on-surface-variant">{p.detail || "The daemon gave no further detail."}</p>
+                    <p data-testid="native-chat-receipt-detail" className="text-[11px] text-on-surface-variant">{p.detail || "The daemon gave no further detail."}</p>
                   </div>
                 </details>
               </li>
             ) : (
-              <li key={p.requestId} data-testid="native-chat-pending" data-phase={p.phase} className="ml-auto max-w-[92%] border border-dashed border-outline-variant px-3 py-2">
-                <div className="mb-1 font-mono text-[9px] uppercase tracking-[0.12em] text-on-surface-variant">You · {phaseLabel(p.phase)}</div>
-                <MessageText text={p.text} />
+              <li key={p.requestId} data-testid="native-chat-pending" data-phase={p.phase} className="mt-3 flex flex-col items-end first:mt-0">
+                <div className="max-w-[85%] rounded-[18px] rounded-br-[6px] border border-dashed border-outline-variant bg-primary/10 px-3.5 py-2.5 text-on-surface">
+                  <span className="sr-only">You: </span>
+                  <MessageText text={p.text} />
+                </div>
+                <div className={cn("mt-1 px-1 text-[11px]", p.phase === "unknown" || p.phase === "indeterminate" || p.phase === "failed" ? "text-tertiary" : "text-on-surface-variant")}>{phaseLabel(p.phase)}</div>
                 {p.phase === "unknown" || p.phase === "indeterminate" ? (
-                  <div className="mt-2 space-y-2 font-mono text-[10px] text-on-surface-variant">
+                  <div className="mt-1.5 max-w-[85%] space-y-2 text-right text-[12px] leading-snug text-on-surface-variant">
                     <p>{p.phase === "unknown"
                       ? `The daemon's answer was lost (${p.detail}); it may have received this message. Retrying reuses the same request id, so it is never sent twice.`
                       : `Some effect may have happened${p.detail ? ` (${p.detail})` : ""}. Check the history or Terminal before sending it again.`}</p>
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-wrap justify-end gap-2">
                       {p.phase === "unknown" && slot.pending?.requestId === p.requestId ? (
-                        <button type="button" data-testid="native-chat-retry-same" onClick={() => void retrySame()} className="min-h-8 border border-outline-variant px-2 uppercase tracking-[0.08em] text-on-surface hover:bg-surface-low">Check / retry</button>
+                        <button type="button" data-testid="native-chat-retry-same" onClick={() => void retrySame()} className="min-h-8 border border-outline-variant px-2 font-mono text-[10px] uppercase tracking-[0.08em] text-on-surface hover:bg-surface-low">Check / retry</button>
                       ) : null}
                       {p.phase === "indeterminate" ? (
-                        <button type="button" data-testid="native-chat-dismiss" onClick={() => dismiss(p.requestId)} className="min-h-8 border border-outline-variant px-2 uppercase tracking-[0.08em] text-on-surface hover:bg-surface-low">Dismiss, keep draft</button>
+                        <button type="button" data-testid="native-chat-dismiss" onClick={() => dismiss(p.requestId)} className="min-h-8 border border-outline-variant px-2 font-mono text-[10px] uppercase tracking-[0.08em] text-on-surface hover:bg-surface-low">Dismiss, keep draft</button>
                       ) : null}
                       <TerminalButton onClick={onOpenTerminal} />
                     </div>
@@ -554,18 +561,18 @@ function ChatBody({ target, nodeId, layout, onOpenTerminal }: { target: SeatChat
         </div>
         {!atEnd ? (
           <button type="button" data-testid="native-chat-latest" onClick={toLatest}
-            className="absolute bottom-2 right-3 inline-flex min-h-8 items-center gap-1 border border-outline-variant bg-background px-2 font-mono text-[10px] uppercase tracking-[0.08em] text-on-surface shadow">
+            className="absolute bottom-3 left-1/2 inline-flex min-h-8 -translate-x-1/2 items-center gap-1 rounded-full border border-outline-variant bg-background px-3 text-[12px] text-on-surface shadow-md hover:bg-surface-low focus-visible:outline focus-visible:outline-2 focus-visible:outline-on-surface">
             <ArrowDown aria-hidden="true" className="h-3 w-3" /> Latest
           </button>
         ) : null}
       </div>
 
       <form
-        className="border-t border-outline-variant p-2"
+        className="border-t border-outline-variant p-2.5 sm:p-3"
         onSubmit={(e) => { e.preventDefault(); void send(); }}
       >
         {carried ? (
-          <div data-testid="native-chat-carried" role="status" className="mb-2 flex flex-wrap items-center gap-2 font-mono text-[10px] text-on-surface-variant">
+          <div data-testid="native-chat-carried" role="status" className="mb-2 flex flex-wrap items-center gap-2 px-1 text-[12px] leading-snug text-on-surface-variant">
             <span className="min-w-0 flex-1">The native conversation changed. Your unsent draft stayed with the previous conversation and was not sent.</span>
             {slot.draft ? <span>Empty this composer to bring it here.</span> : null}
             <button type="button" disabled={!!slot.draft || readOnlyDraft} onClick={() => {
@@ -574,35 +581,35 @@ function ChatBody({ target, nodeId, layout, onOpenTerminal }: { target: SeatChat
               updateChatSlot(slotKey, (s) => ({ ...s, draft: old }));
               updateChatSlot(carried, (s) => ({ ...s, draft: "" }));
               setCarried(null);
-            }} className="min-h-8 border border-outline-variant px-2 uppercase tracking-[0.08em] text-on-surface hover:bg-surface-low disabled:opacity-50">Use it here</button>
+            }} className="min-h-8 border border-outline-variant px-2 font-mono text-[10px] uppercase tracking-[0.08em] text-on-surface hover:bg-surface-low disabled:opacity-50">Use it here</button>
           </div>
         ) : null}
-        {slot.notice ? <p data-testid="native-chat-notice" role="alert" className="mb-2 font-mono text-[10px] text-tertiary">{slot.notice} Your draft is kept.</p> : null}
+        {slot.notice ? <p data-testid="native-chat-notice" role="alert" className="mb-2 px-1 text-[12px] leading-snug text-tertiary">{slot.notice} Your draft is kept.</p> : null}
         <label htmlFor={textareaId} className="sr-only">Message to {target.displayName}</label>
-        <div className="flex items-end gap-2">
+        <div className="flex items-end gap-2 rounded-[22px] border border-outline-variant bg-surface-lowest py-1 pl-3.5 pr-1 focus-within:border-on-surface-variant focus-within:ring-2 focus-within:ring-on-surface/15">
           <textarea
             id={textareaId}
             data-testid="native-chat-input"
             value={slot.draft}
             readOnly={readOnlyDraft}
             disabled={!slotKey}
-            rows={2}
+            rows={1}
             enterKeyHint="send"
             aria-describedby={blocked ? reasonId : undefined}
             placeholder={`Message ${target.displayName}`}
             onChange={(e) => { if (slotKey) { const v = e.target.value; updateChatSlot(slotKey, (s) => ({ ...s, draft: v, notice: null })); } }}
             onKeyDown={onKeyDown}
             // 16px on touch keeps iOS Safari from zooming the page on focus.
-            className="max-h-[40svh] min-h-[2.75rem] min-w-0 flex-1 resize-none border border-outline-variant bg-background px-2 py-1.5 font-mono text-base leading-snug text-on-surface [field-sizing:content] focus-visible:outline focus-visible:outline-2 focus-visible:outline-on-surface read-only:opacity-70 [@media(pointer:fine)]:text-[13px]"
+            className="max-h-[40svh] min-h-[2.5rem] min-w-0 flex-1 resize-none bg-transparent py-2 text-base leading-snug text-on-surface outline-none [field-sizing:content] placeholder:text-on-surface-variant read-only:opacity-70 disabled:opacity-60 [@media(pointer:fine)]:text-[14px]"
           />
           <button type="submit" data-testid="native-chat-send" disabled={!canSend} aria-label="Send message"
-            className="inline-flex h-11 shrink-0 items-center gap-1.5 border border-on-surface bg-on-surface px-3 font-mono text-[10px] uppercase tracking-[0.08em] text-background disabled:border-outline-variant disabled:bg-transparent disabled:text-on-surface-variant focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-on-surface">
-            <CornerDownLeft aria-hidden="true" className="h-3.5 w-3.5" /> Send
+            className="mb-0.5 inline-flex h-9 shrink-0 items-center gap-1 rounded-full bg-on-surface pl-3 pr-3.5 text-[13px] font-medium text-background hover:opacity-90 disabled:bg-surface-high disabled:text-on-surface-variant focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-on-surface">
+            <ArrowUp aria-hidden="true" className="h-4 w-4" /> Send
           </button>
         </div>
         {blocked ? (
           <div className="mt-1.5 flex flex-wrap items-center gap-2">
-            <p id={reasonId} data-testid="native-chat-blocked" className="min-w-0 flex-1 font-mono text-[10px] text-on-surface-variant">{blocked}</p>
+            <p id={reasonId} data-testid="native-chat-blocked" className="min-w-0 flex-1 px-1 text-[12px] leading-snug text-on-surface-variant">{blocked}</p>
             {draftRefusal === blocked || needsTerminal ? <TerminalButton onClick={onOpenTerminal} /> : null}
           </div>
         ) : null}
@@ -613,42 +620,84 @@ function ChatBody({ target, nodeId, layout, onOpenTerminal }: { target: SeatChat
 
 function phaseLabel(phase: PendingPhase): string {
   switch (phase) {
-    case "posting": return "sending…";
-    case "sending": return "sending to the terminal…";
-    case "submitted": return "submitted";
-    case "unknown": return "outcome unknown";
-    case "indeterminate": return "unconfirmed";
-    case "failed": return "not sent";
-    case "observed": return "confirmed";
+    case "posting": return "Sending…";
+    case "sending": return "Sending to the terminal…";
+    case "submitted": return "Submitted";
+    case "unknown": return "Outcome unknown";
+    case "indeterminate": return "Unconfirmed";
+    case "failed": return "Not sent";
+    case "observed": return "Confirmed";
   }
 }
 
-function MessageRow({ message, agentName }: { message: NativeChatMessage; agentName: string }) {
-  const meta = (
-    <span className="normal-case tracking-normal">
-      {message.timestamp ? <> · <DisplayTime iso={message.timestamp} /></> : null}
-      {message.truncated ? " · truncated" : null}
+const NOTE = "mb-3 text-center text-[11px] leading-snug text-on-surface-variant";
+
+/** Tool activity belongs to the agent's side of the thread. */
+const speaker = (m: NativeChatMessage) => (m.role === "user" ? "user" : "agent");
+
+function Avatar({ name }: { name: string }) {
+  return (
+    <span aria-hidden="true" className="flex h-7 w-7 shrink-0 select-none items-center justify-center rounded-full border border-outline-variant bg-primary/15 font-headline text-[12px] font-semibold uppercase text-on-surface">
+      {name.trim().charAt(0) || "?"}
     </span>
   );
+}
+
+/** `first`: opens a run of one speaker, so it carries the spacing and, for
+ *  the agent, the avatar and name. Later rows in the run sit under it. */
+function MessageRow({ message, agentName, first }: { message: NativeChatMessage; agentName: string; first: boolean }) {
+  const meta = message.timestamp || message.truncated ? (
+    <>
+      {message.timestamp ? <DisplayTime iso={message.timestamp} /> : null}
+      {message.timestamp && message.truncated ? " · " : null}
+      {message.truncated ? "truncated" : null}
+    </>
+  ) : null;
+  const gap = first ? "mt-4 first:mt-0" : "mt-1.5";
   if (message.role === "tool") {
     return (
-      <li data-testid="native-chat-message" data-role="tool">
-        <details className="border border-outline-variant">
-          <summary className="cursor-pointer px-2 py-1 font-mono text-[10px] text-on-surface-variant">
-            {message.tool?.kind === "result" ? "Tool result" : "Tool call"}{message.tool?.name ? ` · ${message.tool.name}` : ""}{meta}
-          </summary>
-          {/* Tool output is untrusted literal text. */}
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words border-t border-outline-variant px-2 py-1 font-mono text-[11px]">{message.text}</pre>
-        </details>
+      <li data-testid="native-chat-message" data-role="tool" className={cn("flex gap-2.5", gap)}>
+        {first ? <Avatar name={agentName} /> : <span aria-hidden="true" className="w-7 shrink-0" />}
+        <div className="min-w-0 flex-1">
+          {first ? <div className="mb-1 truncate px-1 text-[12px] font-medium text-on-surface">{agentName}</div> : null}
+          <details className="group">
+            <summary className="inline-flex min-h-6 max-w-full cursor-pointer list-none items-center gap-1 rounded-full px-1.5 text-[11px] text-on-surface-variant hover:bg-surface-low hover:text-on-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-on-surface [&::-webkit-details-marker]:hidden">
+              <span className="sr-only">{agentName}: </span>
+              <ChevronRight aria-hidden="true" className="h-3 w-3 shrink-0 transition-transform group-open:rotate-90" />
+              <span className="truncate">
+                {message.tool?.kind === "result" ? "Tool result" : "Tool call"}
+                {message.tool?.name ? <> · <span className="font-mono">{message.tool.name}</span></> : null}
+                {meta ? <> · {meta}</> : null}
+              </span>
+            </summary>
+            {/* Tool output is untrusted literal text. */}
+            <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-[10px] border border-outline-variant bg-surface-lowest px-2.5 py-2 font-mono text-[11px] text-on-surface">{message.text}</pre>
+          </details>
+        </div>
       </li>
     );
   }
-  const user = message.role === "user";
+  if (message.role === "user") {
+    return (
+      <li data-testid="native-chat-message" data-role="user" className={cn("flex flex-col items-end", gap)}>
+        <div className="max-w-[85%] rounded-[18px] rounded-br-[6px] bg-primary/15 px-3.5 py-2.5 text-on-surface">
+          <span className="sr-only">You: </span>
+          <MessageText text={message.text} />
+        </div>
+        {meta ? <div className="mt-1 px-1 text-[11px] text-on-surface-variant">{meta}</div> : null}
+      </li>
+    );
+  }
   return (
-    <li data-testid="native-chat-message" data-role={message.role}
-      className={cn("max-w-[92%] px-3 py-2", user ? "ml-auto border border-outline-variant bg-surface-low" : "border-l-2 border-primary")}>
-      <div className="mb-1 font-mono text-[9px] uppercase tracking-[0.12em] text-on-surface-variant">{user ? "User" : agentName}{meta}</div>
-      <MessageText text={message.text} />
+    <li data-testid="native-chat-message" data-role={message.role} className={cn("flex gap-2.5", gap)}>
+      {first ? <Avatar name={agentName} /> : <span aria-hidden="true" className="w-7 shrink-0" />}
+      <div className="min-w-0 max-w-[calc(100%-2.25rem)]">
+        {first ? <div className="mb-1 truncate px-1 text-[12px] font-medium text-on-surface">{agentName}</div> : <span className="sr-only">{agentName}: </span>}
+        <div className="w-fit max-w-full rounded-[18px] rounded-tl-[6px] border border-outline-variant bg-surface-lowest px-3.5 py-2.5 text-on-surface">
+          <MessageText text={message.text} />
+        </div>
+        {meta ? <div className="mt-1 px-1 text-[11px] text-on-surface-variant">{meta}</div> : null}
+      </div>
     </li>
   );
 }
@@ -672,9 +721,9 @@ export function splitFences(text: string): Array<{ code: boolean; text: string }
 
 function MessageText({ text }: { text: string }) {
   return (
-    <div className="space-y-1.5 text-[13px] leading-relaxed">
+    <div className="space-y-2 text-[14px] leading-relaxed">
       {splitFences(text).map((part, i) => part.code ? (
-        <pre key={i} className="overflow-x-auto border border-outline-variant bg-surface-lowest px-2 py-1.5 font-mono text-[11.5px]"><code>{part.text}</code></pre>
+        <pre key={i} className="overflow-x-auto rounded-[10px] border border-outline-variant bg-surface-low px-2.5 py-2 font-mono text-[12px] leading-snug"><code>{part.text}</code></pre>
       ) : (
         <p key={i} className="whitespace-pre-wrap break-words">{part.text}</p>
       ))}

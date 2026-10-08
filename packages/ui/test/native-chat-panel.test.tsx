@@ -130,6 +130,43 @@ describe("native chat: send and reply", () => {
     expect(container.querySelector("pre code")?.textContent).toBe("const a = 1;");
     expect(splitFences("a\n```\nb")).toEqual([{ code: false, text: "a" }, { code: true, text: "b" }]);
   });
+
+  it("groups consecutive turns by speaker without reordering, dropping tool text, or losing who said each message", async () => {
+    const tool: NativeChatMessage = { ...msg("t1", "tool", "$ ls\nREADME.md"), tool: { kind: "call", name: "Bash", callId: "c1" } };
+    pages.set("n1", page("n1", { messages: [
+      msg("u1", "user", "first ask"), msg("u2", "user", "second ask"),
+      msg("a1", "assistant", "on it"), tool, msg("a2", "assistant", "done"),
+    ] }));
+    renderChat(target("n1"));
+    await screen.findByText("done");
+    const rows = screen.getAllByTestId("native-chat-message");
+    expect(rows.map((el) => el.getAttribute("data-role"))).toEqual(["user", "user", "assistant", "tool", "assistant"]);
+    expect(rows[0]!.textContent).toBe("You: first ask");
+    expect(rows[1]!.textContent).toBe("You: second ask");
+    expect(rows[2]!.textContent).toContain("agent-n1");
+    expect(rows[2]!.textContent).toContain("on it");
+    // The tool row stays a collapsed disclosure that still holds the literal output.
+    expect(rows[3]!.querySelector("summary")!.textContent).toContain("Tool call · Bash");
+    expect(rows[3]!.querySelector("pre")!.textContent).toBe("$ ls\nREADME.md");
+    expect(rows[4]!.textContent).toBe("agent-n1: done");
+  });
+
+  it("identifies the agent when the visible history starts with tool activity", async () => {
+    const tool: NativeChatMessage = { ...msg("t1", "tool", "$ ls\nREADME.md"), tool: { kind: "call", name: "Bash", callId: "c1" } };
+    pages.set("n1", page("n1", { messages: [tool, { ...tool, id: "t2" }, msg("a1", "assistant", "done")] }));
+    renderChat(target("n1"));
+    await screen.findByText("done");
+    const rows = screen.getAllByTestId("native-chat-message");
+    expect(rows.map((el) => el.getAttribute("data-role"))).toEqual(["tool", "tool", "assistant"]);
+    const name = rows[0]!.querySelector("details")!.previousElementSibling;
+    expect(name?.textContent).toBe("agent-n1");
+    expect(name?.classList.contains("sr-only")).toBe(false);
+    for (const row of rows.slice(0, 2)) {
+      expect(row.querySelector("summary")!.textContent).toContain("agent-n1: ");
+      expect(row.querySelector("pre")!.textContent).toBe("$ ls\nREADME.md");
+    }
+    expect(rows[2]!.textContent).toBe("agent-n1: done");
+  });
 });
 
 describe("native chat: uncertain and failed sends", () => {
