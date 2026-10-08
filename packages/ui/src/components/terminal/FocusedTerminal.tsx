@@ -330,6 +330,14 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
   fitRef.current = fit;
   const termRef = useRef<unknown>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  // Input ownership. `committedIdentityRef` is the seat the committed UI shows
+  // (set in a layout effect, never during render); `liveIdentityRef` is the
+  // seat whose xterm and socket the mount effect created (cleared by its
+  // cleanup). Between a new seat's commit and the old seat's passive teardown
+  // they differ, and no input, paste or Copy may use the old seat.
+  const committedIdentityRef = useRef<string | null>(null);
+  const liveIdentityRef = useRef<string | null>(null);
+  const ownsLiveSeat = () => liveIdentityRef.current !== null && liveIdentityRef.current === committedIdentityRef.current;
   // OPR.0.4.4.20 delta-C: once-per-mount guard for the initial-text frame —
   // a WS reconnect must never re-send the preamble into the pane.
   const initialTextSentRef = useRef(false);
@@ -412,7 +420,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
   // literal text frame; typed data maps CR to Enter and controls to keys.
   const sendInput = useCallback((data: string, paste = false): boolean => {
     const wsc = wsRef.current;
-    if (!wsc || wsc.readyState !== WebSocket.OPEN || !geometryRef.current) return false;
+    if (!wsc || wsc.readyState !== WebSocket.OPEN || !geometryRef.current || !ownsLiveSeat()) return false;
     const frames = (paste ? [{ type: "text", text: data } as WsMessage] : mapXtermInput(data)).map((msg) => JSON.stringify(msg));
     // OPR.0.4.0.39: typing returns to the live bottom before sending input;
     // that frame counts toward the same budget.
@@ -710,6 +718,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
   useEffect(() => {
     if (!containerRef.current) return;
     mountedRef.current = true;
+    liveIdentityRef.current = identity;
     generationRef.current++;
     const currentGen = generationRef.current;
     naturalSizeRef.current = null;
@@ -812,6 +821,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
       cleanedUp = true;
       host.removeEventListener("paste", onPaste, true);
       mountedRef.current = false;
+      liveIdentityRef.current = null;
       generationRef.current++;
       if (reconnectTimerRef.current) { clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = null; }
       cancelPromptScrolls();
@@ -819,7 +829,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
       if (activeWs) { activeWs.close(); wsRef.current = null; }
       disposeTerminal();
     };
-  }, [admitAndConnect, disposeTerminal, trackPromptScroll, cancelPromptScrolls, retryEpoch, setError, sendInput]);
+  }, [admitAndConnect, disposeTerminal, trackPromptScroll, cancelPromptScrolls, retryEpoch, setError, sendInput, identity]);
 
   // OPR.0.4.0.39 (selection fix): refit the xterm fontSize when its container resizes
   // (responsive grid columns, window resize, node-detail panel). Observes the fit
@@ -939,6 +949,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
   // read settling in between cannot reach the previous seat.
   const clipboardOpRef = useRef(0);
   useLayoutEffect(() => {
+    committedIdentityRef.current = identity;
     clipboardOpRef.current++;
     return () => { clipboardOpRef.current++; };
   }, [identity]);
@@ -946,7 +957,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
   // Explicit taps only: nothing reads or writes the clipboard on its own.
   const copyToClipboard = useCallback(async () => {
     const term = termRef.current as XtermText | null;
-    if (!term) return;
+    if (!term || !ownsLiveSeat()) return;
     const op = ++clipboardOpRef.current;
     const owns = () => mountedRef.current && clipboardOpRef.current === op;
     const { text, what } = terminalCopyText(term);

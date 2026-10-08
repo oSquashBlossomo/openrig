@@ -687,3 +687,69 @@ it("clears a paste box when the session changes", async () => {
   ready(s.sockets[1]);
   expect(view.queryByRole("textbox", { name: /text to paste/i })).toBeNull();
 });
+
+
+// Independent control: operation begins AFTER B commits, unlike the pending-read regression.
+it("refuses a new paste begun after B commits before A passive teardown", async () => {
+  const readText = vi.fn().mockResolvedValue("belongs to b");
+  setClipboard({ readText });
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  try {
+    act(() => { root.render(<FocusedTerminal sessionName="a" />); });
+    ready(s.sockets[0]);
+    const actEnv = (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
+    (globalThis as any).IS_REACT_ACT_ENVIRONMENT = false;
+    try {
+      root.render(<FocusedTerminal sessionName="b" />);
+      for (let i = 0; i < 10 && !container.querySelector('[data-testid="focused-terminal-b"]'); i++) await macrotask();
+      expect(container.querySelector('[data-testid="focused-terminal-b"]')).not.toBeNull();
+      expect(s.sockets[0].readyState).toBe(1);
+      expect(s.sockets).toHaveLength(1);
+      // Dispatch directly: testing-library fireEvent wraps act and would drain this window.
+      (within(container).getByRole("button", { name: /^paste/i }) as HTMLButtonElement).click();
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+      expect(readText).toHaveBeenCalledTimes(1);
+      expect(s.sockets[0].sent).toEqual([]);
+    } finally {
+      (globalThis as any).IS_REACT_ACT_ENVIRONMENT = actEnv;
+    }
+  } finally {
+    try { act(() => { root.unmount(); }); }
+    finally { container.remove(); }
+  }
+});
+
+// Same window, same root cause for keys and Copy: input begun after B commits
+// must not reach A's still-open socket, and Copy must not take A's screen.
+it("refuses keys and Copy begun after B commits before A passive teardown", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  setClipboard({ writeText });
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  try {
+    act(() => { root.render(<FocusedTerminal sessionName="a" />); });
+    ready(s.sockets[0]);
+    s.terms[0]!.lines = ["a's screen"];
+    const actEnv = (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
+    (globalThis as any).IS_REACT_ACT_ENVIRONMENT = false;
+    try {
+      root.render(<FocusedTerminal sessionName="b" />);
+      for (let i = 0; i < 10 && !container.querySelector('[data-testid="focused-terminal-b"]'); i++) await macrotask();
+      expect(container.querySelector('[data-testid="focused-terminal-b"]')).not.toBeNull();
+      expect(s.sockets[0].readyState).toBe(1);
+      (within(container).getByRole("button", { name: /^enter$/i }) as HTMLButtonElement).click();
+      (within(container).getByRole("button", { name: /^copy/i }) as HTMLButtonElement).click();
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+      expect(s.sockets[0].sent).toEqual([]);
+      expect(writeText).not.toHaveBeenCalled();
+    } finally {
+      (globalThis as any).IS_REACT_ACT_ENVIRONMENT = actEnv;
+    }
+  } finally {
+    try { act(() => { root.unmount(); }); }
+    finally { container.remove(); }
+  }
+});
