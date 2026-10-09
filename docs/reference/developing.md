@@ -49,6 +49,6 @@ part of this repo's gates.)
 
 ## Wording rule
 
-The web UI is **experimental**, in **maintenance mode**, supported **best-effort**;
-**the CLI is primary**. There is no scheduled removal and PRs are welcome. Do not
+Upstream's web UI is **experimental**, in **maintenance mode**, supported **best-effort**;
+**the CLI is primary**. This fork actively develops the GUI; see [FORK.md](../../FORK.md#web-gui-development). There is no scheduled removal and PRs are welcome. Do not
 describe the UI with stronger end-of-life language than this section uses.

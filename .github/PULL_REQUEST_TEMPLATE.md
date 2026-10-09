@@ -6,7 +6,7 @@
 
 ## How you verified it
 
-<!-- What you actually ran and saw, and which revision/local changes you tested. The documented checks are `npm run build`, `npm test`, and `npm run lint`; say what you could not run. Redact credentials and private information from logs or screenshots. -->
+<!-- What you actually ran and saw, and which revision/local changes you tested. The documented checks are `npm run build`, `npm test`, `npm run test:ui`, and `npm run lint`; say what you could not run. Redact credentials and private information from logs or screenshots. -->
 
 ## Anything you were unsure about
 
