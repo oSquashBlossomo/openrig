@@ -40,16 +40,8 @@ repository, and we're happy to link to it.
 
 ## Setting up
 
-Node `^22 || ^24` and a working `tmux` are required. Then:
-
-```bash
-git clone https://github.com/mvschwarz/openrig.git
-cd openrig
-npm ci                 # exactly what package-lock.json records
-npm run build          # all workspaces
-npm test               # repo checks + daemon, cli, tui test suites
-npm run lint           # typecheck every package
-```
+Node `^22 || ^24` and a working `tmux` are required. Clone and run the checks as in
+[FORK.md › Local source setup](FORK.md#local-source-setup).
 
 `npm ci` installs the locked versions and never rewrites `package-lock.json`, which is what CI
 runs too. Use `npm install <package>` only when you're adding or changing a dependency, and commit

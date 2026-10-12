@@ -5,9 +5,9 @@ This is the source fork at `oSquashBlossomo/openrig`, with upstream
 repository's `developing-openrig` skill before changing product code.
 See [FORK.md](FORK.md) for this fork's GitHub development workflow.
 
-Use Node 24 and the committed npm lockfile (`npm ci`). Source validation is
-`npm run build`, `npm run lint`, `npm test`, and `npm run test:ui` when UI
-behavior changes. Run focused checks first; report actual results and gaps.
+Set up and validate as in [FORK.md › Local source setup](FORK.md#local-source-setup);
+run `npm run test:ui` when UI behavior changes. Run focused checks first; report
+actual results and gaps.
 Use isolated runtime fixtures for daemon, tmux, native-session, and migration
 work. A source checkout does not replace the installed OpenRig fleet.
 

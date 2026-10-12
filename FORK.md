@@ -62,7 +62,8 @@ otherwise leave behind. Mark it ready only after those checks pass.
 
 ## Local source setup
 
-Prerequisites: Node 24, npm, Git, and tmux. Use the committed npm lockfile.
+Prerequisites: Node 22 or 24 (`package.json` engines `^22 || ^24`; CI runs 22), npm,
+Git, and tmux. Use the committed npm lockfile.
 
 ```sh
 git clone https://github.com/oSquashBlossomo/openrig.git
@@ -170,5 +171,11 @@ git merge upstream/main
 Resolve conflicts, run the relevant checks, push the branch to `origin`, and
 open a PR explicitly targeting `oSquashBlossomo/openrig:main`. Retain the fork's
 review configuration. Do not force-push main or run automatic resets that drop
-fork changes. Upstream contributions are separate PRs with upstream's scope and
+fork changes.
+
+Drift on 2026-10-09: upstream `main` is 158 commits ahead of the fork's `main`, and
+the fork is 24 ahead (`git rev-list --count origin/main..upstream/main` and the
+reverse). Syncs land only through a PR as above. Check migration order at each
+sync: the fork-only `095_node_advisor_model` sits beside `095_rig_non_interruptive`,
+and upstream has since added 096-098. Upstream contributions are separate PRs with upstream's scope and
 review conventions; do not include fork-only workflow policy in them.
