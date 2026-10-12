@@ -3,6 +3,20 @@ import stringWidth from "string-width";
 import { nativeChatComposerMatches as matches } from "../src/domain/native-chat.js";
 const cursor = (x: number, y = 0, width = 80) => ({ x, y, width, height: 24 });
 const claude = (body: string[]) => [...body, "────────────────────", "⏵⏵ auto mode on (shift+tab to cycle)"].join("\n");
+it.each([
+  "✘ Auto-update failed: no write permission to npm prefix · Run claude doctor",
+  "tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and re…",
+  "You've used 96% of your weekly limit · resets 12pm (UTC)",
+])("accepts a recognized Claude warning suffix without weakening composer proof: %s", warning => {
+  const pane = claude(["❯\u00a0      "]) + "\n  " + warning + "  \n";
+  expect(matches(pane, "claude-code", cursor(2), "")).toBe(true);
+  expect(matches(pane.replace("❯\u00a0      ", "❯\u00a0hello  "), "claude-code", cursor(7), "hello")).toBe(true);
+  expect(matches(pane, "claude-code", cursor(3), "")).toBe(false);
+  expect(matches(pane + "Unexpected footer\n", "claude-code", cursor(2), "")).toBe(false);
+  expect(matches(pane.replace(warning, warning + " unexpected"), "claude-code", cursor(2), "")).toBe(false);
+  expect(matches(pane.replace("⏵⏵ auto mode on", "Unknown mode"), "claude-code", cursor(2), "")).toBe(false);
+  expect(matches("❯\u00a0\n────────────────────\n" + warning, "claude-code", cursor(2), "")).toBe(false);
+});
 it("distinguishes native paint padding from typed trailing spaces using the insertion cursor", () => {
   const pane = claude(["❯\u00a0hello      "]);
   expect(matches(pane, "claude-code", cursor(7), "hello")).toBe(true);

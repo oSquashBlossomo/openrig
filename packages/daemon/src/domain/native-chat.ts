@@ -12,7 +12,7 @@ import { verifyCodexPaneProcess, type NativeProcessLister } from "./native-proce
 import { CodexThreadIdResolver } from "./codex-thread-id.js";
 import { codexChatCreationsMatch, readFreshCodexChatThread } from "./native-chat-codex-identity.js";
 import { assessNativeResumeProbe } from "./native-resume-probe.js";
-import { classifyPaneActivity } from "./session-transport.js";
+import { CLAUDE_STATUS_WARNINGS, classifyPaneActivity } from "./session-transport.js";
 import { nativeChatTextHash, readNativeChatHistory } from "./native-chat-history.js";
 
 export class NativeChatError extends Error {
@@ -70,9 +70,10 @@ export function nativeChatComposerMatches(pane: string, runtime: Runtime, cursor
   if (runtime === "codex" && lines.slice(end + 1).some(line => !/^ *$/.test(line))) return false;
   if (runtime === "claude-code") {
     const footer = lines.slice(end + 1).filter(line => line.trim());
-    // Native idle promotion, only after a recognized mode row; not arbitrary footer text.
-    if (footer.length === 2 && footer[1]!.trim() === "control this session from your phone · /remote-control"
-      && /^(?:-- [A-Z]+ -- )?(?:⏵⏵ (?:accept edits|bypass permissions|auto mode) on\b|⏸ plan mode on\b|\? for shortcuts\b)/.test(footer[0]!.trim())) footer.pop();
+    // Noninteractive suffixes need a recognized mode row, never a warning alone.
+    if (/^(?:-- [A-Z]+ -- )?(?:⏵⏵ (?:accept edits|bypass permissions|auto mode) on\b|⏸ plan mode on\b|\? for shortcuts\b)/.test(footer[0]?.trim() ?? "")) {
+      while (footer.length > 1 && CLAUDE_STATUS_WARNINGS.some(pattern => pattern.test(footer.at(-1)!.trim()))) footer.pop();
+    }
     if (footer.length !== 1 || !/(?:shift\+tab to cycle|\? for shortcuts)/i.test(footer[0]!)) return false;
   }
   const below = lines.slice(cursor.y + 1, end);

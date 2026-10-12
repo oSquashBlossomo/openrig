@@ -138,7 +138,7 @@ function findCurrentClaudeQuestion(paneContent: string): string | null {
 
 // Claude can leave these noninteractive warnings/hints BELOW the input box and mode bar.
 // Recognize the complete input block, never a warning or historical prompt alone.
-const CLAUDE_STATUS_WARNINGS = [
+export const CLAUDE_STATUS_WARNINGS = [
   /^control this session from your phone · \/remote-control$/,
   /^✘ Auto-update failed: no write permission to npm prefix · Run claude doctor$/,
   /^tmux focus-events off · add 'set -g focus-events on' to ~\/\.tmux\.conf and re…$/,

@@ -204,6 +204,21 @@ it("never replays after a post-input receipt write failure", async () => {
   expect((await new NativeChatService(f.deps).send(f.node.id, request)).state).toBe("indeterminate");
   expect(f.tmux.sendText).toHaveBeenCalledTimes(1); expect(f.tmux.sendKeys).toHaveBeenCalledTimes(1);
 });
+it.each([
+  "✘ Auto-update failed: no write permission to npm prefix · Run claude doctor",
+  "tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and re…",
+  "You've used 96% of your weekly limit · resets 12pm (UTC)",
+])("reads and submits a verified Claude composer with a recognized warning: %s", async warning => {
+  const f = fixture("claude-code");
+  const pane = (text: string) => nativeClaude(["❯\u00a0" + text]) + "\n  " + warning;
+  f.setPane(pane(""));
+  const view = await f.service.read(f.node.id);
+  expect(view.availability.canSend).toBe(true);
+  f.tmux.sendText.mockImplementation(async (_target, text, before, options) => { await before?.(); options?.onWrite?.(); f.setPane(pane(text)); return { ok: true }; });
+  expect((await f.service.send(f.node.id, { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "hello" })).state).toBe("submitted");
+  expect(f.tmux.sendText).toHaveBeenCalledTimes(1);
+  expect(f.tmux.sendKeys).toHaveBeenCalledWith("%1", ["Enter"], expect.any(Function), expect.any(Function));
+});
 it("uses the same verified Claude auto conversation and refuses a rotated PID-record token despite old launch argv", async () => {
   const f = fixture("claude-code"), view = await f.service.read(f.node.id);
   expect(view.availability.canSend).toBe(true); expect(view.messages[0]!.text).toBe("prior");
