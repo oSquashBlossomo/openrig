@@ -84,11 +84,12 @@ export function readNativeChatHistory(input: NativeChatHistoryInput) {
       let blockIndex = 0;
       const add = (role: NativeChatMessage["role"], text: string, tool?: NativeChatMessage["tool"]) => {
         if (!text && !tool) return;
-        const raw = Buffer.from(text); const truncated = raw.length > MAX_TEXT;
-        const bounded = truncated ? raw.subarray(0, MAX_TEXT).toString("utf8") + "\n[truncated]" : text;
+        const redacted = redactTranscriptContent(text);
+        const raw = Buffer.from(redacted); const truncated = raw.length > MAX_TEXT;
+        const bounded = truncated ? raw.subarray(0, MAX_TEXT).toString("utf8") + "\n[truncated]" : redacted;
         parsed.push({ offset: lineOffset, textHash: nativeChatTextHash(text), message: {
           id: `${fileKey}:${lineOffset}:${blockIndex++}`,
-          role, text: redactTranscriptContent(bounded), timestamp, ...(tool ? { tool } : {}), truncated,
+          role, text: bounded, timestamp, ...(tool ? { tool } : {}), truncated,
         } });
       };
       if (input.runtime === "codex") {

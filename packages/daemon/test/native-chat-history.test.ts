@@ -37,6 +37,18 @@ it("bounds pages, tolerates an incomplete last line and gives stable older curso
   expect(older.messages.at(-1)!.text).toBe("reply-49");
   expect(new Set([...older.messages, ...newest.messages].map(m => m.id)).size).toBe(151);
 });
+it.each(["codex", "claude-code"] as const)("redacts a %s secret crossing the display cut before truncating", runtime => {
+  const f = fixture(runtime), secret = "sk-" + "s".repeat(32);
+  const text = "word ".repeat(3274) + secret + " tail ".repeat(20);
+  appendFileSync(f.path, JSON.stringify(runtime === "codex"
+    ? { type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text }] } }
+    : { type: "assistant", sessionId: f.conversationId, message: { content: [{ type: "text", text }] } }) + "\n");
+  const message = readNativeChatHistory(f).messages.at(-1)!;
+  expect(message.text).not.toContain("sk-");
+  expect(message.text).toContain("[REDACTED]");
+  expect(message.text.endsWith("\n[truncated]")).toBe(true);
+  expect(message.truncated).toBe(true);
+});
 it("refuses a wrong conversation, escaped symlink and replaced-file cursor", () => {
   const f = fixture();
   expect(() => readNativeChatHistory({ ...f, conversationId: "wrong" })).toThrow();
