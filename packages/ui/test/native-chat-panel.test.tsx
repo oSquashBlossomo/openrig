@@ -617,6 +617,63 @@ describe("native chat: interrupt", () => {
 });
 
 describe("native chat: bounded and verified reads", () => {
+  function holdOlderPages() {
+    const original = vi.mocked(fetch).getMockImplementation()!;
+    const held: Array<{ signal: AbortSignal; resolve: (body: NativeChatResponse) => void; reject: () => void }> = [];
+    vi.mocked(fetch).mockImplementation((url, init) => {
+      if (!String(url).includes("?before=")) return original(url, init);
+      return new Promise<Response>((resolve, reject) => held.push({
+        signal: init!.signal as AbortSignal,
+        resolve: body => resolve(json(200, body)), reject: () => reject(new Error("stale read failed")),
+      }));
+    });
+    return held;
+  }
+  it.each(["resolve", "reject"] as const)("resets earlier-page loading on conversation change and ignores the old %s", async outcome => {
+    pages.set("n1", page("n1", { messages: [msg("m2", "assistant", "original latest")], history: { state: "available", detail: "", olderCursor: "old-cursor" } }));
+    const view = renderChat(target("n1"));
+    await screen.findByText("original latest");
+    const held = holdOlderPages();
+    fireEvent.click(screen.getByTestId("native-chat-older"));
+    await waitFor(() => expect(held).toHaveLength(1));
+    const replacement = page("n1", { conversationId: "replacement", messages: [msg("new-2", "assistant", "replacement latest")], history: { state: "available", detail: "", olderCursor: "new-cursor" } });
+    pages.set("n1", replacement);
+    await act(async () => { view.client.setQueryData(["native-chat", "local", "rig-1", "n1"], replacement); });
+    await screen.findByText("replacement latest");
+    expect(held[0]!.signal.aborted).toBe(true);
+    await waitFor(() => expect((screen.getByTestId("native-chat-older") as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByTestId("native-chat-older"));
+    await waitFor(() => expect(held).toHaveLength(2));
+    await act(async () => { outcome === "resolve" ? held[0]!.resolve(page("n1", { messages: [msg("old-1", "assistant", "stale earlier")] })) : held[0]!.reject(); });
+    expect((screen.getByTestId("native-chat-older") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText("stale earlier")).toBeNull();
+    expect(screen.queryByText(/stale read failed/)).toBeNull();
+    await act(async () => { held[1]!.resolve(page("n1", { conversationId: "replacement", messages: [msg("new-1", "assistant", "replacement earlier")] })); });
+    await screen.findByText("replacement earlier");
+    expect(posts).toHaveLength(0);
+  });
+  it.each(["resolve", "reject"] as const)("discards an older-page %s after a disjoint latest-page jump", async outcome => {
+    pages.set("n1", page("n1", { messages: [msg("m2", "assistant", "original latest")], history: { state: "available", detail: "", olderCursor: "old-cursor" } }));
+    const view = renderChat(target("n1"));
+    await screen.findByText("original latest");
+    const held = holdOlderPages();
+    fireEvent.click(screen.getByTestId("native-chat-older"));
+    await waitFor(() => expect(held).toHaveLength(1));
+    const latest = page("n1", { messages: [msg("m102", "assistant", "disjoint latest")], history: { state: "available", detail: "", olderCursor: "before-102" } });
+    pages.set("n1", latest);
+    await act(async () => { view.client.setQueryData(["native-chat", "local", "rig-1", "n1"], latest); });
+    await screen.findByTestId("native-chat-jumped");
+    await act(async () => { outcome === "resolve" ? held[0]!.resolve(page("n1", { messages: [msg("m1", "assistant", "stale earlier")] })) : held[0]!.reject(); });
+    expect(screen.queryByText("stale earlier")).toBeNull();
+    expect(screen.queryByText(/stale read failed/)).toBeNull();
+    expect(screen.getByTestId("native-chat-jumped")).toBeTruthy();
+    expect((screen.getByTestId("native-chat-older") as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByTestId("native-chat-older"));
+    await waitFor(() => expect(held).toHaveLength(2));
+    await act(async () => { held[1]!.resolve(page("n1", { messages: [msg("m101", "assistant", "current earlier")] })); });
+    await screen.findByText("current earlier");
+    expect(screen.queryByTestId("native-chat-jumped")).toBeNull();
+  });
   it("keeps the bounded merged page and shows the cap when loading earlier crosses the limit", async () => {
     const all = Array.from({ length: NATIVE_CHAT_VIEW_LIMIT + 50 }, (_, i) => msg(`m${i}`, "assistant", `line ${i}`));
     const latest = page("n1", { messages: all.slice(100), history: { state: "available", detail: "", olderCursor: "c1" } });

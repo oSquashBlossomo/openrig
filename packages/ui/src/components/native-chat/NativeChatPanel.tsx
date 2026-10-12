@@ -210,7 +210,7 @@ const HISTORY_HEIGHT: Record<SeatChatLayout, string> = {
  *  cursor no longer meets it and earlier pages stop here. `jumped`: a latest
  *  page shared no message with the view (more arrived than one page while
  *  reads were paused), so the view restarted at that page and its cursor. */
-interface Timeline { conv: string | null; messages: NativeChatMessage[]; olderCursor: string | null; trimmed: boolean; jumped: boolean }
+interface Timeline { conv: string | null; generation: number; messages: NativeChatMessage[]; olderCursor: string | null; trimmed: boolean; jumped: boolean }
 
 function ChatBody({ target, nodeId, layout, onOpenTerminal, onOpenCommand, pastedCommand }: PanelProps & { nodeId: string }) {
   const { hostId, rigId } = target;
@@ -232,24 +232,24 @@ function ChatBody({ target, nodeId, layout, onOpenTerminal, onOpenCommand, paste
   const [, rerender] = useReducer((n: number) => n + 1, 0);
 
   // Accumulated timeline for the current conversation only.
-  const [timeline, setTimeline] = useState<Timeline>({ conv: null, messages: [], olderCursor: null, trimmed: false, jumped: false });
-  useEffect(() => {
+  const [timeline, setTimeline] = useState<Timeline>({ conv: null, generation: 0, messages: [], olderCursor: null, trimmed: false, jumped: false });
+  useLayoutEffect(() => {
     if (!data) return;
     setTimeline((t) => {
       // A new conversation, or an empty view (e.g. its first record just
       // arrived): adopt the page and its cursor; there is no gap to report.
       if (t.conv !== data.identity.conversationId || t.messages.length === 0) {
-        return { conv: data.identity.conversationId, messages: data.messages, olderCursor: data.history.olderCursor, trimmed: false, jumped: false };
+        return { conv: data.identity.conversationId, generation: t.generation + 1, messages: data.messages, olderCursor: data.history.olderCursor, trimmed: false, jumped: false };
       }
       const known = new Set(t.messages.map((m) => m.id));
       if (known.size > 0 && data.messages.length > 0 && !data.messages.some((m) => known.has(m.id))) {
         // Not continuous with the view: never stitch the two together.
         followRef.current = true;
-        return { ...t, messages: data.messages, olderCursor: data.history.olderCursor, trimmed: false, jumped: true };
+        return { ...t, generation: t.generation + 1, messages: data.messages, olderCursor: data.history.olderCursor, trimmed: false, jumped: true };
       }
       const merged = mergeMessages(t.messages, data.messages, "newer");
       return merged.length > NATIVE_CHAT_VIEW_LIMIT
-        ? { ...t, messages: merged.slice(-NATIVE_CHAT_VIEW_LIMIT), olderCursor: null, trimmed: true }
+        ? { ...t, generation: t.generation + 1, messages: merged.slice(-NATIVE_CHAT_VIEW_LIMIT), olderCursor: null, trimmed: true }
         : { ...t, messages: merged };
     });
   }, [data]);
@@ -280,7 +280,7 @@ function ChatBody({ target, nodeId, layout, onOpenTerminal, onOpenCommand, paste
     if (prev && slotKey && prev !== slotKey && readChatSlot(prev).draft) setCarried(prev);
   }, [slotKey]);
 
-  // Earlier pages: explicit, bound to the conversation they were asked for.
+  // Earlier pages belong to one continuous timeline, even within a conversation.
   const [older, setOlder] = useState<{ loading: boolean; error: string | null }>({ loading: false, error: null });
   // Open native command: one fresh check at a time, its refusal shown for
   // the draft it checked.
@@ -289,11 +289,15 @@ function ChatBody({ target, nodeId, layout, onOpenTerminal, onOpenCommand, paste
   const aliveRef = useRef(true);
   useEffect(() => { aliveRef.current = true; return () => { aliveRef.current = false; }; }, []);
   const olderAbortRef = useRef<AbortController | null>(null);
-  useEffect(() => () => olderAbortRef.current?.abort(), [conv]);
+  useLayoutEffect(() => {
+    setOlder({ loading: false, error: null });
+    return () => olderAbortRef.current?.abort();
+  }, [conv, timeline.generation]);
   const anchorRef = useRef<number | null>(null);
   const loadOlder = async () => {
     if (!conv || !olderCursor) return;
     const forConv = conv;
+    const generation = timeline.generation;
     olderAbortRef.current?.abort();
     const controller = new AbortController();
     olderAbortRef.current = controller;
@@ -305,9 +309,9 @@ function ChatBody({ target, nodeId, layout, onOpenTerminal, onOpenCommand, paste
         setOlder({ loading: false, error: "The conversation changed; earlier messages were not added." });
         return;
       }
-      anchorRef.current = scrollRef.current?.scrollHeight ?? null;
       setTimeline((t) => {
-        if (t.conv !== forConv) return t;
+        if (t.conv !== forConv || t.generation !== generation || t.olderCursor !== olderCursor) return t;
+        anchorRef.current = scrollRef.current?.scrollHeight ?? null;
         const merged = mergeMessages(t.messages, page.messages, "older");
         return merged.length > NATIVE_CHAT_VIEW_LIMIT
           ? { ...t, messages: merged.slice(-NATIVE_CHAT_VIEW_LIMIT), olderCursor: null, trimmed: true, jumped: false }
