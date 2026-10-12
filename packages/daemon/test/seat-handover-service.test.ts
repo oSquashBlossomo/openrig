@@ -485,10 +485,12 @@ describe("SeatHandoverService", () => {
       });
       expect(result.ok).toBe(true);
       expect(launchHarness).toHaveBeenCalledTimes(1);
-      const successorBinding = launchHarness.mock.calls[0]![0] as { launchPosture?: string };
+      const successorBinding = launchHarness.mock.calls[0]![0] as { launchPosture?: string; teamPermissionDefault?: boolean };
       // locked absence contract: the continuity edge binds the minimum floor explicitly —
       // ambient YOLO must not widen an attachment-less successor.
       expect(successorBinding.launchPosture).toBe("floor");
+      // Fork policy: no team launch default; native settings stay inherited.
+      expect(successorBinding.teamPermissionDefault).toBeFalsy();
     } finally { vi.unstubAllEnvs(); }
   });
 

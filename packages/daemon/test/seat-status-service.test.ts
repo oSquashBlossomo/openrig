@@ -8,6 +8,7 @@ import { NativePermissionStore } from "../src/domain/native-permission-store.js"
 import { AppliedLaunchObservationStore } from "../src/domain/applied-launch-observation-store.js";
 import { observeClaudePermission } from "../src/domain/permission-drift.js";
 import { PodRepository } from "../src/domain/pod-repository.js";
+import { SeatIdentityStore } from "../src/domain/seat-identity-store.js";
 
 describe("SeatStatusService", () => {
   let db: Database.Database;
@@ -24,6 +25,30 @@ describe("SeatStatusService", () => {
 
   afterEach(() => {
     db.close();
+  });
+
+  it("reports a confirmed missing current session as detached while preserving its registration", async () => {
+    const { app, rigRepo: repo, sessionRegistry: registry } = createTestApp(db);
+    const rig = repo.createRig("missing-seat");
+    const node = repo.addNode(rig.id, "dev.impl", { runtime: "codex" });
+    const session = registry.registerSession(node.id, "dev-impl@missing-seat");
+    registry.updateStatus(session.id, "running");
+    registry.updateStartupStatus(session.id, "ready");
+    registry.updateBinding(node.id, { tmuxSession: session.sessionName, tmuxPane: "%1", attachmentType: "tmux" });
+    const stored = db.prepare("SELECT * FROM sessions WHERE id = ?").get(session.id);
+    new SeatIdentityStore(db).upsert({
+      nodeId: node.id, sessionName: session.sessionName,
+      verdict: "pane_missing", reason: "session_missing", evidenceSource: "tmux_session",
+      evidence: { registeredPane: "%1", observedPid: null, observedCommand: null, matchedLayer: null },
+      observedAt: new Date(Date.now() + 1).toISOString(),
+    });
+    const res = await app.request(`/api/seat/status/${encodeURIComponent(session.sessionName)}`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      session_status: "detached", session_reason: "session_missing", startup_status: "ready",
+      occupant_lifecycle: "unknown", current_occupant: session.sessionName,
+    });
+    expect(db.prepare("SELECT * FROM sessions WHERE id = ?").get(session.id)).toEqual(stored);
   });
 
   it("returns honest no-handover defaults for an existing active node", () => {

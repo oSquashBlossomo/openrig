@@ -164,6 +164,7 @@ export function registerTerminalWs(
           } catch {
             // The broker cleans up failed admission. An async WebSocket event
             // rejection must close this viewer rather than escape the daemon.
+            subscriber = null;
             sub.close(1011, "terminal attachment failed");
             return;
           }
