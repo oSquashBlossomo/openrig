@@ -521,6 +521,23 @@ describe("native chat: exact seat and conversation identity", () => {
     expect(posts).toHaveLength(0);
   });
 
+  it("offers the old draft after a transient 409 followed by a replacement conversation", async () => {
+    pages.set("n1", page("n1", { conversationId: "conv-1" }));
+    const view = renderChat(target("n1"));
+    await type("unsent words");
+    pages.set("n1", { status: 409, body: { error: "Conversation changing", code: "owner_unverified" } });
+    await act(async () => { await view.client.invalidateQueries({ queryKey: ["native-chat"] }); });
+    expect((await screen.findByTestId("native-chat-state")).getAttribute("data-state")).toBe("refused");
+    pages.set("n1", page("n1", { conversationId: "conv-2" }));
+    await act(async () => { await view.client.invalidateQueries({ queryKey: ["native-chat"] }); });
+    const carried = await screen.findByTestId("native-chat-carried");
+    expect(input().value).toBe("");
+    expect(posts).toHaveLength(0);
+    fireEvent.click(within(carried).getByRole("button", { name: "Use it here" }));
+    expect(input().value).toBe("unsent words");
+    expect(posts).toHaveLength(0);
+  });
+
   it("disables send when the endpoint reports another session than the selected seat", async () => {
     pages.set("n1", page("n1", { sessionName: "someone-else" }));
     renderChat(target("n1"));

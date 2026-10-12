@@ -276,7 +276,7 @@ function ChatBody({ target, nodeId, layout, onOpenTerminal, onOpenCommand, paste
   const [carried, setCarried] = useState<string | null>(null);
   useEffect(() => {
     const prev = prevKeyRef.current;
-    prevKeyRef.current = slotKey;
+    if (slotKey) prevKeyRef.current = slotKey;
     if (prev && slotKey && prev !== slotKey && readChatSlot(prev).draft) setCarried(prev);
   }, [slotKey]);
 
