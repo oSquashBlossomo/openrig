@@ -282,6 +282,15 @@ seatRoutes.post("/set-model/:seatRef", async (c) => {
   return c.json(result, seatLifecycleStatus(result.code));
 });
 
+// A distinct route fails closed against older daemons that do not support previews.
+seatRoutes.post("/launch-plan/:seatRef", async (c) => {
+  const body: Record<string, unknown> = await c.req.json().catch(() => ({}));
+  const result = await seatLifecycleService(c).planFresh({
+    seatRef: c.req.param("seatRef")!, fresh: body["fresh"] === true, stop: body["stop"] === true,
+  });
+  return result.ok ? c.json(result) : c.json(result, seatLifecycleStatus(result.code));
+});
+
 seatRoutes.post("/launch/:seatRef", async (c) => {
   const body: Record<string, unknown> = await c.req.json().catch(() => ({}));
   const result = await seatLifecycleService(c).launchFresh({
@@ -296,7 +305,7 @@ seatRoutes.post("/launch/:seatRef", async (c) => {
 });
 
 seatRoutes.post("/continue/:seatRef", async (c) => {
-  const result = await seatLifecycleService(c).continueFreshStartup(decodeURIComponent(c.req.param("seatRef")));
+  const result = await seatLifecycleService(c).continueFreshStartup(c.req.param("seatRef"));
   return c.json(result, result.ok ? 200 : 409);
 });
 

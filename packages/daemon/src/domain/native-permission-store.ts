@@ -25,7 +25,10 @@ export class NativePermissionStore {
   constructor(private readonly db: Database.Database) {}
 
   /** One decision shared by fresh/continue, legacy restore and same-seat handover. */
-  launchOverride(nodeId: string, runtime: string, resolvedPosture?: NodeBinding["launchPosture"]): Pick<NodeBinding, "launchPosture" | "permissionMode" | "kernelAuthority" | "claudePermissionFloor"> {
+  // Upstream's rig-name kernel default and no-policy team default (#893) are not
+  // adopted: neither is an explicit permission choice. teamPermissionDefault is
+  // therefore always cleared here, which keeps native settings/profile inheritance.
+  launchOverride(nodeId: string, runtime: string, resolvedPosture?: NodeBinding["launchPosture"]): Pick<NodeBinding, "launchPosture" | "permissionMode" | "kernelAuthority" | "claudePermissionFloor" | "teamPermissionDefault"> {
     const selection = this.read(nodeId);
     if (selection && selection.runtime !== runtime) {
       throw new Error("Seat runtime changed since permission selection; explicitly select again or inherit.");
@@ -50,12 +53,12 @@ export class NativePermissionStore {
       }
       // Older none rows can reach this boundary with the rig fallback posture.
       // The literal choice is still inheritance and masks that fallback.
-      if (ref === "none") return { kernelAuthority: false, claudePermissionFloor: false, launchPosture: "floor" };
+      if (ref === "none") return { kernelAuthority: false, teamPermissionDefault: false, claudePermissionFloor: false, launchPosture: "floor" };
       if (resolvedPosture === "floor" && (ref != null || row?.origin === "builtin" || row?.origin === "custom")) {
-        return { kernelAuthority: false, claudePermissionFloor: true };
+        return { kernelAuthority: false, teamPermissionDefault: false, claudePermissionFloor: true };
       }
     }
-    return { kernelAuthority: false, claudePermissionFloor: false, ...permissionBindingOverride(selection) };
+    return { kernelAuthority: false, teamPermissionDefault: false, claudePermissionFloor: false, ...permissionBindingOverride(selection) };
   }
 
   read(nodeId: string): StoredNativePermissionSelection | null {

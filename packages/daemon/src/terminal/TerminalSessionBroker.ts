@@ -864,7 +864,14 @@ export class TerminalBrokerRegistry {
       broker = created;
       this.brokers.set(sessionName, broker);
     }
-    await broker.attach(sub);
+    try {
+      await broker.attach(sub);
+    } catch (error) {
+      // A rejected open never registers the subscriber, so detach cannot evict
+      // this broker or remove a partially created output file.
+      broker.dispose();
+      throw error;
+    }
     return broker;
   }
 }

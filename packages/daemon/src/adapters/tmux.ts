@@ -3,6 +3,7 @@ import { writeFile as fsWriteFile, unlink as fsUnlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join as pathJoin } from "node:path";
 import { randomUUID } from "node:crypto";
+import { parentSessionEnvKeys } from "../domain/parent-session-env.js";
 
 export type ExecFn = (cmd: string) => Promise<string>;
 
@@ -48,7 +49,7 @@ function defaultTmuxFileOps(): TmuxFileOps {
 }
 
 export type TmuxResult =
-  | { ok: true }
+  | { ok: true; warnings?: string[] }
   | { ok: false; code: string; message: string };
 
 export interface TmuxSession {
@@ -208,6 +209,12 @@ function classifyWriteError(err: unknown): TmuxResult {
   return { ok: false, code: "unknown", message: err.message };
 }
 
+/** The launch warning when the parent-session identity cleanup could not finish (#771). */
+function parentSessionEnvWarning(target: string, err: unknown): string {
+  const reason = err instanceof Error ? err.message : String(err);
+  return `${target}: could not remove the launching session's identity (for example CLAUDECODE) from this seat's environment, so the seat may still see it: ${reason}`;
+}
+
 /** Shell-quote a string using single quotes (POSIX-safe). */
 /** One pane's text from a batched capture, with the time its chunk was read (#309 review). `text` is null for a
  *  session that is gone or an empty capture. */
@@ -249,13 +256,15 @@ function posixJoinArgv(argv: string[]): string {
 function parseSessionLine(line: string): TmuxSession | null {
   const parts = line.split(TMUX_FIELD_SEPARATOR);
   if (parts.length < 4) return null;
-  const windows = parseInt(parts[1]!, 10);
+  // Only the final three fields are metadata; a literal session name may
+  // itself contain the printable separator, just like pane paths/window names.
+  const windows = parseInt(parts.at(-3)!, 10);
   if (isNaN(windows)) return null;
   return {
-    name: parts[0]!,
+    name: parts.slice(0, -3).join(TMUX_FIELD_SEPARATOR),
     windows,
-    created: parts[2]!,
-    attached: parts[3] === "1",
+    created: parts.at(-2)!,
+    attached: parts.at(-1) === "1",
   };
 }
 
@@ -577,15 +586,53 @@ export class TmuxAdapter {
     const argv = ["tmux", "new-session", "-d", "-s", name];
     if (cwd != null) argv.push("-c", cwd);
     for (const [k, v] of Object.entries(seatEnv)) argv.push("-e", `${k}=${v}`);
+    // The pane new-session itself made: an after-new-session hook may select another window.
+    argv.push("-P", "-F", "#{pane_id}");
     const legacyParts = ["tmux", "new-session", "-d", "-s", shellQuote(name)];
     if (cwd != null) legacyParts.push("-c", shellQuote(cwd));
     for (const [k, v] of Object.entries(seatEnv)) legacyParts.push("-e", shellQuote(`${k}=${v}`));
+    legacyParts.push("-P", "-F", shellQuote("#{pane_id}"));
+    let created: string;
     try {
-      await this.run(argv, legacyParts.join(" "));
-      return { ok: true };
+      created = (await this.run(argv, legacyParts.join(" "))).trim();
     } catch (err) {
       return classifyWriteError(err);
     }
+    // A tmux server started from a Claude Code session or Herdr pane hands
+    // their identity to every new pane. Mark it removed for this session only
+    // and restart the fresh pane so its shell starts without it. The session
+    // exists either way, so a failure here is a warning, never a failed launch.
+    try {
+      if (await this.excludeParentSessionEnv(exactTarget(name, "session"), Object.keys(seatEnv))) {
+        if (!/^%\d+$/.test(created)) throw new Error(`new-session reported no pane id ("${created}"), so no pane was restarted`);
+        const respawn = ["tmux", "respawn-pane", "-k", "-t", created];
+        if (cwd != null) respawn.push("-c", cwd);
+        await this.run(respawn, posixJoinArgv(respawn));
+      }
+      return { ok: true };
+    } catch (err) {
+      return { ok: true, warnings: [parentSessionEnvWarning(name, err)] };
+    }
+  }
+
+  /** Mark the server's inherited parent-session identity as removed in one
+   * session's environment, never the server's global one. Explicit seat
+   * values stay. Returns whether anything was marked. Throws when the global
+   * environment can't be read: the caller can't tell whether the seat inherits
+   * an identity, so it reports a warning (the launch still goes ahead). */
+  private async excludeParentSessionEnv(sessionTarget: string, keep: readonly string[] = []): Promise<boolean> {
+    const global = await this.run(["tmux", "show-environment", "-g"], "tmux show-environment -g");
+    const inherited: Record<string, string> = {};
+    for (const line of global.split(/\r?\n/)) {
+      const eq = line.indexOf("=");
+      if (eq > 0) inherited[line.slice(0, eq)] = line.slice(eq + 1);
+    }
+    const keys = parentSessionEnvKeys(inherited).filter((key) => !keep.includes(key));
+    for (const key of keys) {
+      const argv = ["tmux", "set-environment", "-t", sessionTarget, "-r", key];
+      await this.run(argv, posixJoinArgv(argv));
+    }
+    return keys.length > 0;
   }
 
   /**
@@ -837,9 +884,18 @@ export class TmuxAdapter {
     if (opts?.cwd != null) legacyRespawn.push("-c", shellQuote(opts.cwd));
     if (opts?.env) for (const [k, v] of Object.entries(opts.env)) legacyRespawn.push("-e", shellQuote(`${k}=${v}`));
     if (command != null && command.length > 0) legacyRespawn.push(shellQuote(command));
+    // The successor starts from the session environment: exclude inherited
+    // parent-session identity there first (sessions made before this existed).
+    // A failure here is a warning; the respawn goes ahead as it did before.
+    let warnings: string[] | undefined;
+    try {
+      await this.excludeParentSessionEnv(exact, Object.keys(opts?.env ?? {}));
+    } catch (err) {
+      warnings = [parentSessionEnvWarning(exact, err)];
+    }
     try {
       await this.run(argv, legacyRespawn.join(" "));
-      return { ok: true };
+      return warnings ? { ok: true, warnings } : { ok: true };
     } catch (err) {
       return classifyWriteError(err);
     }
@@ -939,9 +995,10 @@ export class TmuxAdapter {
   /** A launch metadata read. Callers must never put credential values in terminal input. */
   async getSessionEnv(session: string, key: string): Promise<string | undefined> {
     if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) throw new Error("Invalid session environment key.");
+    const target = exactTarget(session, "session");
     try {
-      const output = await this.run(["tmux", "show-environment", "-t", session, key],
-        `tmux show-environment -t ${shellQuote(session)} ${shellQuote(key)}`);
+      const output = await this.run(["tmux", "show-environment", "-t", target, key],
+        `tmux show-environment -t ${shellQuote(target)} ${shellQuote(key)}`);
       if (output.trim() === `-${key}`) return undefined;
       if (!output.startsWith(`${key}=`)) throw new Error("Unexpected session environment response.");
       return output.slice(key.length + 1).replace(/\r?\n$/, "");
@@ -1017,7 +1074,7 @@ export class TmuxAdapter {
     let live: Set<string>;
     try {
       const listing = await this.run(["tmux", "list-sessions", "-F", "#{session_name}"], "tmux list-sessions -F '#{session_name}'");
-      live = new Set(listing.split("\n").map((s) => s.trim()).filter(Boolean));
+      live = new Set(listing.split(/\r?\n/).filter(Boolean));
     } catch {
       return null;
     }
@@ -1080,11 +1137,15 @@ export class TmuxAdapter {
     return out;
   }
 
-  async capturePaneContent(paneId: string, lines: number = 20): Promise<string | null> {
+  async capturePaneContent(paneId: string, lines: number = 20, opts?: { escapeSequences?: boolean; joinWrappedLines?: boolean }): Promise<string | null> {
     const target = exactTarget(paneId, "pane");
+    // `-e` keeps text styling, such as the faint rendering of a suggestion.
+    const styled = opts?.escapeSequences === true;
+    // Verification can recover mid-word soft wraps without erasing logical newlines.
+    const joined = opts?.joinWrappedLines === true;
     try {
-      const output = await this.run(["tmux", "capture-pane", "-p", "-t", target, "-S", `-${lines}`],
-        `tmux capture-pane -p -t ${shellQuote(target)} -S -${lines}`);
+      const output = await this.run(["tmux", "capture-pane", "-p", ...(styled ? ["-e"] : []), ...(joined ? ["-J"] : []), "-t", target, "-S", `-${lines}`],
+        `tmux capture-pane -p${styled ? " -e" : ""}${joined ? " -J" : ""} -t ${shellQuote(target)} -S -${lines}`);
       return output || null;
     } catch {
       return null;

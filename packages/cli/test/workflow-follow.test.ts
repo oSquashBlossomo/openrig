@@ -268,6 +268,23 @@ describe("workflow-follow (WF3 FR-1)", () => {
     expect(h.streamSignals.every(signal => signal.aborted)).toBe(true);
   });
 
+  it("attaches to an aborted instance with the same failure outcome as a live abort", async () => {
+    const h = makeHarness({
+      traceResponses: [{ status: 200, data: { instance: { instanceId: "WF1", status: "aborted" }, trail: [] } }],
+      streams: [droppedStream()],
+    });
+    let streamSignal: AbortSignal | undefined;
+    const fetchImpl = h.io.fetchImpl;
+    h.io.fetchImpl = ((input, init) => {
+      streamSignal = init?.signal as AbortSignal;
+      return fetchImpl(input, init);
+    }) as typeof fetch;
+    h.io.sleep = async () => { throw new Error("terminal snapshot must not wait"); };
+    expect(await followInstance(h.client, "WF1", { json: false, io: h.io, maxReconnects: 0 })).toBe(EXIT_WORKFLOW_FAILED);
+    expect(streamSignal?.aborted).toBe(true);
+    expect(h.outLines[0]).toContain("status=aborted");
+  });
+
   it("poll fallback resolves a canonical aborted outcome with the live failure exit code", async () => {
     const h = makeHarness({
       traceResponses: [ACTIVE_SNAPSHOT, { status: 200, data: { instance: { instanceId: "WF1", status: "aborted" }, trail: [] } }],
