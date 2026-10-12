@@ -617,6 +617,24 @@ describe("native chat: interrupt", () => {
 });
 
 describe("native chat: bounded and verified reads", () => {
+  it("keeps the bounded merged page and shows the cap when loading earlier crosses the limit", async () => {
+    const all = Array.from({ length: NATIVE_CHAT_VIEW_LIMIT + 50 }, (_, i) => msg(`m${i}`, "assistant", `line ${i}`));
+    const latest = page("n1", { messages: all.slice(100), history: { state: "available", detail: "", olderCursor: "c1" } });
+    pages.set("n1", latest);
+    renderChat(target("n1"));
+    await screen.findByText("line 1049");
+    pages.set("n1", page("n1", { messages: all.slice(0, 100), history: { state: "available", detail: "", olderCursor: "c2" } }));
+    fireEvent.click(screen.getByTestId("native-chat-older"));
+    await screen.findByText("line 50");
+    pages.set("n1", latest);
+    const rows = screen.getAllByTestId("native-chat-message");
+    expect(rows).toHaveLength(NATIVE_CHAT_VIEW_LIMIT);
+    expect(rows[0]!.textContent).toContain("line 50");
+    expect(rows.at(-1)!.textContent).toContain("line 1049");
+    expect(screen.getByTestId("native-chat-limit").textContent).toContain("earlier ones were removed");
+    expect(screen.queryByTestId("native-chat-older")).toBeNull();
+    expect(posts).toHaveLength(0);
+  });
   it("keeps loaded earlier pages, stops at the view limit and says so", async () => {
     const many = Array.from({ length: NATIVE_CHAT_VIEW_LIMIT }, (_, i) => msg(`m${i}`, "assistant", `line ${i}`));
     expect(mergeMessages(many.slice(10), many.slice(0, 10), "older").map((m) => m.id)).toEqual(many.map((m) => m.id));

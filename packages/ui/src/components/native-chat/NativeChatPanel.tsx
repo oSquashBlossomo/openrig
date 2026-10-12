@@ -309,8 +309,9 @@ function ChatBody({ target, nodeId, layout, onOpenTerminal, onOpenCommand, paste
       setTimeline((t) => {
         if (t.conv !== forConv) return t;
         const merged = mergeMessages(t.messages, page.messages, "older");
-        // Never drop what was just loaded: past the limit, keep the view.
-        return merged.length > NATIVE_CHAT_VIEW_LIMIT ? { ...t, olderCursor: null } : { ...t, messages: merged, olderCursor: page.history.olderCursor, jumped: false };
+        return merged.length > NATIVE_CHAT_VIEW_LIMIT
+          ? { ...t, messages: merged.slice(-NATIVE_CHAT_VIEW_LIMIT), olderCursor: null, trimmed: true, jumped: false }
+          : { ...t, messages: merged, olderCursor: page.history.olderCursor, jumped: false };
       });
       setOlder({ loading: false, error: null });
     } catch (err) {
