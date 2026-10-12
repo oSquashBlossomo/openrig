@@ -600,16 +600,17 @@ export class TmuxAdapter {
    * `options.bracketed: false` omits `-p` for explicit prompt answers: bytes
    * then act as keystrokes, including menu shortcuts and control keys.
    * Any trailing submit stays the caller's separate `sendKeys(["Enter"])`.
+   * onWrite is synchronous: it runs after the final guard, immediately before input.
    * Cleanup unlinks the temp file in `finally`; if the buffer was loaded but the
    * paste failed (e.g. missing target), an explicit `delete-buffer` runs so no
    * buffer leaks. Unique temp + buffer names per call keep parallel `rig up`
    * seats from colliding.
    */
-  async sendText(target: string, text: string, beforeInput?: () => void | Promise<void>, options?: { bracketed?: boolean }): Promise<TmuxResult> {
-    return this.guardedInput(target, (pane, beforeWrite) => this.sendTextUnchecked(pane, text, async () => { beforeWrite(); await beforeInput?.(); beforeWrite(); }, options?.bracketed));
+  async sendText(target: string, text: string, beforeInput?: () => void | Promise<void>, options?: { bracketed?: boolean; onWrite?: () => void }): Promise<TmuxResult> {
+    return this.guardedInput(target, (pane, beforeWrite) => this.sendTextUnchecked(pane, text, async () => { beforeWrite(); await beforeInput?.(); }, options?.bracketed, () => { beforeWrite(); options?.onWrite?.(); }));
   }
 
-  private async sendTextUnchecked(target: string, text: string, beforeWrite: () => void | Promise<void>, bracketed = true): Promise<TmuxResult> {
+  private async sendTextUnchecked(target: string, text: string, beforeWrite: () => void | Promise<void>, bracketed = true, onWrite?: () => void): Promise<TmuxResult> {
     const path = this.fileOps.tmpName();
     const buffer = this.fileOps.bufferName();
     let bufferLoaded = false;
@@ -621,6 +622,7 @@ export class TmuxAdapter {
         `tmux load-buffer -b ${shellQuote(buffer)} ${shellQuote(path)}`);
       bufferLoaded = true;
       await beforeWrite();
+      onWrite?.();
       // Explicit prompt answers need key input, not bracketed-paste framing.
       // Keep their bytes in the file: tmux command parsing and argv limits must
       // not alter semicolons or reject long answers (#519, #602).
@@ -718,8 +720,8 @@ export class TmuxAdapter {
     }
   }
 
-  async sendKeys(target: string, keys: string[], beforeInput?: () => void | Promise<void>): Promise<TmuxResult> {
-    return this.guardedInput(target, async (pane, beforeWrite) => { beforeWrite(); await beforeInput?.(); beforeWrite(); return this.sendKeysUnchecked(pane, keys); });
+  async sendKeys(target: string, keys: string[], beforeInput?: () => void | Promise<void>, onWrite?: () => void): Promise<TmuxResult> {
+    return this.guardedInput(target, async (pane, beforeWrite) => { beforeWrite(); await beforeInput?.(); beforeWrite(); onWrite?.(); return this.sendKeysUnchecked(pane, keys); });
   }
 
   private async sendKeysUnchecked(target: string, keys: string[]): Promise<TmuxResult> {

@@ -9,7 +9,10 @@ import { createFullTestDb } from "./helpers/test-app.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { NativeChatService } from "../src/domain/native-chat.js";
-import type { TmuxAdapter } from "../src/adapters/tmux.js";
+import { TmuxAdapter } from "../src/adapters/tmux.js";
+import { SeatDeliveryGuard } from "../src/domain/seat-delivery-guard.js";
+import { outboxEntriesSchema } from "../src/db/migrations/027_outbox_entries.js";
+import { seatDeliveryGuardSchema } from "../src/db/migrations/087_seat_delivery_guard.js";
 import { ContextUsageStore } from "../src/domain/context-usage-store.js";
 import { CodexThreadIdResolver, lstartToMinTs } from "../src/domain/codex-thread-id.js";
 
@@ -50,8 +53,8 @@ function fixture(runtime: "codex" | "claude-code" = "codex") {
     listPanes: async () => [{ id: "%1" }],
     capturePaneScreen: async () => pane,
     capturePaneObservation: vi.fn(async () => ({ snapshot: pane, cursor: { x: (() => { const line = pane.split("\n").findLast(line => /^[❯›»]/.test(line)) ?? ""; return line.includes("Ask Codex to do anything") ? 2 : stringWidth(line); })(), y: pane.split("\n").findLastIndex(line => /^[❯›»]/.test(line)), width: 80, height: 24 } })),
-    sendText: vi.fn(async (_target: string, text: string, before?: () => void | Promise<void>) => { await before?.(); pane = composer(text); return { ok: true }; }),
-    sendKeys: vi.fn(async (_target: string, _keys: string[], before?: () => void | Promise<void>) => { await before?.(); return { ok: true }; }),
+    sendText: vi.fn(async (_target: string, text: string, before?: () => void | Promise<void>, options?: { onWrite?: () => void }) => { await before?.(); options?.onWrite?.(); pane = composer(text); return { ok: true }; }),
+    sendKeys: vi.fn(async (_target: string, _keys: string[], before?: () => void | Promise<void>, onWrite?: () => void) => { await before?.(); onWrite?.(); return { ok: true }; }),
   };
   const rows = () => [{ pid: 10, ppid: 1, pgid: 10, tpgid: 10, executableName: claude ? "claude" : "codex", command: claude ? `claude --session-id ${token} --name ${session.sessionName}` : `codex resume ${token}`, startedAt: "Sat Jan 1 12:00:00 2000" }];
   const deps = { db, sessionRegistry: registry, tmux: tmux as unknown as TmuxAdapter,
@@ -65,7 +68,7 @@ it("sends once to the same owner, then observes the later native user record wit
   expect(view.availability.canSend).toBe(true);
   const request = { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "hello native" };
   expect((await f.service.send(f.node.id, request)).state).toBe("submitted");
-  expect(f.tmux.sendKeys).toHaveBeenCalledWith("%1", ["Enter"], expect.any(Function));
+  expect(f.tmux.sendKeys).toHaveBeenCalledWith("%1", ["Enter"], expect.any(Function), expect.any(Function));
   expect((await f.service.send(f.node.id, request)).state).toBe("submitted");
   expect(f.tmux.sendText).toHaveBeenCalledTimes(1);
   appendFileSync(f.path, JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: request.text }] } }) + "\n");
@@ -81,7 +84,7 @@ it.each(["› saved draft\n? for shortcuts", "Would you like to run the followin
 });
 it("does not press Enter on a question that appears after paste; receipt remains indeterminate on restart and retry", async () => {
   const f = fixture(), view = await f.service.read(f.node.id);
-  f.tmux.sendText.mockImplementation(async (_target, _text, before) => { await before?.(); f.setPane("Do you want to proceed?\n› 1. Yes"); return { ok: true }; });
+  f.tmux.sendText.mockImplementation(async (_target, _text, before, options) => { await before?.(); options?.onWrite?.(); f.setPane("Do you want to proceed?\n› 1. Yes"); return { ok: true }; });
   const request = { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "hello" };
   expect((await f.service.send(f.node.id, request)).state).toBe("indeterminate");
   expect(f.tmux.sendKeys).not.toHaveBeenCalled();
@@ -90,11 +93,53 @@ it("does not press Enter on a question that appears after paste; receipt remains
 });
 it("treats an ambiguous paste failure as indeterminate and never retries it", async () => {
   const f = fixture(), view = await f.service.read(f.node.id);
-  f.tmux.sendText.mockImplementation(async (_target, _text, before) => { await before?.(); return { ok: false }; });
+  f.tmux.sendText.mockImplementation(async (_target, _text, before, options) => { await before?.(); options?.onWrite?.(); return { ok: false }; });
   const request = { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "hello" };
   expect((await f.service.send(f.node.id, request)).state).toBe("indeterminate");
   expect((await f.service.send(f.node.id, request)).state).toBe("indeterminate");
   expect(f.tmux.sendText).toHaveBeenCalledTimes(1);
+});
+it.each([
+  ["message", "guard"], ["interrupt", "guard"],
+  ["message", "write-error"], ["interrupt", "write-error"],
+  ["message", "marker-error"], ["interrupt", "marker-error"],
+  ["message", "success"], ["interrupt", "success"], ["message", "enter-guard"],
+] as const)("records exact input effects through the real adapter for %s / %s", async (kind, outcome) => {
+  const f = fixture();
+  f.db.exec(outboxEntriesSchema.sql); f.db.exec(seatDeliveryGuardSchema.sql);
+  if (kind === "interrupt") f.setPane("• Working (2s • esc to interrupt)\n› Ask Codex to do anything\n\n? for shortcuts");
+  let occupant = "original", observations = 0;
+  const requestId = randomUUID();
+  const exec = vi.fn(async (cmd: string) => {
+    if (/paste-buffer|send-keys/.test(cmd)) {
+      expect(f.db.prepare("SELECT effects_started FROM native_chat_requests WHERE request_id=?").get(requestId)).toEqual({ effects_started: 1 });
+      if (outcome === "write-error") throw new Error("transport outcome unknown");
+      if (cmd.includes("paste-buffer")) f.setPane("› hello\n\n? for shortcuts");
+    }
+    return "";
+  });
+  const adapter = new TmuxAdapter(exec, { writeFile: async () => {}, unlink: async () => {}, tmpName: () => "/tmp/fictional-chat-input", bufferName: () => "chat-input-test" });
+  adapter.deliveryGuard = new SeatDeliveryGuard(f.db, () => ({ nodeId: f.node.id, session: f.session.sessionName, pane: "%1", occupant }));
+  adapter.getPanePid = f.tmux.getPanePid;
+  adapter.listPanes = f.tmux.listPanes as typeof adapter.listPanes;
+  adapter.capturePaneScreen = f.tmux.capturePaneScreen;
+  adapter.capturePaneObservation = async () => {
+    const observation = await f.tmux.capturePaneObservation();
+    observations++;
+    if ((outcome === "guard" && observations === 3) || (outcome === "enter-guard" && observations === 5)) occupant = "replacement";
+    return observation;
+  };
+  const service = new NativeChatService({ ...f.deps, tmux: adapter }), view = await service.read(f.node.id);
+  if (outcome === "marker-error") f.db.exec("CREATE TRIGGER fail_effect_marker BEFORE UPDATE OF effects_started ON native_chat_requests WHEN NEW.effects_started=1 BEGIN SELECT RAISE(ABORT,'marker disk failure'); END;");
+  const request = { requestId, ownerKey: view.identity.ownerKey, ...(kind === "message" ? { text: "hello" } : {}) };
+  const noWrite = outcome === "guard" || outcome === "marker-error";
+  expect((await service.send(f.node.id, request, kind)).state).toBe(noWrite ? "failed" : outcome === "success" ? "submitted" : "indeterminate");
+  expect(f.db.prepare("SELECT effects_started FROM native_chat_requests WHERE request_id=?").get(requestId)).toEqual({ effects_started: noWrite ? 0 : 1 });
+  const writes = exec.mock.calls.filter(([cmd]) => /paste-buffer|send-keys/.test(cmd));
+  expect(writes).toHaveLength(noWrite ? 0 : kind === "message" && outcome === "success" ? 2 : 1);
+  if (kind === "message" && outcome !== "success" && outcome !== "enter-guard") expect(exec.mock.calls.some(([cmd]) => cmd.includes("delete-buffer"))).toBe(true);
+  await service.send(f.node.id, request, kind);
+  expect(exec.mock.calls.filter(([cmd]) => /paste-buffer|send-keys/.test(cmd))).toHaveLength(writes.length);
 });
 it("refuses changed process identity and literal terminal controls before effects", async () => {
   const f = fixture(), view = await f.service.read(f.node.id);
@@ -119,7 +164,7 @@ it("keeps a crash-pending UUID indeterminate rather than replaying it", async ()
 });
 it("refuses a same-process owner token or binding change between paste and submit", async () => {
   const f = fixture(), view = await f.service.read(f.node.id);
-  f.tmux.sendText.mockImplementation(async (_target, _text, before) => { await before?.(); f.db.prepare("UPDATE bindings SET tmux_pane='%2' WHERE node_id=?").run(f.node.id); return { ok: true }; });
+  f.tmux.sendText.mockImplementation(async (_target, _text, before, options) => { await before?.(); options?.onWrite?.(); f.db.prepare("UPDATE bindings SET tmux_pane='%2' WHERE node_id=?").run(f.node.id); return { ok: true }; });
   expect((await f.service.send(f.node.id, { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "hello" })).state).toBe("indeterminate");
   expect(f.tmux.sendKeys).not.toHaveBeenCalled();
 });
@@ -127,7 +172,7 @@ it("only interrupts positively busy native work and never answers a picker", asy
   const f = fixture(), view = await f.service.read(f.node.id);
   f.setPane("• Working (2s • esc to interrupt)\n› Ask Codex to do anything\n\n? for shortcuts");
   expect((await f.service.send(f.node.id, { requestId: randomUUID(), ownerKey: view.identity.ownerKey }, "interrupt")).state).toBe("submitted");
-  expect(f.tmux.sendKeys).toHaveBeenCalledWith("%1", ["Escape"], expect.any(Function));
+  expect(f.tmux.sendKeys).toHaveBeenCalledWith("%1", ["Escape"], expect.any(Function), expect.any(Function));
   f.tmux.sendKeys.mockClear(); f.setPane("Do you want to proceed?\n› 1. Yes\n? for shortcuts");
   expect((await f.service.send(f.node.id, { requestId: randomUUID(), ownerKey: view.identity.ownerKey }, "interrupt")).state).toBe("failed");
   expect(f.tmux.sendKeys).not.toHaveBeenCalled();
@@ -135,8 +180,8 @@ it("only interrupts positively busy native work and never answers a picker", asy
 it("never replays after a post-input receipt write failure", async () => {
   const f = fixture(), view = await f.service.read(f.node.id);
   // A real SQLite failure after Enter leaves the committed sending/effects marker.
-  f.tmux.sendKeys.mockImplementation(async (_target, _keys, before) => {
-    await before?.(); f.db.exec("CREATE TRIGGER fail_receipt_update BEFORE UPDATE OF state ON native_chat_requests BEGIN SELECT RAISE(ABORT,'receipt disk failure'); END;"); return { ok: true };
+  f.tmux.sendKeys.mockImplementation(async (_target, _keys, before, onWrite) => {
+    await before?.(); onWrite?.(); f.db.exec("CREATE TRIGGER fail_receipt_update BEFORE UPDATE OF state ON native_chat_requests BEGIN SELECT RAISE(ABORT,'receipt disk failure'); END;"); return { ok: true };
   });
   const request = { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "hello" };
   await expect(f.service.send(f.node.id, request)).rejects.toThrow("receipt disk failure");
@@ -187,9 +232,9 @@ it.each(["unresolved", "different", "before-rollout", "multiple-creations"])("re
 });
 it("does not press Enter if a new Codex thread appears after paste but before its first rollout", async () => {
   const f = fixture(), view = await f.service.read(f.node.id); let written = 0;
-  f.tmux.sendKeys.mockImplementation(async (_target, _keys, before) => { await before?.(); written++; return { ok: true }; });
-  f.tmux.sendText.mockImplementation(async (_target, text, before) => {
-    await before?.(); f.setPane(`› ${text}\n\n? for shortcuts`); logCodexCreation(f.root, randomUUID()); return { ok: true };
+  f.tmux.sendKeys.mockImplementation(async (_target, _keys, before, onWrite) => { await before?.(); onWrite?.(); written++; return { ok: true }; });
+  f.tmux.sendText.mockImplementation(async (_target, text, before, options) => {
+    await before?.(); options?.onWrite?.(); f.setPane(`› ${text}\n\n? for shortcuts`); logCodexCreation(f.root, randomUUID()); return { ok: true };
   });
   expect((await f.service.send(f.node.id, { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "hello" })).state).toBe("indeterminate");
   expect(written).toBe(0);
@@ -218,7 +263,7 @@ it.each(["running", "needs_input"] as const)("fresh hook %s vetoes an apparently
 });
 it("refuses collapsed staged pastes and human edits without Enter", async () => {
   const f = fixture("claude-code"), view = await f.service.read(f.node.id);
-  f.tmux.sendText.mockImplementation(async (_target, _text, before) => { await before?.(); f.setPane("Prior answer\n────────────────────\n❯ [Pasted text #1 +2 lines]\n────────────────────\n⏵⏵ auto mode on (shift+tab to cycle)"); return { ok: true }; });
+  f.tmux.sendText.mockImplementation(async (_target, _text, before, options) => { await before?.(); options?.onWrite?.(); f.setPane("Prior answer\n────────────────────\n❯ [Pasted text #1 +2 lines]\n────────────────────\n⏵⏵ auto mode on (shift+tab to cycle)"); return { ok: true }; });
   expect((await f.service.send(f.node.id, { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "one two three" })).state).toBe("indeterminate");
   expect(f.tmux.sendKeys).not.toHaveBeenCalled();
 });
@@ -239,8 +284,8 @@ it("bounds the managed history locator without changing ordinary telemetry reads
 });
 it("rechecks an unsolicited draft at the actual paste callback after adapter preparation", async () => {
   const f = fixture(), view = await f.service.read(f.node.id); let written = 0;
-  f.tmux.sendText.mockImplementation(async (_target, _text, before) => {
-    f.setPane("› HUMAN_UNSENT_DRAFT\n\n? for shortcuts"); await before?.(); written++; return { ok: true };
+  f.tmux.sendText.mockImplementation(async (_target, _text, before, options) => {
+    f.setPane("› HUMAN_UNSENT_DRAFT\n\n? for shortcuts"); await before?.(); options?.onWrite?.(); written++; return { ok: true };
   });
   const result = await f.service.send(f.node.id, { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "hello" });
   expect(result.state).toBe("failed"); expect(written).toBe(0); expect(f.tmux.sendKeys).not.toHaveBeenCalled();
@@ -248,14 +293,14 @@ it("rechecks an unsolicited draft at the actual paste callback after adapter pre
 it("rechecks a newly appeared picker at the interrupt callback", async () => {
   const f = fixture(), view = await f.service.read(f.node.id); let written = 0;
   f.setPane("• Working (2s • esc to interrupt)\n› Ask Codex to do anything\n\n? for shortcuts");
-  f.tmux.sendKeys.mockImplementation(async (_target, _keys, before) => {
-    f.setPane("Do you want to proceed?\n› 1. Yes\n? for shortcuts"); await before?.(); written++; return { ok: true };
+  f.tmux.sendKeys.mockImplementation(async (_target, _keys, before, onWrite) => {
+    f.setPane("Do you want to proceed?\n› 1. Yes\n? for shortcuts"); await before?.(); onWrite?.(); written++; return { ok: true };
   });
   expect((await f.service.send(f.node.id, { requestId: randomUUID(), ownerKey: view.identity.ownerKey }, "interrupt")).state).toBe("failed"); expect(written).toBe(0);
 });
 it.each(["first\nsecond", "firstsecond "])("does not erase literal newline/space changes from staged proof (%j)", async staged => {
   const f = fixture(), view = await f.service.read(f.node.id);
-  f.tmux.sendText.mockImplementation(async (_target, _text, before) => { await before?.(); f.setPane(`› ${staged}\n\n? for shortcuts`); return { ok: true }; });
+  f.tmux.sendText.mockImplementation(async (_target, _text, before, options) => { await before?.(); options?.onWrite?.(); f.setPane(`› ${staged}\n\n? for shortcuts`); return { ok: true }; });
   expect((await f.service.send(f.node.id, { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "firstsecond" })).state).toBe("indeterminate");
   expect(f.tmux.sendKeys).not.toHaveBeenCalled();
 });
@@ -266,8 +311,8 @@ it("does not advertise sending without the required delivery lease", async () =>
 it("submits exact Unicode prose when its rendered cells and cursor agree", async () => {
   const f = fixture(), view = await f.service.read(f.node.id);
   expect((await f.service.send(f.node.id, { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "I’m here — café 👩🏽‍💻" })).state).toBe("submitted");
-  expect(f.tmux.sendText).toHaveBeenCalledWith("%1", "I’m here — café 👩🏽‍💻", expect.any(Function));
-  expect(f.tmux.sendKeys).toHaveBeenCalledWith("%1", ["Enter"], expect.any(Function));
+  expect(f.tmux.sendText).toHaveBeenCalledWith("%1", "I’m here — café 👩🏽‍💻", expect.any(Function), { onWrite: expect.any(Function) });
+  expect(f.tmux.sendKeys).toHaveBeenCalledWith("%1", ["Enter"], expect.any(Function), expect.any(Function));
 });
 
 // Sanitized shapes from the actual 0.161.0 / 2.1.294 isolated native screens.
@@ -280,14 +325,14 @@ it.each(["codex", "claude-code"] as const)("admits the actual padded %s empty la
   const view = await f.service.read(f.node.id);
   expect(view.availability.canSend).toBe(true);
   const text = "Hello native  ";
-  f.tmux.sendText.mockImplementation(async (_target, value, before) => { await before?.(); snapshot = claude ? nativeClaude(["❯\u00a0" + value + "    "]) : "› " + value + "    \n\n  GPT-6.1-Sol high · /tmp/chat-proof\n                    "; x = 2 + stringWidth(value); return { ok: true }; });
+  f.tmux.sendText.mockImplementation(async (_target, value, before, options) => { await before?.(); options?.onWrite?.(); snapshot = claude ? nativeClaude(["❯\u00a0" + value + "    "]) : "› " + value + "    \n\n  GPT-6.1-Sol high · /tmp/chat-proof\n                    "; x = 2 + stringWidth(value); return { ok: true }; });
   expect((await f.service.send(f.node.id, { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text })).state).toBe("submitted");
-  expect(f.tmux.sendKeys).toHaveBeenCalledWith("%1", ["Enter"], expect.any(Function));
+  expect(f.tmux.sendKeys).toHaveBeenCalledWith("%1", ["Enter"], expect.any(Function), expect.any(Function));
 });
 it("submits the actual Claude wordwrapped ordinary paragraph with exact cursor and paint padding", async () => {
   const f = fixture("claude-code"), view = await f.service.read(f.node.id);
   const text = "CHAT_PROBE helloThis is an isolated chat rendering check. Please reply briefly without tools. I want to verify that an ordinary paragraph remains readable and reaches the same conversation without alteration.";
-  f.tmux.sendText.mockImplementation(async (_target, _value, before) => { await before?.();
+  f.tmux.sendText.mockImplementation(async (_target, _value, before, options) => { await before?.(); options?.onWrite?.();
     f.tmux.capturePaneObservation.mockResolvedValue({ snapshot: nativeClaude([
       "❯\u00a0CHAT_PROBE helloThis is an isolated chat rendering check. Please reply        ",
       "  briefly without tools. I want to verify that an ordinary paragraph remains    ",
@@ -351,8 +396,8 @@ it("retains fresh receipt and owner identity when the normal resolver persists t
 });
 it("does not submit a newly appeared native question despite a valid model-only Codex footer", async () => {
   const f = fixture(), view = await f.service.read(f.node.id);
-  f.tmux.sendText.mockImplementation(async (_target, text, before) => {
-    await before?.(); f.setPane(`Do you want to proceed?\n› ${text}\n\n  GPT-6.1-Sol high · /tmp/proof\n`); return { ok: true };
+  f.tmux.sendText.mockImplementation(async (_target, text, before, options) => {
+    await before?.(); options?.onWrite?.(); f.setPane(`Do you want to proceed?\n› ${text}\n\n  GPT-6.1-Sol high · /tmp/proof\n`); return { ok: true };
   });
   const result = await f.service.send(f.node.id, { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "hello" });
   expect(result.state).toBe("indeterminate"); expect(f.tmux.sendKeys).not.toHaveBeenCalled();
@@ -360,15 +405,15 @@ it("does not submit a newly appeared native question despite a valid model-only 
 it("submits the actual Codex Unicode paragraph whose next word would exceed its 77-cell input width", async () => {
   const f = fixture(), view = await f.service.read(f.node.id);
   const text = "CHAT_REVIEW_CODEX: Read only acceptance.txt and report its marker. Also repeat café λ 日本語 🙂. Use no other tools.";
-  f.tmux.sendText.mockImplementation(async (_target, _text, before) => {
-    await before?.(); f.tmux.capturePaneObservation.mockResolvedValue({
+  f.tmux.sendText.mockImplementation(async (_target, _text, before, options) => {
+    await before?.(); options?.onWrite?.(); f.tmux.capturePaneObservation.mockResolvedValue({
       snapshot: "› CHAT_REVIEW_CODEX: Read only acceptance.txt and report its marker. Also       \n  repeat café λ 日本語 🙂. Use no other tools.                                  \n\n  GPT-6.1-Sol high · /tmp/proof\n",
       cursor: { x: 46, y: 1, width: 80, height: 24 },
     }); return { ok: true };
   });
   expect((await f.service.send(f.node.id, { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text })).state).toBe("submitted");
-  expect(f.tmux.sendText).toHaveBeenCalledWith("%1", text, expect.any(Function));
-  expect(f.tmux.sendKeys).toHaveBeenCalledWith("%1", ["Enter"], expect.any(Function));
+  expect(f.tmux.sendText).toHaveBeenCalledWith("%1", text, expect.any(Function), { onWrite: expect.any(Function) });
+  expect(f.tmux.sendKeys).toHaveBeenCalledWith("%1", ["Enter"], expect.any(Function), expect.any(Function));
 });
 
 it("reads and submits the same Claude owner with the exact noninteractive idle hint", async () => {
@@ -377,7 +422,7 @@ it("reads and submits the same Claude owner with the exact noninteractive idle h
   f.setPane(screen(""));
   const view = await f.service.read(f.node.id);
   expect(view.availability.canSend).toBe(true);
-  f.tmux.sendText.mockImplementation(async (_target, text, before) => { await before?.(); f.setPane(screen(text)); return { ok: true }; });
+  f.tmux.sendText.mockImplementation(async (_target, text, before, options) => { await before?.(); options?.onWrite?.(); f.setPane(screen(text)); return { ok: true }; });
   expect((await f.service.send(f.node.id, { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "hello" })).state).toBe("submitted");
-  expect(f.tmux.sendKeys).toHaveBeenCalledWith("%1", ["Enter"], expect.any(Function));
+  expect(f.tmux.sendKeys).toHaveBeenCalledWith("%1", ["Enter"], expect.any(Function), expect.any(Function));
 });

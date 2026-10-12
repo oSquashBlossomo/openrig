@@ -316,20 +316,22 @@ export class NativeChatService {
             if (!(kind === "message" ? boundary.canSend : boundary.canInterrupt)) throw new NativeChatError("not_ready", boundary.detail);
           }
           if (this.current(nodeId).stamp !== owner.stamp) throw new NativeChatError("owner_changed", "The native owner changed before input.");
-          // Commit BEFORE invoking tmux: any later error can include a partial write.
+        };
+        const onWrite = () => {
+          // Persist after the final guard, immediately before a possibly partial write.
           this.deps.db.prepare("UPDATE native_chat_requests SET effects_started=1 WHERE request_id=?").run(input.requestId); effects = true;
         };
         if (kind === "interrupt") {
-          const result = await this.deps.tmux.sendKeys(owner.binding.tmuxPane!, ["Escape"], beforeWrite);
+          const result = await this.deps.tmux.sendKeys(owner.binding.tmuxPane!, ["Escape"], beforeWrite, onWrite);
           if (!result.ok) throw new Error("Native key delivery was not confirmed");
           this.update(input.requestId, "submitted", "One interrupt key was sent to the native owner; waiting for native state to confirm it stopped."); return;
         }
-        const pasted = await this.deps.tmux.sendText(owner.binding.tmuxPane!, text, beforeWrite);
+        const pasted = await this.deps.tmux.sendText(owner.binding.tmuxPane!, text, beforeWrite, { onWrite });
         if (!pasted.ok) throw new Error("Native paste delivery was not confirmed");
         await new Promise(resolve => setTimeout(resolve, this.deps.settleMs ?? 200));
         await this.assertStaged(owner, text);
         submitting = true;
-        const submitted = await this.deps.tmux.sendKeys(owner.binding.tmuxPane!, ["Enter"], beforeWrite);
+        const submitted = await this.deps.tmux.sendKeys(owner.binding.tmuxPane!, ["Enter"], beforeWrite, onWrite);
         if (!submitted.ok) throw new Error("Native submit delivery was not confirmed");
         this.update(input.requestId, "submitted", hasHistoryWatermark
           ? "Text and Enter were sent to the same native owner. Waiting for a saved native user message; model consumption is not yet confirmed."
