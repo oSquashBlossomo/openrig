@@ -11,6 +11,7 @@ import { RigRepository } from "../src/domain/rig-repository.js";
 import { NativeChatService } from "../src/domain/native-chat.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { ContextUsageStore } from "../src/domain/context-usage-store.js";
+import { CodexThreadIdResolver } from "../src/domain/codex-thread-id.js";
 
 const clean: Array<() => void> = [];
 afterEach(() => clean.splice(0).forEach(fn => fn()));
@@ -29,6 +30,17 @@ function fixture(runtime: "codex" | "claude-code" = "codex") {
   mkdirSync(historyRoot, { recursive: true });
   const path = join(historyRoot, `${token}.jsonl`);
   writeFileSync(path, JSON.stringify(claude ? { type: "user", sessionId: token, message: { role: "user", content: "prior" } } : { type: "session_meta", payload: { id: token } }) + "\n");
+  if (claude) {
+    mkdirSync(join(root, "sessions"));
+    writeFileSync(join(root, "sessions", "10.json"), JSON.stringify({ name: session.sessionName, sessionId: token }));
+  } else {
+    const logs = new Database(join(root, "logs_2.sqlite"));
+    logs.exec("CREATE TABLE logs(ts INTEGER,target TEXT,thread_id TEXT,process_uuid TEXT,feedback_log_body TEXT)");
+    logs.prepare("INSERT INTO logs VALUES(?,?,?,?,?)").run(1000000000, "codex_core", token, "pid:10:" + randomUUID(), "resumed CLI thread"); logs.close();
+    const state = new Database(join(root, "state_5.sqlite"));
+    state.exec("CREATE TABLE threads(id TEXT,source TEXT,rollout_path TEXT)");
+    state.prepare("INSERT INTO threads VALUES(?,'cli',?)").run(token, path); state.close();
+  }
   const composer = (text: string) => claude ? `Prior answer\n────────────────────\n❯ ${text}\n────────────────────\n⏵⏵ auto mode on (shift+tab to cycle)` : `› ${text}\n\n? for shortcuts`;
   let pane = composer(claude ? "" : "Ask Codex to do anything");
   const tmux = {
@@ -137,9 +149,50 @@ it("uses the same verified Claude auto conversation and refuses a rotated PID-re
   const f = fixture("claude-code"), view = await f.service.read(f.node.id);
   expect(view.availability.canSend).toBe(true); expect(view.messages[0]!.text).toBe("prior");
   expect((await f.service.send(f.node.id, { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "hello Claude" })).state).toBe("submitted");
-  mkdirSync(join(f.root, "sessions"));
   writeFileSync(join(f.root, "sessions", "10.json"), JSON.stringify({ name: f.session.sessionName, sessionId: randomUUID() }));
   await expect(f.service.read(f.node.id)).rejects.toThrow(/verified/);
+});
+it.each(["missing", "malformed", "wrong-name"])("refuses Claude's old launch token with a %s current PID record", async failure => {
+  const f = fixture("claude-code"), view = await f.service.read(f.node.id);
+  const path = join(f.root, "sessions", "10.json");
+  if (failure === "missing") rmSync(path);
+  else writeFileSync(path, failure === "malformed" ? "{" : JSON.stringify({ name: "other", sessionId: f.token }));
+  await expect(f.service.read(f.node.id)).rejects.toMatchObject({ code: "owner_unverified" });
+  expect((await f.service.send(f.node.id, { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "hello" })).state).toBe("failed");
+  expect(f.tmux.sendText).not.toHaveBeenCalled(); expect(f.tmux.sendKeys).not.toHaveBeenCalled();
+});
+function logCodexCreation(root: string, token: string) {
+  const logs = new Database(join(root, "logs_2.sqlite"));
+  const process = (logs.prepare("SELECT process_uuid FROM logs LIMIT 1").get() as { process_uuid: string }).process_uuid;
+  logs.prepare("INSERT INTO logs VALUES(?,?,?,?,?)").run(1000000000, "codex_core::shell_snapshot", token, process, `app_server.request{rpc.method="thread/start" rpc.transport="in-process" app_server.client_name="codex-tui"}:app_server.thread_start.create_thread{otel.name="app_server.thread_start.create_thread"}:thread_spawn{otel.name="thread_spawn"}:session_init:environments.resolve{environment_id=local remote=false}:shell_snapshot{thread_id=${token}}: Shell snapshot successfully created: /tmp/fixture`);
+  logs.close();
+}
+it.each(["unresolved", "different", "before-rollout", "multiple-creations"])("refuses resumed Codex after /new with %s thread evidence", async failure => {
+  const f = fixture(), view = await f.service.read(f.node.id), other = randomUUID();
+  if (failure === "unresolved" || failure === "different") {
+    const state = new Database(join(f.root, "state_5.sqlite"));
+    if (failure === "different") state.exec("DELETE FROM threads");
+    state.prepare("INSERT INTO threads VALUES(?,'cli',?)").run(other, "other.jsonl"); state.close();
+    const logs = new Database(join(f.root, "logs_2.sqlite"));
+    logs.prepare("INSERT INTO logs VALUES(?,?,?,?,?)").run(1000000000, "codex_core", other, "pid:10:" + randomUUID(), "retained CLI thread"); logs.close();
+  } else {
+    if (failure === "multiple-creations") logCodexCreation(f.root, f.token);
+    logCodexCreation(f.root, other);
+  }
+  const retained = await new CodexThreadIdResolver({ codexHome: f.root }).resolve(10, "Sat Jan 1 12:00:00 2000");
+  expect(retained).toBe(failure === "unresolved" ? undefined : failure === "different" ? other : f.token);
+  await expect(f.service.read(f.node.id)).rejects.toMatchObject({ code: "owner_changed" });
+  expect((await f.service.send(f.node.id, { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "hello" })).state).toBe("failed");
+  expect(f.tmux.sendText).not.toHaveBeenCalled(); expect(f.tmux.sendKeys).not.toHaveBeenCalled();
+});
+it("does not press Enter if a new Codex thread appears after paste but before its first rollout", async () => {
+  const f = fixture(), view = await f.service.read(f.node.id); let written = 0;
+  f.tmux.sendKeys.mockImplementation(async (_target, _keys, before) => { await before?.(); written++; return { ok: true }; });
+  f.tmux.sendText.mockImplementation(async (_target, text, before) => {
+    await before?.(); f.setPane(`› ${text}\n\n? for shortcuts`); logCodexCreation(f.root, randomUUID()); return { ok: true };
+  });
+  expect((await f.service.send(f.node.id, { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "hello" })).state).toBe("indeterminate");
+  expect(written).toBe(0);
 });
 it.each(["running", "needs_input"] as const)("fresh hook %s vetoes an apparently empty composer", async state => {
   const f = fixture(), view = await f.service.read(f.node.id);
@@ -230,6 +283,7 @@ it("submits the actual Claude wordwrapped ordinary paragraph with exact cursor a
 });
 function freshCodexFixture() {
   const f = fixture();
+  rmSync(join(f.root, "logs_2.sqlite")); rmSync(join(f.root, "state_5.sqlite"));
   f.db.prepare("UPDATE sessions SET resume_type=NULL,resume_token=NULL WHERE id=?").run(f.session.id);
   f.deps.listProcesses = () => [{ pid: 10, ppid: 1, pgid: 10, tpgid: 10, executableName: "codex", command: "codex", startedAt: "Sat Jan 1 12:00:00 2000" }];
   const logs = new Database(join(f.root, "logs_2.sqlite"));

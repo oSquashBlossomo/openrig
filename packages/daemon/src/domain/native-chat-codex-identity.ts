@@ -8,7 +8,7 @@ const creation = new RegExp(`^app_server\\.request\\{([^{}]+)\\}:app_server\\.th
  * This is NOT resume eligibility and must never populate resume metadata.
  * The caller sandwiches two reads between stable native process observations.
  * A generic PID-owned UUID is insufficient: title-generation threads share it. */
-export function readFreshCodexChatThread(pid: number, startedAt: string | undefined, codexHome: string): string | undefined {
+function readCodexChatCreations(pid: number, startedAt: string | undefined, codexHome: string): Set<string> | undefined {
   const minTs = lstartToMinTs(startedAt);
   if (minTs === undefined || !Number.isSafeInteger(pid) || pid <= 0) return undefined;
   const identities = new Set<string>();
@@ -32,5 +32,17 @@ export function readFreshCodexChatThread(pid: number, startedAt: string | undefi
       }
     } catch { return undefined; } finally { db?.close(); }
   }
-  return identities.size === 1 ? [...identities][0]!.split("|")[1] : undefined;
+  return identities;
+}
+
+export function readFreshCodexChatThread(pid: number, startedAt: string | undefined, codexHome: string): string | undefined {
+  const identities = readCodexChatCreations(pid, startedAt, codexHome);
+  return identities?.size === 1 ? [...identities][0]!.split("|")[1] : undefined;
+}
+
+/** A /new creation precedes its first retained rollout; the retained-thread
+ * resolver alone can still report the old resume token during that window. */
+export function codexChatCreationsMatch(pid: number, startedAt: string | undefined, codexHome: string, expectedToken: string): boolean {
+  const identities = readCodexChatCreations(pid, startedAt, codexHome);
+  return identities !== undefined && identities.size <= 1 && [...identities].every(id => id.split("|")[1] === expectedToken);
 }

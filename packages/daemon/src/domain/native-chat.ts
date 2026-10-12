@@ -10,7 +10,7 @@ import { deriveActiveOccupantsByNode } from "./active-occupant.js";
 import { verifyClaudeCurrentSession, readClaudeProcessSession } from "./claude-session-identity.js";
 import { verifyCodexPaneProcess, type NativeProcessLister } from "./native-process-lineage.js";
 import { CodexThreadIdResolver } from "./codex-thread-id.js";
-import { readFreshCodexChatThread } from "./native-chat-codex-identity.js";
+import { codexChatCreationsMatch, readFreshCodexChatThread } from "./native-chat-codex-identity.js";
 import { assessNativeResumeProbe } from "./native-resume-probe.js";
 import { classifyPaneActivity } from "./session-transport.js";
 import { nativeChatTextHash, readNativeChatHistory } from "./native-chat-history.js";
@@ -159,7 +159,7 @@ export class NativeChatService {
       native = await verifyClaudeCurrentSession({ ...input, sessionName: session.sessionName, cwd: current.node.cwd });
       if (native) {
         const pidToken = readClaudeProcessSession({ process: native.process, sessionName: session.sessionName, configDir: this.claudeRoot(current.node.cwd) });
-        if (pidToken && pidToken !== session.resumeToken) native = null; // /clear beats the old launch argv
+        if (pidToken !== session.resumeToken) native = null; // /clear beats the old launch argv
       }
     } else if (current.freshCodex) {
       // null expectedToken also rejects a resume argv: only a pristine launched
@@ -177,11 +177,12 @@ export class NativeChatService {
       native = await verifyCodexPaneProcess({ ...input, requireResume: true });
       if (native) {
         const currentToken = await this.codexThreads.resolve(native.process.pid, native.process.startedAt!);
-        if (currentToken && currentToken !== session.resumeToken) throw new NativeChatError("owner_changed", "The native conversation changed. Refresh before sending.");
+        if (currentToken !== session.resumeToken || !codexChatCreationsMatch(native.process.pid, native.process.startedAt, this.codexHome, session.resumeToken!)) throw new NativeChatError("owner_changed", "The native conversation changed. Refresh before sending.");
       }
       if (!native) {
         native = await verifyCodexPaneProcess({ ...input, requireResume: false });
-        if (native && await this.codexThreads.resolve(native.process.pid, native.process.startedAt!) !== session.resumeToken) native = null;
+        if (native && (await this.codexThreads.resolve(native.process.pid, native.process.startedAt!) !== session.resumeToken
+          || !codexChatCreationsMatch(native.process.pid, native.process.startedAt, this.codexHome, session.resumeToken!))) native = null;
       }
     }
     if (!native || !conversationId || this.current(nodeId).stamp !== current.stamp) throw new NativeChatError("owner_unverified", "The exact native conversation could not be verified. Open Terminal.");

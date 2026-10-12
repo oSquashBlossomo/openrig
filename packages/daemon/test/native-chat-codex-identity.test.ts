@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readFreshCodexChatThread } from "../src/domain/native-chat-codex-identity.js";
+import { codexChatCreationsMatch, readFreshCodexChatThread } from "../src/domain/native-chat-codex-identity.js";
 import { lstartToMinTs } from "../src/domain/codex-thread-id.js";
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true })));
@@ -50,4 +50,21 @@ it("requires a parseable process start identity and never creates missing native
   expect(readFreshCodexChatThread(10, "unknown", f.root)).toBeUndefined();
   expect(readFreshCodexChatThread(0, start, f.root)).toBeUndefined();
   expect(readFreshCodexChatThread(10, start, join(f.root, "missing"))).toBeUndefined();
+});
+it("allows a resumed thread with no creation or only its own creation, ignoring title threads", () => {
+  const f = setup();
+  expect(codexChatCreationsMatch(10, start, f.root, f.token)).toBe(true);
+  f.insert(); f.insert({ token: randomUUID(), body: "native title generation" });
+  expect(codexChatCreationsMatch(10, start, f.root, f.token)).toBe(true);
+  expect(codexChatCreationsMatch(10, start, f.root, randomUUID())).toBe(false);
+  f.db.close();
+});
+it.each(["two-threads", "two-generations", "overflow", "missing-logs"])("refuses resumed identity with %s creation evidence", variant => {
+  const f = setup(); f.insert();
+  if (variant === "two-threads") { const other = randomUUID(); f.insert({ token: other, body: f.body.replaceAll(f.token, other) }); }
+  if (variant === "two-generations") f.insert({ process: `pid:10:${randomUUID()}` });
+  if (variant === "overflow") for (let i = 0; i < 64; i++) f.insert();
+  f.db.close();
+  if (variant === "missing-logs") rmSync(join(f.root, "logs_2.sqlite"));
+  expect(codexChatCreationsMatch(10, start, f.root, f.token)).toBe(false);
 });
