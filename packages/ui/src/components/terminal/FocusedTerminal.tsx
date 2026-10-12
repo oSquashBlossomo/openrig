@@ -386,6 +386,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
   const promptScrollCancelsRef = useRef(new Set<() => void>());
   // The latest accepted input's reveal; the next accepted input supersedes it.
   const inputRevealRef = useRef<(() => void) | null>(null);
+  const inputEpochRef = useRef(0);
   // Bumped by user scroll/pan/key intent on the scroll owner. Output and
   // geometry restores only put back offsets the user did not change.
   const userScrollEpochRef = useRef(0);
@@ -449,6 +450,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
   const sendInput = useCallback((data: string, paste = false): boolean => {
     const wsc = wsRef.current;
     if (!wsc || wsc.readyState !== WebSocket.OPEN || !geometryRef.current || !ownsLiveSeat()) return false;
+    inputEpochRef.current++;
     const frames = (paste ? [{ type: "text", text: data } as WsMessage] : mapXtermInput(data)).map((msg) => JSON.stringify(msg));
     // OPR.0.4.0.39: typing returns to the live bottom before sending input;
     // that frame counts toward the same budget.
@@ -1062,6 +1064,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
     if (!staged || staged.sessionName !== sessionName || !ownsLiveSeat()) return;
     const op = ++clipboardOpRef.current;
     const gen = generationRef.current, ws = wsRef.current;
+    const inputEpoch = inputEpochRef.current;
     setCheckingCommand(true);
     setClipboard("Checking this seat's native conversation before pasting…");
     let verdict: true | { refuse: string };
@@ -1073,6 +1076,7 @@ export function FocusedTerminal({ sessionName, daemonBaseUrl, fit = "natural", i
     if (!mountedRef.current) return;
     setCheckingCommand(false);
     if (clipboardOpRef.current !== op) return;
+    if (inputEpochRef.current !== inputEpoch) { setClipboard("Command not pasted: terminal input changed while checking. Nothing was sent."); return; }
     if (commandRef.current?.id !== staged.id) { setClipboard("Command not pasted: it was closed or replaced while checking. Nothing was sent."); return; }
     if (generationRef.current !== gen || wsRef.current !== ws) { setClipboard("Command not pasted: the terminal reconnected while checking. Nothing was sent; tap Paste command again."); return; }
     if (verdict !== true) { setClipboard(`Command not pasted: ${verdict.refuse} Nothing was sent.`); return; }

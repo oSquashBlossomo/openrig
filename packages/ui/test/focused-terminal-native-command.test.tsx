@@ -8,14 +8,14 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render } from "@testing-library/react";
 
-const s = vi.hoisted(() => ({ sockets: [] as any[] }));
+const s = vi.hoisted(() => ({ sockets: [] as any[], onData: null as ((data: string) => void) | null }));
 vi.mock("@xterm/xterm", () => ({ Terminal: class {
   options = { fontSize: 12 }; cols = 90; rows = 4;
   buffer = { active: { viewportY: 0, getLine: () => undefined } };
   open(el: HTMLElement) { el.appendChild(document.createElement("textarea")); }
   resize() {} write(_d: string, done?: () => void) { done?.(); }
   focus() {} hasSelection() { return false; } getSelection() { return ""; }
-  dispose() {} scrollToBottom() {} onData() {} attachCustomWheelEventHandler() {}
+  dispose() {} scrollToBottom() {} onData(cb: (data: string) => void) { s.onData = cb; } attachCustomWheelEventHandler() {}
 } }));
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 
@@ -23,6 +23,7 @@ import { FocusedTerminal, type StagedCommand } from "../src/components/terminal/
 
 beforeEach(() => {
   s.sockets.length = 0;
+  s.onData = null;
   vi.useFakeTimers();
   vi.stubGlobal("WebSocket", class {
     static OPEN = 1; readyState = 0; sent: string[] = [];
@@ -128,6 +129,33 @@ it("a check that settles after a reconnect sends nothing, on either socket", asy
   expect(allFrames()).toEqual([]);
   expect(command.onPasted).not.toHaveBeenCalled();
   expect(view.getByTestId("focused-terminal-clipboard-fixture").textContent).toMatch(/nothing was sent/i);
+});
+
+it.each(["typed text", "typed Enter", "toolbar Enter", "native paste"])("%s during a command check cancels the staged paste but preserves the operator's input", async input => {
+  let settle!: (v: true) => void;
+  const check = vi.fn<StagedCommand["check"]>(() => new Promise<true>(resolve => { settle = resolve; }));
+  const command = staged({ check });
+  const view = render(<FocusedTerminal sessionName="fixture" command={command} />);
+  ready(s.sockets[0]);
+  fireEvent.click(pasteButton(view));
+  expect(pasteButton(view).disabled).toBe(true);
+  if (input === "toolbar Enter") fireEvent.click(view.getByRole("button", { name: "Enter", exact: true }));
+  else if (input === "native paste") fireEvent.paste(view.container.querySelector("textarea")!, { clipboardData: { getData: () => "operator draft" } });
+  else act(() => { s.onData!(input === "typed Enter" ? "\r" : "operator draft"); });
+  const expected = input.includes("Enter") ? [{ type: "keys", keys: ["Enter"] }] : [{ type: "text", text: "operator draft" }];
+  expect(allFrames()).toEqual(expected);
+  await act(async () => { settle(true); });
+  await flush();
+  expect(allFrames()).toEqual(expected);
+  expect(command.onPasted).not.toHaveBeenCalled();
+  expect(view.getByTestId("focused-terminal-clipboard-fixture").textContent).toMatch(/nothing was sent/i);
+  expect(box(view)!.value).toBe(TEXT);
+  expect(pasteButton(view).disabled).toBe(false);
+  check.mockResolvedValueOnce(true);
+  fireEvent.click(pasteButton(view));
+  await flush();
+  expect(allFrames()).toEqual([...expected, { type: "text", text: TEXT }]);
+  expect(command.onPasted).toHaveBeenCalledTimes(1);
 });
 
 it("a check that settles after a switch to another session or unmount sends nothing", async () => {
