@@ -187,7 +187,7 @@ deliberate deferral without claiming to know the effective native permission mod
   (`:328`); fork = `claude <posture> --resume <parentId> --fork-session
   --session-id <generatedId> --name <seat>`, which needs Claude Code 2.0.73 or
   later. `<posture>` is the flag above plus any non-interruptive,
-  kernel operational or team default argument. Each command may carry a `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1`
+  kernel operational or team default argument (this fork never sets the team default). Each command may carry a `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1`
   env prefix (`yolo-mode.ts:101–103`; on by default, off with
   `OPENRIG_CLAUDE_DISABLE_ALTERNATE_SCREEN=0`), a `--model <model>` argument
   (`:275`) and `--effort <effort>` (`:277`). A fresh launch and a fork both

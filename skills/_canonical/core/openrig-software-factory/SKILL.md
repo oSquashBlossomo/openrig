@@ -80,21 +80,16 @@ model turns, but delivered wakes and resumed work **can spend tokens**. Prefer
 an event-driven wait to frequent empty reminders. Wakes cannot answer a user
 question, clear a permission prompt or guarantee progress.
 
-**Ask once before launching or assigning work.** For a team with no permission
-policy, seat choice or named Codex profile, recommend keeping the team default:
-Claude team seats run ordinary `rig` commands, project reads and common tests
-without prompts, and lifecycle commands such as `rig up` and `rig down` still
-ask. Only if they want more, offer: “Remember these selected OpenRig commands in
-your native settings for this project?” **Yes** / **No — keep the team default**.
-Reuse an existing explicit choice for this scope.
-Explain that a remembered allowance can cover all `rig` verbs, but Claude team
-seats still ask before lifecycle commands, at personal project scope unless the
-user explicitly chooses user-wide sessions. It is not global YOLO or permission
-to invent work.
+**Ask once before launching or assigning work:** “Allow your agents to run
+OpenRig commands without repeated permission prompts?” **Yes — recommended** /
+**No — keep prompts**. Reuse an existing explicit choice for this scope. Explain
+that this covers all `rig` verbs, including starting/stopping agents and changing
+configuration, at personal project scope unless the user explicitly chooses
+user-wide sessions. It is not global YOLO or permission to invent work.
 On an actual Yes, follow [Applying a permission policy](#find-the-compatible-permission-guide)
 to add existing native rules, preserve stricter/unrelated settings, and verify
-the target conversation. No or no answer leaves settings alone and keeps the
-team default. Remember the explicit choice and exact additions in the
+the target conversation. No or no answer leaves settings alone and continues
+with existing prompts. Remember the explicit choice and exact additions in the
 existing onboarding context; “Undo the OpenRig command allowances added by this
 setup” removes only those additions. Broader access remains a separate opt-in.
 

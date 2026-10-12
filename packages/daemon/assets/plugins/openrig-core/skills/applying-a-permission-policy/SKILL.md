@@ -24,30 +24,29 @@ Reuse an existing explicit choice for these harnesses and this scope from the
 user's onboarding context; do not ask again. Existing rules are configuration,
 not evidence of consent to expand their scope. Preserve them without expansion.
 
-For a team with no explicit policy, recommend keeping the team default. Claude
-already allows ordinary `rig` commands, project reads and common tests, while
-lifecycle commands ask. Codex already has writable workspace and pod state;
-its `on-request` policy does **not** guarantee lifecycle prompts. Explicit
-policies, seat choices and named Codex profiles keep their existing meaning.
+If the choice is unknown, briefly explain:
 
-Native restrictions can still prompt for installs, commits, other shell
-commands and writes outside writable roots. With the Claude team default, an
-allow does **not** override lifecycle ask rules: `rig up`, `rig down` and the other listed
-lifecycle commands still ask even after Yes. Do not promise prompt-free operation.
+> This allows the whole `rig` command family, including starting/stopping agents,
+> changing OpenRig configuration and launching processes. It is not global YOLO
+> or permission to invent work. The scope is your personal settings for this
+> project unless you explicitly choose your user-wide sessions instead.
+>
+> Allow your agents to run OpenRig commands without repeated permission prompts?
+> **Yes — recommended** / **No — keep prompts**
 
-Only offer additional persistent allowances when wanted, for the selected
-project or explicitly user-wide scope, or to adjust an explicit seat policy:
+This fork applies no team launch default: a seat with no explicit policy or seat
+choice launches with its native settings and profile, so ordinary `rig`
+commands, project reads and tests prompt unless native rules already allow them.
+Native restrictions can still prompt for installs, commits, other shell commands
+and writes outside writable roots. Do not promise prompt-free operation.
 
-> Remember these selected OpenRig commands in your native settings for this
-> project? This is separate from the team launch default; stricter rules and
-> Claude lifecycle asks remain. **Yes / No — keep the team default**
-
-- **Yes:** require an affirmative answer, then apply the procedure below only
-  at the agreed scope. Do not replace ask/deny rules or substitute user-wide
-  settings when project rules are unsupported.
-- **No / no answer:** leave settings and any existing explicit choice unchanged.
-  With no policy selected, keep it unset; never record `none` to mean keeping
-  the team default. Do not repeat the question during this setup.
+- **Yes:** require an actual affirmative answer, then apply the procedure below
+  at that scope for the selected harnesses. Never substitute user-wide rules
+  when project rules are unsupported, and do not replace ask/deny rules.
+  Native restrictions still apply.
+- **No:** leave permission settings unchanged and continue with existing prompts.
+- **No answer:** make no settings change, infer no consent and continue with
+  existing prompts. Do not keep asking during this setup.
 
 A recommendation is not consent. Broader filesystem/network access requires
 its own explicit choice; permission consent is separate from launch approval.
@@ -67,8 +66,7 @@ an answered setup question or ask again for routine steps already authorized.
 
 | Choice | What the agent configures |
 | --- | --- |
-| Keep the team default | Leave an unset policy unset and preserve current native settings; Claude lifecycle asks and other native restrictions remain. Preserve any existing explicit choice. |
-| “Prompt for everything” (`none`) | Only on an explicit request, opt out of the team allowances. Native rules still decide each prompt; `none` does not guarantee a prompt for every command. |
+| Keep prompts | Preserve current native settings and any existing explicit choice, and handle requests when they arise. |
 | Remember selected commands | Add native allow rules for the chosen family or narrower verbs, leaving other rules and sandbox settings intact. |
 | Broader permissive operation | Explain filesystem/network exposure and configure only the explicitly selected native mode and compatible launch settings. |
 
@@ -114,7 +112,7 @@ execution, an entire interpreter or a generic shell wrapper.
 6. Verify an ordinary matching operation twice in the target conversation and
    check that an unrelated command gained no matching rule. Use harmless reads,
    not destructive probes. Report effective settings, their source and remaining
-   prompts; a command already allowed by the launch default does not prove a new
+   prompts; a command already allowed by an existing rule does not prove a new
    persistent rule loaded.
    A parser match alone does not establish native behavior.
 

@@ -740,25 +740,15 @@ your circumstances is configuration, and the ones that are not, another agent ca
   actually in effect: discovers custom policy specs, validates refs (malformed can never read as
   valid OR absent), shows what would apply. The older `rig policy list|show|current|apply` forms
   remain as aliases with the same output.
-- **What a team seat may do without asking.** Claude seats in a team that OpenRig launches run
-  `rig` commands, project reads and common test commands without a prompt; lifecycle commands
-  (`rig up`, `rig down`, `rig seat stop`, `rig daemon stop` and similar) ask. Routine `rig`
-  commands used to prompt, so don't widen permissions to avoid prompts. Codex team seats run
-  `workspace-write` with the workspace root and their pod's state folder writable. When Codex's
-  own config check shows a default-sandbox seat is eligible, OpenRig turns its network access on
-  (`network_access = false` keeps it off); if that check can't be read, the launch is left
-  unchanged. So full bypass is usually not needed just to reach the daemon; this was not checked
-  with real logins or on Linux. Explicit author or person policies, explicit seat selections and
-  named Codex profiles turn these team defaults off, and native ask and deny rules still apply.
-  When setting up a team, the operator recommends keeping this default. It offers to remember
-  extra OpenRig commands in your native settings, for this project or user-wide, only when you
-  want that, and stricter rules and Claude's lifecycle asks remain. The `openrig-core` plugin's
-  `applying-a-permission-policy` skill has the procedure. In a Claude team seat, help on lifecycle
-  commands (`rig down --help`, `-h`) and equivalent spellings of allowed commands run without a
-  prompt; the lifecycle actions still ask, and pipelines, command substitutions, redirects and
-  heredocs are left to Claude's own check. The kernel operator's Claude session also runs routine
-  inspection (Python, command lookup, `cd`, text helpers) and WebFetch without prompts. Known
-  limit: Codex team seats are not yet asked before lifecycle commands.
+- **What a team seat may do without asking.** This fork applies no team launch default: a seat
+  with no explicit author or person policy, seat selection or named Codex profile launches with its
+  native settings and profile, so `rig` commands, project reads and tests prompt unless native rules
+  already allow them. When Codex's own config check shows a default-sandbox seat is eligible,
+  OpenRig turns its network access on (`network_access = false` keeps it off); if that check can't
+  be read, the launch is left unchanged. When setting up a team, the operator asks once whether to
+  remember OpenRig commands in your native settings, for this project or user-wide, and changes
+  nothing without your answer. The `openrig-core` plugin's `applying-a-permission-policy` skill has
+  the procedure. Native ask and deny rules still apply.
 - **`permission_policy: builtin:auto`**, and a fixed order for a seat's first launch:
   `rig seat set-permissions`, then the member policy, then the rig policy, then the system floor.
   See `docs/reference/rig-spec.md#built-in-permission-policies`.

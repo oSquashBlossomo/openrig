@@ -43,10 +43,10 @@ is left unchanged. To keep it off, set `network_access = false` under
 within a few seconds, the seat starts without it. A command allowance does not
 change general sandbox/network settings. The starter's `profile: default` selects OpenRig resources, not a native
 permission profile.
-Agent-guided setup [recommends keeping the team default](#have-your-agent-configure-permissions)
-and offers to remember selected OpenRig commands in your native settings only if
-you want that. An existing explicit choice is reused; No or no answer keeps the
-team default and leaves settings unchanged. Broader access is separate.
+Agent-guided setup [asks once](#have-your-agent-configure-permissions): “Allow
+your agents to run OpenRig commands without repeated permission prompts?”
+**Yes — recommended** / **No — keep prompts**. An existing explicit choice is
+reused; No or no answer leaves settings unchanged. Broader access is separate.
 
 If permission prompts are slowing you down, consider the
 [workshop bundle](https://openrig.dev/rigs/workshop). It ships with broad access
@@ -713,26 +713,22 @@ shows a small reviewed example and how to retain custody through a genuine wait.
 
 ## Have your agent configure permissions
 
-For a team with no permission policy, your agent recommends keeping the
-[team default](rig-spec.md#team-launch-defaults), unless you already made an
-explicit choice for these harnesses and this scope. It offers additional
-remembered allowances only if you want them:
+Before team launch, your agent asks once, unless you already made an explicit
+choice for these harnesses and this scope:
 
-> Remember these selected OpenRig commands in your native settings for this
-> project? This is separate from the team launch default; stricter rules and
-> Claude lifecycle asks remain. **Yes / No — keep the team default**
+> Allow your agents to run OpenRig commands without repeated permission prompts?
+> **Yes — recommended** / **No — keep prompts**
 
-A remembered allowance can cover the whole `rig` family, but on Claude team
-seats lifecycle commands such as `rig up` and `rig down` still ask. It is not
-global YOLO or permission to invent work. The scope is your personal settings
-for this project unless you explicitly choose user-wide sessions, which can
-affect your other projects.
+This covers the entire `rig` family, including starting/stopping agents,
+configuration and launching processes. It is not global YOLO or permission to
+invent work. The scope is your personal settings for this project unless you
+explicitly choose user-wide sessions, which can affect your other projects.
 
 On an actual **Yes**, the agent backs up the relevant files, adds the existing
 native rules without duplicates, and preserves stricter rules and unrelated
 settings. It checks bare and actual absolute-path invocations, rule loading and
 repeated harmless reads in the target conversation. No or no answer leaves
-settings alone and keeps the team default. Unsupported scope or a
+settings alone and continues with existing prompts. Unsupported scope or a
 managed restriction is reported; it is not permission to grant broader access.
 
 The agent remembers an explicit choice, scope and exact additions in existing
@@ -884,11 +880,9 @@ typing guard are separate controls.
 
 In the shipped `starter`, `dev-build` runs Claude Code. For a **Claude Code** seat,
 OpenRig normally passes `--permission-mode acceptEdits`: edits can proceed, while
-other actions follow native rules and prompts. For a seat with no permission
-policy or per-seat choice it also passes the per-launch team default (`--settings` allowing ordinary
-`rig` commands, project reads and common tests, with a session hook asking for
-lifecycle commands while allowing literal help forms such as `rig down --help`);
-personal and project rules still apply. Nothing is written to your settings files. To explicitly select the bypass launch flag for that rig:
+other actions follow native rules and prompts. It does not add a global
+`Bash(rig:*)` allowance, and this fork passes no per-launch team default for
+seats without a policy. To explicitly select the bypass launch flag for that rig:
 
 ```sh
 rig policy apply yolo --spec ./my-claude-rig/rig.yaml
@@ -910,10 +904,9 @@ which accepts it with a launch flag and writes nothing to your settings; see
 `rig policy apply auto --spec ./my-claude-rig/rig.yaml` (also `rig setup --policy
 auto --spec ./my-claude-rig/rig.yaml`) records `builtin:auto` instead: Claude seats launch with
 `--permission-mode auto`, and Codex and Pi seats, which have no auto mode, launch
-at the floor. To return future launches to the team default, remove
-`permission_policy` from the spec along with any member-level bypass override.
-`rig policy apply none --spec ./my-claude-rig/rig.yaml` instead records plain
-`acceptEdits` without the team allowances. Native rules
+at the floor. To return
+future launches to OpenRig's `acceptEdits` mode, use `rig policy apply none --spec
+./my-claude-rig/rig.yaml` and remove any member-level bypass override. Native rules
 and managed restrictions still matter; this flag is not a promise about sandbox
 or account access. See [Claude permissions](https://code.claude.com/docs/en/permissions).
 

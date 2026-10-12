@@ -43,7 +43,7 @@ import {
 import { parsePolicySpec, validatePolicySpec } from "../lib/permission-policy/policy-spec.js";
 
 const HONESTY_PIN =
-  "The team and kernel launch defaults pass allow/ask lists per launch and save none; a selected Claude settings fragment can merge native settings, rules included; the harness-native permissions are the control surface. " +
+  "This fork passes no team or kernel launch default and bakes NO allow/ask/deny permission policy; a selected Claude settings fragment can merge native settings, rules included; the harness-native permissions are the control surface. " +
   "OpenRig records posture into RigSpec; harness-native permissions enforce — never runtime enforcement.";
 
 const BUILTIN_DESCRIPTIONS: Record<string, string> = {
