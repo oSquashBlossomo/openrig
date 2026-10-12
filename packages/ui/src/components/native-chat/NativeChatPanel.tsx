@@ -454,7 +454,7 @@ function ChatBody({ target, nodeId, layout, onOpenTerminal, onOpenCommand, paste
     rerender();
   };
   const sendInterrupt = async () => {
-    if (!data || !slotKey || interruptBlocked || interruptUnresolved(readChatSlot(slotKey))) return;
+    if (!data || !slotKey || identityBlocked || interruptBlocked || interruptUnresolved(readChatSlot(slotKey))) return;
     const key = slotKey;
     const request = { requestId: crypto.randomUUID(), ownerKey: data.identity.ownerKey };
     updateChatSlot(key, (s) => ({ ...s, interrupt: { ...request, text: "", phase: "posting", detail: "" } }));
@@ -563,7 +563,7 @@ function ChatBody({ target, nodeId, layout, onOpenTerminal, onOpenCommand, paste
           {d.availability.state === "ready" ? "Ready" : d.availability.state === "busy" ? "Working" : d.availability.state === "needs_terminal" ? "Needs Terminal" : "Unavailable"}
         </span>
         {d.availability.canInterrupt ? (
-          <button type="button" data-testid="native-chat-interrupt" disabled={interruptBlocked} onClick={() => void sendInterrupt()}
+          <button type="button" data-testid="native-chat-interrupt" disabled={!!identityBlocked || interruptBlocked} onClick={() => void sendInterrupt()}
             className="inline-flex min-h-8 items-center gap-1 border border-outline-variant px-2 text-on-surface hover:bg-surface-low disabled:opacity-50">
             <Square aria-hidden="true" className="h-3 w-3" /> Interrupt
           </button>

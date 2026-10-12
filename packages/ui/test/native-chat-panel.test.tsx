@@ -594,6 +594,23 @@ describe("native chat: Terminal fallback", () => {
 });
 
 describe("native chat: interrupt", () => {
+  it.each(["host refusal", "session mismatch", "failed read"])("blocks interrupt after %s while cached busy history remains readable", async reason => {
+    const busy = page("n1", { messages: [msg("m1", "assistant", "still working")], availability: { state: "busy", detail: "", canSend: false, canInterrupt: true } });
+    pages.set("n1", busy);
+    const view = renderChat(target("n1"));
+    const button = await screen.findByTestId("native-chat-interrupt") as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    if (reason === "host refusal") view.show(target("n1", { blockedReason: "The seat's tmux pane changed." }));
+    else {
+      pages.set("n1", reason === "session mismatch" ? { ...busy, identity: { ...busy.identity, sessionName: "replacement", ownerKey: "replacement-owner" } } : { status: 500, body: { error: "read failed" } });
+      await act(async () => { await view.client.invalidateQueries({ queryKey: ["native-chat"] }); });
+    }
+    await waitFor(() => expect(button.disabled).toBe(true));
+    expect(screen.getByText("still working")).toBeTruthy();
+    fireEvent.click(button);
+    expect(posts).toHaveLength(0);
+  });
+
   it("sends one interrupt at a time and checks a lost answer under the same id", async () => {
     pages.set("n1", page("n1", { availability: { state: "busy", detail: "The agent is working.", canSend: false, canInterrupt: true } }));
     renderChat(target("n1"));
