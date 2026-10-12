@@ -18,8 +18,8 @@ function readCodexChatCreations(pid: number, startedAt: string | undefined, code
     let db: Database.Database | undefined;
     try {
       db = new Database(path, { readonly: true, fileMustExist: true });
-      const rows = db.prepare("SELECT thread_id,process_uuid,substr(feedback_log_body,1,8193) AS body FROM logs WHERE process_uuid LIKE ? AND ts > ? AND target='codex_core::shell_snapshot' AND thread_id IS NOT NULL LIMIT 65")
-        .all(`pid:${pid}:%`, minTs) as Array<{ thread_id: string; process_uuid: string; body: string }>;
+      const rows = db.prepare("SELECT ts,thread_id,process_uuid,substr(feedback_log_body,1,8193) AS body FROM logs WHERE process_uuid LIKE ? AND ts >= ? AND target='codex_core::shell_snapshot' AND thread_id IS NOT NULL LIMIT 65")
+        .all(`pid:${pid}:%`, minTs) as Array<{ ts: number; thread_id: string; process_uuid: string; body: string }>;
       if (rows.length > 64) return undefined;
       for (const row of rows) {
         const match = typeof row.body === "string" && row.body.length <= 8192 ? creation.exec(row.body) : null;
@@ -28,6 +28,8 @@ function readCodexChatCreations(pid: number, startedAt: string | undefined, code
           || !/(?:^| )rpc\.transport="in-process"(?: |$)/.test(match[1]!)
           || !/(?:^| )app_server\.client_name="codex-tui"(?: |$)/.test(match[1]!)
           || !new RegExp(`^pid:${pid}:${UUID}$`, "i").test(row.process_uuid)) continue;
+        // A creation in lstart's ambiguous second cannot prove absence or ownership.
+        if (row.ts === minTs) return undefined;
         identities.add(`${row.process_uuid}|${row.thread_id}`);
       }
     } catch { return undefined; } finally { db?.close(); }

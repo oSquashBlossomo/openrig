@@ -53,6 +53,7 @@ it("requires a parseable process start identity and never creates missing native
 });
 it("allows a resumed thread with no creation or only its own creation, ignoring title threads", () => {
   const f = setup();
+  f.insert({ ts: lstartToMinTs(start)!, token: randomUUID(), body: "native title generation" });
   expect(codexChatCreationsMatch(10, start, f.root, f.token)).toBe(true);
   f.insert(); f.insert({ token: randomUUID(), body: "native title generation" });
   expect(codexChatCreationsMatch(10, start, f.root, f.token)).toBe(true);
@@ -67,4 +68,8 @@ it.each(["two-threads", "two-generations", "overflow", "missing-logs"])("refuses
   f.db.close();
   if (variant === "missing-logs") rmSync(join(f.root, "logs_2.sqlite"));
   expect(codexChatCreationsMatch(10, start, f.root, f.token)).toBe(false);
+});
+it.each(["same", "different"])("refuses ambiguous start-second creation even for the %s thread", variant => {
+  const f = setup(); f.insert({ ts: lstartToMinTs(start)! }); f.db.close();
+  expect(codexChatCreationsMatch(10, start, f.root, variant === "same" ? f.token : randomUUID())).toBe(false);
 });

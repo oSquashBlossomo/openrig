@@ -11,7 +11,7 @@ import { RigRepository } from "../src/domain/rig-repository.js";
 import { NativeChatService } from "../src/domain/native-chat.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { ContextUsageStore } from "../src/domain/context-usage-store.js";
-import { CodexThreadIdResolver } from "../src/domain/codex-thread-id.js";
+import { CodexThreadIdResolver, lstartToMinTs } from "../src/domain/codex-thread-id.js";
 
 const clean: Array<() => void> = [];
 afterEach(() => clean.splice(0).forEach(fn => fn()));
@@ -161,10 +161,10 @@ it.each(["missing", "malformed", "wrong-name"])("refuses Claude's old launch tok
   expect((await f.service.send(f.node.id, { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "hello" })).state).toBe("failed");
   expect(f.tmux.sendText).not.toHaveBeenCalled(); expect(f.tmux.sendKeys).not.toHaveBeenCalled();
 });
-function logCodexCreation(root: string, token: string) {
+function logCodexCreation(root: string, token: string, ts = 1000000000) {
   const logs = new Database(join(root, "logs_2.sqlite"));
   const process = (logs.prepare("SELECT process_uuid FROM logs LIMIT 1").get() as { process_uuid: string }).process_uuid;
-  logs.prepare("INSERT INTO logs VALUES(?,?,?,?,?)").run(1000000000, "codex_core::shell_snapshot", token, process, `app_server.request{rpc.method="thread/start" rpc.transport="in-process" app_server.client_name="codex-tui"}:app_server.thread_start.create_thread{otel.name="app_server.thread_start.create_thread"}:thread_spawn{otel.name="thread_spawn"}:session_init:environments.resolve{environment_id=local remote=false}:shell_snapshot{thread_id=${token}}: Shell snapshot successfully created: /tmp/fixture`);
+  logs.prepare("INSERT INTO logs VALUES(?,?,?,?,?)").run(ts, "codex_core::shell_snapshot", token, process, `app_server.request{rpc.method="thread/start" rpc.transport="in-process" app_server.client_name="codex-tui"}:app_server.thread_start.create_thread{otel.name="app_server.thread_start.create_thread"}:thread_spawn{otel.name="thread_spawn"}:session_init:environments.resolve{environment_id=local remote=false}:shell_snapshot{thread_id=${token}}: Shell snapshot successfully created: /tmp/fixture`);
   logs.close();
 }
 it.each(["unresolved", "different", "before-rollout", "multiple-creations"])("refuses resumed Codex after /new with %s thread evidence", async failure => {
@@ -193,6 +193,21 @@ it("does not press Enter if a new Codex thread appears after paste but before it
   });
   expect((await f.service.send(f.node.id, { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "hello" })).state).toBe("indeterminate");
   expect(written).toBe(0);
+});
+it.each(["resume-argv", "retained-fallback"])("refuses same-start-second /new evidence through %s without input effects", async branch => {
+  const f = fixture();
+  if (branch === "retained-fallback") {
+    const original = f.deps.listProcesses;
+    f.deps.listProcesses = () => original().map(row => ({ ...row, command: "codex" }));
+  }
+  const service = new NativeChatService(f.deps), view = await service.read(f.node.id);
+  logCodexCreation(f.root, randomUUID(), lstartToMinTs("Sat Jan 1 12:00:00 2000")!);
+  expect(await new CodexThreadIdResolver({ codexHome: f.root }).resolve(10, "Sat Jan 1 12:00:00 2000")).toBe(f.token);
+  await expect(service.read(f.node.id)).rejects.toThrow();
+  const requestId = randomUUID();
+  expect((await service.send(f.node.id, { requestId, ownerKey: view.identity.ownerKey, text: "hello" })).state).toBe("failed");
+  expect(f.db.prepare("SELECT effects_started FROM native_chat_requests WHERE request_id=?").get(requestId)).toEqual({ effects_started: 0 });
+  expect(f.tmux.sendText).not.toHaveBeenCalled(); expect(f.tmux.sendKeys).not.toHaveBeenCalled();
 });
 it.each(["running", "needs_input"] as const)("fresh hook %s vetoes an apparently empty composer", async state => {
   const f = fixture(), view = await f.service.read(f.node.id);
