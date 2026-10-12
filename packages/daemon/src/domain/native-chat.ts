@@ -254,9 +254,13 @@ export class NativeChatService {
     const rows = this.deps.db.prepare("SELECT * FROM native_chat_requests WHERE node_id=? AND conversation_id=? ORDER BY created_at DESC LIMIT 30").all(nodeId, owner.conversationId) as RequestRow[];
     const requests = rows.map(original => {
       let row = this.receipt(original.request_id)!;
-      if (page && row.kind === "message" && (row.state === "submitted" || row.state === "indeterminate") && row.file_key === page.fileKey
-        && page.records.some(item => item.message.role === "user" && item.offset >= (row.history_offset ?? Infinity) && item.textHash === nativeChatTextHash(row.text))) {
-        this.update(row.request_id, "observed", "A matching later user message is saved in this native conversation. This is not a model-completion receipt."); row = this.receipt(row.request_id)!;
+      if (page && row.kind === "message" && (row.state === "submitted" || row.state === "indeterminate") && row.file_key === page.fileKey) {
+        if (page.records.some(item => item.message.role === "user" && item.offset >= (row.history_offset ?? Infinity) && item.textHash === nativeChatTextHash(row.text))) {
+          this.update(row.request_id, "observed", "A matching later user message is saved in this native conversation. This is not a model-completion receipt.");
+        } else if (row.state === "submitted" && row.history_offset !== null && row.history_offset < page.startOffset) {
+          this.update(row.request_id, "indeterminate", "Delivery could not be confirmed before its watermark left the bounded history window. Check older history or Terminal; this request will not be replayed.");
+        }
+        row = this.receipt(row.request_id)!;
       }
       return publicRequest(row);
     });

@@ -123,7 +123,8 @@ export function readNativeChatHistory(input: NativeChatHistoryInput) {
     // If one record fills the entire window, still make strict backward progress.
     // It will be skipped with a partial warning; never return a self-repeating cursor.
     const olderAt = parsed.length === 0 && clippedWindow ? windowStart : boundary > 0 ? boundary : null;
-    return { messages: selected.map(item => item.message), records: selected, fileKey, endOffset: stat.size,
+    // Receipt evidence can precede the display page while still inside this bounded read.
+    return { messages: selected.map(item => item.message), records: parsed, fileKey, startOffset: start, endOffset: stat.size,
       olderCursor: olderAt === null ? null : Buffer.from(JSON.stringify({ key: fileKey, before: olderAt })).toString("base64url"),
       state: malformed || clippedWindow || partialTail ? "partial" as const : "available" as const,
       detail: "Saved native messages and tool records. Thinking and unsupported records are omitted. Reads are limited to 512 KiB; oversized or incomplete records may be skipped, and active output may not yet be saved.",

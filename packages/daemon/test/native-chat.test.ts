@@ -77,6 +77,51 @@ it("sends once to the same owner, then observes the later native user record wit
   expect((await f.service.send(f.node.id, request)).state).toBe("observed");
   await expect(f.service.send(f.node.id, { ...request, text: "different" })).rejects.toThrow(/conflict/i);
 });
+it.each([
+  ["codex", 10, "observed"], ["claude-code", 10, "observed"],
+  ["codex", 6000, "indeterminate"], ["claude-code", 6000, "indeterminate"],
+] as const)("reconciles a %s receipt beyond the latest 100 blocks with %i-byte tool output", async (runtime, size, state) => {
+  const f = fixture(runtime), view = await f.service.read(f.node.id);
+  const request = { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "hello native" };
+  expect((await f.service.send(f.node.id, request)).state).toBe("submitted");
+  const user = runtime === "codex"
+    ? { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: request.text }] } }
+    : { type: "user", sessionId: f.token, message: { role: "user", content: request.text } };
+  const tool = runtime === "codex"
+    ? { type: "response_item", payload: { type: "function_call_output", call_id: "tool", output: "x".repeat(size) } }
+    : { type: "user", sessionId: f.token, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tool", content: "x".repeat(size) }] } };
+  appendFileSync(f.path, [user, ...Array.from({ length: 101 }, () => tool)].map(row => JSON.stringify(row) + "\n").join(""));
+  const after = await f.service.read(f.node.id);
+  expect(after.messages.every(message => message.role === "tool")).toBe(true);
+  expect(after.requests[0]!.state).toBe(state);
+  if (state === "indeterminate") expect(after.requests[0]!.detail).toMatch(/bounded history/i);
+  expect((await new NativeChatService(f.deps).send(f.node.id, request)).state).toBe(state);
+  expect(f.tmux.sendText).toHaveBeenCalledTimes(1);
+  expect(f.tmux.sendKeys).toHaveBeenCalledTimes(1);
+  f.setPane(runtime === "codex" ? "› Ask Codex to do anything\n\n? for shortcuts" : "Prior answer\n────────────────────\n❯ \n────────────────────\n⏵⏵ auto mode on (shift+tab to cycle)");
+  expect((await f.service.send(f.node.id, { ...request, requestId: randomUUID(), text: "next message" })).state).toBe("submitted");
+  expect(f.tmux.sendText).toHaveBeenCalledTimes(2);
+  if (state === "indeterminate") {
+    const older = await f.service.read(f.node.id, after.history.olderCursor!);
+    expect(older.requests.find(row => row.requestId === request.requestId)!.state).toBe("observed");
+    expect(f.tmux.sendText).toHaveBeenCalledTimes(2);
+  }
+});
+it.each(["codex", "claude-code"] as const)("does not observe a %s receipt from older matching text or matching tool output outside the display page", async runtime => {
+  const f = fixture(runtime), text = "matching prompt";
+  const oldUser = runtime === "codex"
+    ? { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text }] } }
+    : { type: "user", sessionId: f.token, message: { role: "user", content: text } };
+  appendFileSync(f.path, JSON.stringify(oldUser) + "\n");
+  const view = await f.service.read(f.node.id);
+  const request = { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text };
+  expect((await f.service.send(f.node.id, request)).state).toBe("submitted");
+  const tool = runtime === "codex"
+    ? { type: "response_item", payload: { type: "function_call_output", call_id: "tool", output: text } }
+    : { type: "user", sessionId: f.token, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tool", content: text }] } };
+  appendFileSync(f.path, Array.from({ length: 101 }, () => JSON.stringify(tool) + "\n").join(""));
+  expect((await f.service.read(f.node.id)).requests[0]!.state).toBe("submitted");
+});
 it.each([{ isMeta: true }, { sourceToolUseID: "skill-call" }, { isMeta: true, sourceToolUseID: "skill-call" }])("does not observe a Claude receipt from injected matching text: %j", async markers => {
   const f = fixture("claude-code"), view = await f.service.read(f.node.id);
   const request = { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "matching prompt" };
