@@ -35,7 +35,9 @@ suite. Both sets are readable in the root `package.json` scripts.
 |---|---|---|
 | Portability report | `node scripts/portability-report.mjs` | lists added lines with machine-specific values; findings never fail it (`.github/workflows/portability-report.yml`) |
 
-## The norm (web-UI freeze at 0.5.0)
+## Upstream's norm (web-UI freeze at 0.5.0) and this fork's position
+
+Everything in this section until "This fork" is upstream policy, kept so that merges from upstream read correctly.
 
 Daemon API changes no longer require browser or interaction verification of the UI, and
 the contract mirrors under `packages/ui/src/hooks/` are no longer proactively maintained. A
@@ -50,5 +52,12 @@ part of this repo's gates.)
 ## Wording rule
 
 Upstream's web UI is **experimental**, in **maintenance mode**, supported **best-effort**;
-**the CLI is primary**. This fork actively develops the GUI; see [FORK.md in the fork repository](https://github.com/oSquashBlossomo/openrig/blob/main/FORK.md#web-gui-development). There is no scheduled removal and PRs are welcome. Do not
+**the CLI is primary**. There is no scheduled removal and PRs are welcome. Do not
 describe the UI with stronger end-of-life language than this section uses.
+
+**This fork** actively develops the web GUI, so the freeze above does not bind fork
+contributors: GUI changes are in scope, the contract mirrors under `packages/ui/src/hooks/`
+are maintained with the daemon changes that move them, and `package-tests (ui)` must pass.
+Browser verification is expected for GUI-facing changes, against an isolated daemon or the
+twin, never the production fleet. Scope and acceptance cases:
+[FORK.md in the fork repository](https://github.com/oSquashBlossomo/openrig/blob/main/FORK.md#web-gui-development).
