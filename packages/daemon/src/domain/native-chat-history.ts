@@ -105,7 +105,7 @@ export function readNativeChatHistory(input: NativeChatHistoryInput) {
       } else {
         if (row.sessionId !== input.conversationId || (row.type !== "user" && row.type !== "assistant")) continue;
         const p = record(row.message); if (!p) continue;
-        add(row.type, contentText(p.content));
+        if (row.type !== "user" || (row.isMeta !== true && !(typeof row.sourceToolUseID === "string" && row.sourceToolUseID.length > 0))) add(row.type, contentText(p.content));
         for (const item of Array.isArray(p.content) ? p.content : []) {
           const block = record(item); if (!block) continue;
           if (block.type === "tool_use") add("tool", JSON.stringify(block.input ?? {}), {

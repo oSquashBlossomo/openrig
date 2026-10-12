@@ -77,6 +77,20 @@ it("sends once to the same owner, then observes the later native user record wit
   expect((await f.service.send(f.node.id, request)).state).toBe("observed");
   await expect(f.service.send(f.node.id, { ...request, text: "different" })).rejects.toThrow(/conflict/i);
 });
+it.each([{ isMeta: true }, { sourceToolUseID: "skill-call" }, { isMeta: true, sourceToolUseID: "skill-call" }])("does not observe a Claude receipt from injected matching text: %j", async markers => {
+  const f = fixture("claude-code"), view = await f.service.read(f.node.id);
+  const request = { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "matching prompt" };
+  expect((await f.service.send(f.node.id, request)).state).toBe("submitted");
+  appendFileSync(f.path, JSON.stringify({ type: "user", sessionId: f.token, ...markers, message: { role: "user", content: [{ type: "text", text: request.text }, { type: "tool_result", tool_use_id: "skill-call", content: request.text }] } }) + "\n");
+  const injected = await f.service.read(f.node.id);
+  expect(injected.requests[0]!.state).toBe("submitted");
+  expect(injected.messages.filter(m => m.role === "user").map(m => m.text)).toEqual(["prior"]);
+  expect(injected.messages.at(-1)!.role).toBe("tool");
+  appendFileSync(f.path, JSON.stringify({ type: "user", sessionId: f.token, message: { role: "user", content: request.text } }) + "\n");
+  expect((await f.service.read(f.node.id)).requests[0]!.state).toBe("observed");
+  expect(f.tmux.sendText).toHaveBeenCalledTimes(1);
+  expect(f.tmux.sendKeys).toHaveBeenCalledTimes(1);
+});
 it.each(["› saved draft\n? for shortcuts", "Would you like to run the following command?\n› 1. Yes\n? for shortcuts", "unknown screen"])("refuses before input when the native composer is not positively empty", async pane => {
   const f = fixture(), view = await f.service.read(f.node.id); f.setPane(pane);
   expect((await f.service.send(f.node.id, { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "hello" })).state).toBe("failed");

@@ -37,6 +37,19 @@ it("bounds pages, tolerates an incomplete last line and gives stable older curso
   expect(older.messages.at(-1)!.text).toBe("reply-49");
   expect(new Set([...older.messages, ...newest.messages].map(m => m.id)).size).toBe(151);
 });
+it.each([{ isMeta: true }, { sourceToolUseID: "skill-call" }, { isMeta: true, sourceToolUseID: "skill-call" }])("omits injected Claude user text but retains tool results: %j", markers => {
+  const f = fixture("claude-code");
+  appendFileSync(f.path, [
+    { type: "user", sessionId: f.conversationId, ...markers, message: { role: "user", content: "loaded skill body" } },
+    { type: "user", sessionId: f.conversationId, ...markers, message: { role: "user", content: [{ type: "text", text: "injected context" }, { type: "tool_result", tool_use_id: "skill-call", content: "skill result" }] } },
+    { type: "user", sessionId: f.conversationId, isMeta: false, sourceToolUseID: "", message: { role: "user", content: [{ type: "text", text: "real prompt" }] } },
+    { type: "assistant", sessionId: f.conversationId, message: { content: [{ type: "text", text: "answer" }] } },
+  ].map(row => JSON.stringify(row)).join("\n") + "\n");
+  const page = readNativeChatHistory(f);
+  expect(page.messages.map(m => [m.role, m.text])).toEqual([["user", "hello"], ["tool", "skill result"], ["user", "real prompt"], ["assistant", "answer"]]);
+  expect(page.messages[1]!.tool).toEqual({ name: "Tool result", callId: "skill-call", kind: "result" });
+  expect(page.records.filter(item => item.message.role === "user").map(item => item.message.text)).toEqual(["hello", "real prompt"]);
+});
 it.each(["codex", "claude-code"] as const)("redacts a %s secret crossing the display cut before truncating", runtime => {
   const f = fixture(runtime), secret = "sk-" + "s".repeat(32);
   const text = "word ".repeat(3274) + secret + " tail ".repeat(20);
