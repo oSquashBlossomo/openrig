@@ -4,6 +4,7 @@ import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { migrate } from "../src/db/migrate.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
+import { nativeChatTextHash } from "../src/domain/native-chat-history.js";
 
 it("installs Chat last on a fresh database, after the upstream resume-rotation schema", () => {
   const db = new Database(":memory:");
@@ -14,6 +15,9 @@ it("installs Chat last on a fresh database, after the upstream resume-rotation s
     expect(names.slice(-2)).toEqual(["101_claude_resume_rotation.sql", "102_native_chat_requests.sql"]);
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='native_chat_requests_node'").get()).toBeDefined();
     expect(db.prepare("SELECT * FROM native_chat_requests").all()).toEqual([]);
+    const columns = (db.pragma("table_info(native_chat_requests)") as { name: string }[]).map(column => column.name);
+    expect(columns).toContain("text_hash");
+    expect(columns).not.toContain("text");
     migrate(db, ALL_MIGRATIONS);
     expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({ count: names.length });
   } finally { db.close(); }
@@ -40,8 +44,8 @@ it("adds only Chat to a 0.6.10 database while preserving the native session and 
     expect(after.slice(0, -1)).toEqual(names);
     expect(after.at(-1)).toMatchObject({ name: "102_native_chat_requests.sql" });
     db.prepare("INSERT INTO native_chat_requests VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)")
-      .run("fixture-request", node.id, "fixture-owner", "fixture-current", "message", "fixture message", "submitted", "fixture receipt", 1, null, null, "fixture-time", "fixture-time");
+      .run("fixture-request", node.id, "fixture-owner", "fixture-current", "message", nativeChatTextHash("fixture message"), "submitted", "fixture receipt", 1, null, null, "fixture-time", "fixture-time");
     migrate(db, ALL_MIGRATIONS);
-    expect(db.prepare("SELECT request_id,state FROM native_chat_requests").all()).toEqual([{ request_id: "fixture-request", state: "submitted" }]);
+    expect(db.prepare("SELECT request_id,state,text_hash FROM native_chat_requests").all()).toEqual([{ request_id: "fixture-request", state: "submitted", text_hash: nativeChatTextHash("fixture message") }]);
   } finally { db.close(); }
 });

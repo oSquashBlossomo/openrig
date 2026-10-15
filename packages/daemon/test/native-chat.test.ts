@@ -9,6 +9,8 @@ import { createFullTestDb } from "./helpers/test-app.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { NativeChatService } from "../src/domain/native-chat.js";
+import { nativeChatRoutes } from "../src/routes/native-chat.js";
+import { nativeChatTextHash } from "../src/domain/native-chat-history.js";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { SeatDeliveryGuard } from "../src/domain/seat-delivery-guard.js";
 import { outboxEntriesSchema } from "../src/db/migrations/027_outbox_entries.js";
@@ -63,6 +65,49 @@ function fixture(runtime: "codex" | "claude-code" = "codex") {
   const service = new NativeChatService(deps);
   return { db, root, node, token, session, path, tmux, service, deps, setPane: (value: string) => { pane = value; } };
 }
+it.each(["codex", "claude-code"] as const)("never exposes %s prompt text in receipt GETs or retry responses", async runtime => {
+  const f = fixture(runtime), view = await f.service.read(f.node.id);
+  const text = "credential sk-" + "s".repeat(32);
+  const request = { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text };
+  await f.service.send(f.node.id, request);
+  const app = nativeChatRoutes(f.service);
+  const check = async (state: string) => {
+    const response = await app.request(`/${f.node.id}`);
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).not.toContain(text);
+    const receipt = JSON.parse(body).requests[0];
+    expect(receipt).toMatchObject({ requestId: request.requestId, state });
+    expect(receipt).not.toHaveProperty("text");
+    expect(receipt).not.toHaveProperty("textHash");
+    expect(receipt).not.toHaveProperty("text_hash");
+  };
+  await check("submitted");
+  const user = runtime === "codex"
+    ? { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text }] } }
+    : { type: "user", sessionId: f.token, message: { role: "user", content: text } };
+  appendFileSync(f.path, JSON.stringify(user) + "\n");
+  await check("observed");
+  const replay = await app.request(`/${f.node.id}/messages`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) });
+  expect(replay.status).toBe(200);
+  expect(await replay.text()).not.toContain(text);
+  expect(f.tmux.sendText).toHaveBeenCalledTimes(1);
+});
+
+it("persists only a prompt hash while retaining payload conflict and restart replay protection", async () => {
+  const f = fixture(), view = await f.service.read(f.node.id);
+  const request = { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "private prompt sk-" + "s".repeat(32) };
+  await f.service.send(f.node.id, request);
+  const row = f.db.prepare("SELECT * FROM native_chat_requests WHERE request_id=?").get(request.requestId);
+  expect(JSON.stringify(row)).not.toContain(request.text);
+  expect(row).toMatchObject({ text_hash: nativeChatTextHash(request.text) });
+  expect(row).not.toHaveProperty("text");
+  const restarted = new NativeChatService(f.deps);
+  expect((await restarted.send(f.node.id, request)).state).toBe("submitted");
+  await expect(restarted.send(f.node.id, { ...request, text: request.text + " different" })).rejects.toThrow(/conflict/i);
+  expect(f.tmux.sendText).toHaveBeenCalledTimes(1);
+});
+
 it("sends once to the same owner, then observes the later native user record without claiming model completion", async () => {
   const f = fixture(), view = await f.service.read(f.node.id);
   expect(view.availability.canSend).toBe(true);
@@ -217,7 +262,7 @@ it("allows a verified fresh native owner before its first transcript exists with
 });
 it("keeps a crash-pending UUID indeterminate rather than replaying it", async () => {
   const f = fixture(), view = await f.service.read(f.node.id), requestId = randomUUID(), now = new Date().toISOString();
-  f.db.prepare("INSERT INTO native_chat_requests(request_id,node_id,owner_key,conversation_id,kind,text,state,detail,created_at,updated_at) VALUES(?,?,?,?,'message','hello','sending','pending',?,?)").run(requestId, f.node.id, view.identity.ownerKey, f.token, now, now);
+  f.db.prepare("INSERT INTO native_chat_requests(request_id,node_id,owner_key,conversation_id,kind,text_hash,state,detail,created_at,updated_at) VALUES(?,?,?,?,'message',?,'sending','pending',?,?)").run(requestId, f.node.id, view.identity.ownerKey, f.token, nativeChatTextHash("hello"), now, now);
   expect((await f.service.send(f.node.id, { requestId, ownerKey: view.identity.ownerKey, text: "hello" })).state).toBe("indeterminate");
   expect(f.tmux.sendText).not.toHaveBeenCalled();
 });

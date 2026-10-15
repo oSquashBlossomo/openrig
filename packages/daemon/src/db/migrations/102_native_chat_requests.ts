@@ -9,7 +9,7 @@ export const nativeChatRequestsSchema: Migration = {
     owner_key TEXT NOT NULL,
     conversation_id TEXT NOT NULL,
     kind TEXT NOT NULL CHECK(kind IN ('message','interrupt')),
-    text TEXT NOT NULL,
+    text_hash TEXT NOT NULL,
     state TEXT NOT NULL CHECK(state IN ('sending','submitted','observed','failed','indeterminate')),
     detail TEXT NOT NULL,
     effects_started INTEGER NOT NULL DEFAULT 0 CHECK(effects_started IN (0,1)),

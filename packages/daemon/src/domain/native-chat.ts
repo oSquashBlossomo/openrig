@@ -20,13 +20,13 @@ export class NativeChatError extends Error {
 }
 type Runtime = "codex" | "claude-code";
 export interface NativeChatRequest {
-  requestId: string; kind: "message" | "interrupt"; text: string;
+  requestId: string; kind: "message" | "interrupt";
   state: "sending" | "submitted" | "observed" | "failed" | "indeterminate";
   detail: string; createdAt: string; updatedAt: string;
 }
 interface RequestRow {
   request_id: string; node_id: string; owner_key: string; conversation_id: string;
-  kind: NativeChatRequest["kind"]; text: string; state: NativeChatRequest["state"]; detail: string;
+  kind: NativeChatRequest["kind"]; text_hash: string; state: NativeChatRequest["state"]; detail: string;
   effects_started: number; file_key: string | null; history_offset: number | null; created_at: string; updated_at: string;
 }
 interface Deps {
@@ -36,7 +36,7 @@ interface Deps {
 }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const publicRequest = (r: RequestRow): NativeChatRequest => ({ requestId: r.request_id, kind: r.kind,
-  text: r.text, state: r.state, detail: r.detail, createdAt: r.created_at, updatedAt: r.updated_at });
+  state: r.state, detail: r.detail, createdAt: r.created_at, updatedAt: r.updated_at });
 
 /** A rendered TTY is not an editor-buffer API. Match only the demonstrated
  * single-line native projection, including its cursor, without flattening input.
@@ -255,7 +255,7 @@ export class NativeChatService {
     const requests = rows.map(original => {
       let row = this.receipt(original.request_id)!;
       if (page && row.kind === "message" && (row.state === "submitted" || row.state === "indeterminate") && row.file_key === page.fileKey) {
-        if (page.records.some(item => item.message.role === "user" && item.offset >= (row.history_offset ?? Infinity) && item.textHash === nativeChatTextHash(row.text))) {
+        if (page.records.some(item => item.message.role === "user" && item.offset >= (row.history_offset ?? Infinity) && item.textHash === row.text_hash)) {
           this.update(row.request_id, "observed", "A matching later user message is saved in this native conversation. This is not a model-completion receipt.");
         } else if (row.state === "submitted" && row.history_offset !== null && row.history_offset < page.startOffset) {
           this.update(row.request_id, "indeterminate", "Delivery could not be confirmed before its watermark left the bounded history window. Check older history or Terminal; this request will not be replayed.");
@@ -279,17 +279,18 @@ export class NativeChatService {
     }
     // This lookup precedes current-owner admission: retries after /clear/restart must
     // read the old durable receipt, never become eligible for a second delivery.
+    const textHash = nativeChatTextHash(text);
     const old = this.receipt(input.requestId);
     if (old) {
-      if (old.node_id !== nodeId || old.owner_key !== input.ownerKey || old.kind !== kind || old.text !== text) throw new NativeChatError("request_conflict", "This request ID conflicts with an earlier request.");
+      if (old.node_id !== nodeId || old.owner_key !== input.ownerKey || old.kind !== kind || old.text_hash !== textHash) throw new NativeChatError("request_conflict", "This request ID conflicts with an earlier request.");
       return publicRequest(old);
     }
     const pending = this.deps.db.prepare("SELECT request_id FROM native_chat_requests WHERE node_id=? AND state='sending' LIMIT 1").get(nodeId) as { request_id: string } | undefined;
     if (pending && this.receipt(pending.request_id)?.state === "sending") throw new NativeChatError("send_in_progress", "A send is already in progress for this seat. Wait for its receipt.");
     const initial = this.current(nodeId);
     const now = new Date().toISOString();
-    this.deps.db.prepare("INSERT INTO native_chat_requests(request_id,node_id,owner_key,conversation_id,kind,text,state,detail,created_at,updated_at) VALUES(?,?,?,?,?,?,'sending','Checking native delivery readiness.',?,?)")
-      .run(input.requestId, nodeId, input.ownerKey, initial.session.resumeToken ?? "", kind, text, now, now);
+    this.deps.db.prepare("INSERT INTO native_chat_requests(request_id,node_id,owner_key,conversation_id,kind,text_hash,state,detail,created_at,updated_at) VALUES(?,?,?,?,?,?,'sending','Checking native delivery readiness.',?,?)")
+      .run(input.requestId, nodeId, input.ownerKey, initial.session.resumeToken ?? "", kind, textHash, now, now);
     this.inFlight.add(input.requestId);
     let effects = false;
     try {
