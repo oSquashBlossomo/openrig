@@ -30,7 +30,6 @@ export type NativeChatRequestState = "sending" | "submitted" | "observed" | "fai
 export interface NativeChatRequest {
   requestId: string;
   kind: "message" | "interrupt";
-  text: string;
   state: NativeChatRequestState;
   detail: string;
   createdAt: string;
@@ -78,7 +77,7 @@ function isMessage(v: unknown): v is NativeChatMessage {
 }
 export function isNativeChatRequest(v: unknown): v is NativeChatRequest {
   return isObject(v) && isText(v.requestId) && !!v.requestId && oneOf("message", "interrupt")(v.kind)
-    && isText(v.text) && REQUEST_STATES.has(v.state as string) && isText(v.detail)
+    && REQUEST_STATES.has(v.state as string) && isText(v.detail)
     && isText(v.createdAt) && isText(v.updatedAt);
 }
 function isResponse(v: unknown, nodeId: string): v is NativeChatResponse {

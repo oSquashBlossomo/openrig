@@ -329,7 +329,7 @@ function ChatBody({ target, nodeId, layout, onOpenTerminal, onOpenCommand, paste
   for (const r of data?.requests ?? []) {
     if (r.kind !== "message" || isReceiptDismissed(r.requestId)) continue;
     if (r.state === "sending" || r.state === "submitted" || r.state === "indeterminate") {
-      pendingRows.push({ requestId: r.requestId, text: r.text, phase: slot.pending?.requestId === r.requestId && slot.pending.phase === "unknown" ? "unknown" : r.state, detail: r.detail });
+      pendingRows.push({ requestId: r.requestId, text: slot.pending?.requestId === r.requestId ? slot.pending.text : "", phase: slot.pending?.requestId === r.requestId && slot.pending.phase === "unknown" ? "unknown" : r.state, detail: r.detail });
     }
   }
   if (slot.pending && slot.pending.phase !== "observed" && !pendingRows.some((p) => p.requestId === slot.pending!.requestId)) {

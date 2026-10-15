@@ -33,8 +33,8 @@ function page(nodeId: string, over: Partial<NativeChatResponse> & { conversation
   };
 }
 const msg = (id: string, role: NativeChatMessage["role"], text: string): NativeChatMessage => ({ id, role, text, timestamp: null, truncated: false });
-const receipt = (requestId: string, text: string, state: NativeChatRequest["state"], detail = ""): NativeChatRequest =>
-  ({ requestId, kind: "message", text, state, detail, createdAt: "2026-10-08T00:00:00Z", updatedAt: "2026-10-08T00:00:00Z" });
+const receipt = (requestId: string, _text: string, state: NativeChatRequest["state"], detail = ""): NativeChatRequest =>
+  ({ requestId, kind: "message", state, detail, createdAt: "2026-10-08T00:00:00Z", updatedAt: "2026-10-08T00:00:00Z" });
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
@@ -103,6 +103,12 @@ async function type(text: string) {
 }
 
 describe("native chat: send and reply", () => {
+  it("reads receipts without prompt text", async () => {
+    const request = { requestId: "receipt-without-text", kind: "message", state: "submitted", detail: "Sent", createdAt: "now", updatedAt: "now" };
+    pages.set("n1", { status: 200, body: { ...page("n1"), requests: [request] } });
+    expect(await readNativeChat("n1")).toMatchObject({ requests: [request] });
+  });
+
   it("sends once with a fresh id and the owner key, then shows the native record without a duplicate row", async () => {
     pages.set("n1", page("n1", { messages: [msg("m1", "assistant", "Hello from the agent")] }));
     renderChat(target("n1"));
@@ -126,6 +132,7 @@ describe("native chat: send and reply", () => {
     await act(async () => release({ status: 200, body: { request: receipt(id, "Please summarize the plan", "submitted") } }));
     await waitFor(() => expect(input().value).toBe(""));
     expect(screen.getByTestId("native-chat-pending").getAttribute("data-phase")).toBe("submitted");
+    expect(within(screen.getByTestId("native-chat-pending")).getByText("Please summarize the plan")).toBeTruthy();
 
     // The native record and the reply arrive; the receipt is observed.
     pages.set("n1", page("n1", {
@@ -784,8 +791,8 @@ describe("native chat: review follow-ups", () => {
     const details = within(row).getByTestId("native-chat-receipt") as HTMLDetailsElement;
     expect(details.open).toBe(false);
     expect(details.querySelector("summary")!.textContent).toBe("Delivery receipt · submitted");
-    // Expanding shows the sent text and the daemon's own detail.
-    expect(within(details).getByText("Résumé the plan ✓")).toBeTruthy();
+    // A reload retains status/detail, but never recovers prompt text from receipts.
+    expect(within(details).queryByText("Résumé the plan ✓")).toBeNull();
     expect(within(details).getByTestId("native-chat-receipt-detail").textContent).toBe(detail);
     expect(screen.getByTestId("native-chat-history").textContent).not.toMatch(/waiting for the native record/i);
     expect(screen.getAllByTestId("native-chat-message").filter((el) => el.getAttribute("data-role") === "user")).toHaveLength(1);
