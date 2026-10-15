@@ -410,9 +410,9 @@ const quiet24 = [
 describe("Claude physical scan window excludes only bottom terminal padding", () => {
   it("recognizes the exact quiet 24-row screen through classifier and structural consumer", async () => {
     const content = quiet24.join("\n") + "\n";
-    expect(classifyPaneActivity(content)).toMatchObject({ state: "agent_idle", reason: "idle_prompt" });
+    expect(classifyPaneActivity(content)).toMatchObject({ state: "agent_idle", reason: "idle_status_bar" });
     expect(await new SeatStructuralActivityService({ capturePaneContent: async () => content }).pollSeat("seat@rig"))
-      .toMatchObject({ state: "agent_idle", reason: "idle_prompt" });
+      .toMatchObject({ state: "agent_idle", reason: "idle_status_bar" });
   });
   it("keeps current live work authoritative with the same bottom padding", () => {
     const rows = [...quiet24]; rows[3] = workingRows[0]!;

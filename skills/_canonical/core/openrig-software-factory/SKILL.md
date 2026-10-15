@@ -51,7 +51,7 @@ or `codex login` once when that selected login is missing. No credential copying
 unused provider prerequisite or silent model/provider fallback.
 
 Read the compatible getting-started guide's **Choose your providers** and
-**Kernel startup stays automatic** sections before launch. The choice selects
+**Start the kernel and check its state** sections before launch. The choice selects
 the two project agents. Kernel auto-boot independently uses available
 authenticated accounts, so it may use both even when the project uses one.
 Do not add an unused-provider login gate or manual kernel setup to this path.
@@ -63,7 +63,8 @@ Show the chosen team, resolved runtimes/models and exact
 retain `gpt-6-astra`; Claude seats use the configured native default without an
 OpenRig model override. Confirm that model with the user and its availability;
 verify the native session's actual model before consequential work. Use the
-chosen rig name in owner/checker addresses throughout the same task and return.
+chosen rig name in owner/checker addresses (in the starter, `dev-build@<rig>` and
+`dev-review@<rig>`) throughout the same task and return.
 
 ## Establish the working agreement
 
@@ -102,8 +103,9 @@ or explicitly reports none. Preserve work and custody before a supported stop.
 
 Choose the team size separately from the coordination method above:
 
-1. **Use the two-agent starter.** Keep the existing owner and independent checker
-   while that pair meets the workload. The owner can implement and coordinate.
+1. **Use the two-agent starter.** Keep its builder (the owner) and independent
+   reviewer (the checker) while that pair meets the workload. The builder can
+   implement and coordinate.
 2. **Add one or two seats to the running rig.** This is the usual next step.
    Follow [Grow the running team](references/worked-example.md#grow-the-running-team)
    for `rig grow` commands, readiness/context/work

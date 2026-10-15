@@ -2,7 +2,7 @@ import type { Migration } from "../migrate.js";
 
 /** Durable at-most-once terminal dispatch receipts; never prune UUIDs into replay eligibility. */
 export const nativeChatRequestsSchema: Migration = {
-  name: "096_native_chat_requests.sql",
+  name: "102_native_chat_requests.sql",
   sql: `CREATE TABLE native_chat_requests (
     request_id TEXT PRIMARY KEY,
     node_id TEXT NOT NULL,

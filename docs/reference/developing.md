@@ -20,7 +20,7 @@ Locally, `npm test` builds only the daemon, and `test:workspaces` and `test:ui` 
 |---|---|---|
 | Typecheck | `npm run lint` | daemon + **ui** + cli + tui tsconfigs — UI typecheck STAYS blocking |
 | Build | `npm run build` | all workspaces — the UI dist ships in the package, so its build STAYS blocking |
-| Repo scripts | `npm run test:repo` | daemon build, script self-tests, docs guard, skill mirror check, context-pack generation check |
+| Repo scripts | `npm run test:repo` | daemon build, script self-tests, first-run reference check, docs guard, skill mirror check, context-pack generation check |
 | Unit tests | `npm run test:workspaces` | `packages/daemon` + `packages/cli` + `packages/tui` |
 | UI unit tests | `npm run test:ui` | `packages/ui` vitest. NOT part of `npm test`, but every pull request runs it as `package-tests (ui)` (the `package-tests` matrix in `.github/workflows/tests.yml`) |
 | Installed-package scenario | CI only: `scripts/run-pr-scenarios.sh` | the installed package, a daemon restart and a seeded durability failure. The script refuses to run outside GitHub Actions unless given `--remote` with `DOCKER_HOST=ssh://…` |
@@ -35,7 +35,9 @@ suite. Both sets are readable in the root `package.json` scripts.
 |---|---|---|
 | Portability report | `node scripts/portability-report.mjs` | lists added lines with machine-specific values; findings never fail it (`.github/workflows/portability-report.yml`) |
 
-## The norm (web-UI freeze at 0.5.0)
+## Upstream's norm (web-UI freeze at 0.5.0) and this fork's position
+
+Everything in this section until "This fork" is upstream policy, kept so that merges from upstream read correctly.
 
 Daemon API changes no longer require browser or interaction verification of the UI, and
 the contract mirrors under `packages/ui/src/hooks/` are no longer proactively maintained. A
@@ -49,6 +51,13 @@ part of this repo's gates.)
 
 ## Wording rule
 
-The web UI is **experimental**, in **maintenance mode**, supported **best-effort**;
+Upstream's web UI is **experimental**, in **maintenance mode**, supported **best-effort**;
 **the CLI is primary**. There is no scheduled removal and PRs are welcome. Do not
 describe the UI with stronger end-of-life language than this section uses.
+
+**This fork** actively develops the web GUI, so the freeze above does not bind fork
+contributors: GUI changes are in scope, the contract mirrors under `packages/ui/src/hooks/`
+are maintained with the daemon changes that move them, and `package-tests (ui)` must pass.
+Browser verification is expected for GUI-facing changes, against an isolated daemon or the
+twin, never the production fleet. Scope and acceptance cases:
+[FORK.md in the fork repository](https://github.com/oSquashBlossomo/openrig/blob/main/FORK.md#web-gui-development).

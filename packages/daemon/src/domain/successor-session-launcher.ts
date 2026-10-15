@@ -48,6 +48,7 @@ export interface SuccessorNode {
   launchPosture?: "floor" | "full_bypass" | "auto";
   nonInterruptive?: boolean;
   kernelAuthority?: boolean;
+  teamPermissionDefault?: boolean;
   permissionMode?: string;
   claudePermissionFloor?: boolean;
   /** 0.5.2-07 model fidelity: the seat's SPEC-pinned model (nodes.model). The successor is a continuity
@@ -286,6 +287,7 @@ export class SuccessorSessionLauncher {
       resumeToken: started.resumeToken,
       resumeType: started.resumeType,
       appliedLaunch: started.appliedLaunch,
+      ...(respawned.warnings ? { warnings: respawned.warnings } : {}),
     };
   }
 
@@ -335,6 +337,7 @@ export class SuccessorSessionLauncher {
       nonInterruptive: node.nonInterruptive,
       kernelAuthority: node.kernelAuthority,
       claudePermissionFloor: node.claudePermissionFloor,
+      teamPermissionDefault: node.teamPermissionDefault,
       // Seam B: continuity — the successor launches at the departing seat's posture.
       ...(node.launchPosture ? { launchPosture: node.launchPosture } : {}),
       ...(node.permissionMode ? { permissionMode: node.permissionMode } : {}),

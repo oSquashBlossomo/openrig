@@ -581,3 +581,71 @@ it("legacy sockets receive an explicit reload requirement without touching nativ
   });
   expect(closed).toEqual({ code: 1008, reason: "terminal protocol update required; reload the web UI" });
 });
+
+// Exercise the real WebSocket callback: node-ws does not await async onOpen.
+describe("terminal WebSocket attach rejection", () => {
+  it.each(["probe", "pipe"])("closes a rejected %s viewer and accepts a later viewer", async (stage) => {
+    let fail = true;
+    const sendText = vi.fn(async () => ({ ok: true as const }));
+    const app = new Hono();
+    app.use("*", async (c, next) => {
+      c.set("tmuxAdapter" as never, {
+        hasSession: async () => {
+          if (fail && stage === "probe") throw new Error("probe unavailable");
+          return true;
+        },
+        setWindowOption: async () => ({ ok: true }),
+        resizeWindow: async () => ({ ok: true }),
+        startPipePane: async () => {
+          if (fail && stage === "pipe") throw new Error("pipe unavailable");
+          return { ok: true };
+        },
+        stopPipePane: async () => ({ ok: true }),
+        sendKeys: async () => ({ ok: true }),
+        sendText,
+        capturePaneScreen: async () => "ready",
+        // The fork broker seeds once it reads native geometry.
+        getPaneCursorPosition: async () => ({ x: 0, y: 0, width: 80, height: 24 }),
+      });
+      await next();
+    });
+    app.use("/api/*", browserBoundary({ webUiEnabled: true, bearerTokens: [TOKEN], warn: () => {} }));
+    app.get("/healthz", (c) => c.text("ok"));
+    const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
+    registerTerminalWs(app, upgradeWebSocket as never, { bearerToken: TOKEN });
+    const localServer = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" });
+    injectWebSocket(localServer);
+    await new Promise<void>((resolve) => {
+      if (localServer.listening) resolve();
+      else localServer.once("listening", resolve);
+    });
+    const port = (localServer.address() as { port: number }).port;
+    const url = `ws://127.0.0.1:${port}/api/terminal/retry@rig?token=${TOKEN}&protocol=2`;
+    const viewers: WebSocket[] = [];
+    try {
+      const failed = new WebSocket(url);
+      viewers.push(failed);
+      failed.onopen = () => failed.send(JSON.stringify({ type: "text", text: "early input" }));
+      const closed = await new Promise<CloseEvent>((resolve) => { failed.onclose = resolve; });
+      expect(closed.code).toBe(1011);
+      expect(closed.reason).toBe("terminal attachment failed");
+      expect(sendText).not.toHaveBeenCalled();
+      expect((await fetch(`http://127.0.0.1:${port}/healthz`)).status).toBe(200);
+
+      fail = false;
+      const retry = new WebSocket(url);
+      viewers.push(retry);
+      // Protocol 2 sends native geometry before the seeded screen.
+      const frame = await new Promise<MessageEvent>((resolve) => {
+        retry.onmessage = (event) => { if (JSON.parse(String(event.data)).type === "output") resolve(event); };
+      });
+      expect(String(frame.data)).toContain("ready");
+      const retryClosed = new Promise<void>((resolve) => { retry.onclose = () => resolve(); });
+      retry.close();
+      await retryClosed;
+    } finally {
+      for (const ws of viewers) ws.close();
+      localServer.close();
+    }
+  }, 5000);
+});

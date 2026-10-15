@@ -97,10 +97,15 @@ import { humanQuestionsSchema } from "./migrations/091_human_questions.js";
 import { nodeEffortSchema } from "./migrations/092_node_effort.js";
 import { usageSamplesLatestIndexesSchema } from "./migrations/094_usage_samples_latest_indexes.js";
 import { nodeAdvisorModelSchema } from "./migrations/095_node_advisor_model.js";
-import { nativeChatRequestsSchema } from "./migrations/096_native_chat_requests.js";
 import type { Migration } from "./migrate.js";
 
 import { rigNonInterruptiveSchema } from "./migrations/095_rig_non_interruptive.js";
+import { rigInstallRootSchema } from "./migrations/096_rig_install_root.js";
+import { threadPartMapSchema } from "./migrations/097_thread_part_map.js";
+import { queueTransitionsQitemIdOrderSchema } from "./migrations/098_queue_transitions_qitem_id_order.js";
+import { queueItemsRecoveryTagsSchema } from "./migrations/099_queue_items_recovery_tags.js";
+import { resumeRotationSchema } from "./migrations/101_claude_resume_rotation.js";
+import { nativeChatRequestsSchema } from "./migrations/102_native_chat_requests.js";
 
 /** Ordered migrations; numbers may be reserved by independent changes. */
 
@@ -200,5 +205,10 @@ export const ALL_MIGRATIONS: Migration[] = [
   usageSamplesLatestIndexesSchema,
   nodeAdvisorModelSchema,
   rigNonInterruptiveSchema,
+  rigInstallRootSchema,
+  threadPartMapSchema,
+  queueTransitionsQitemIdOrderSchema,
+  queueItemsRecoveryTagsSchema,
+  resumeRotationSchema,
   nativeChatRequestsSchema,
 ];

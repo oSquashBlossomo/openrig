@@ -23,6 +23,7 @@ to invent tasks, publish work or change another host.
 Reuse an existing explicit choice for these harnesses and this scope from the
 user's onboarding context; do not ask again. Existing rules are configuration,
 not evidence of consent to expand their scope. Preserve them without expansion.
+
 If the choice is unknown, briefly explain:
 
 > This allows the whole `rig` command family, including starting/stopping agents,
@@ -33,12 +34,22 @@ If the choice is unknown, briefly explain:
 > Allow your agents to run OpenRig commands without repeated permission prompts?
 > **Yes — recommended** / **No — keep prompts**
 
+This fork applies no team launch default: a seat with no explicit policy or seat
+choice launches with its native settings and profile, so ordinary `rig`
+commands, project reads and tests prompt unless native rules already allow them.
+Native restrictions can still prompt for installs, commits, other shell commands
+and writes outside writable roots. Do not promise prompt-free operation.
+
 - **Yes:** require an actual affirmative answer, then apply the procedure below
   at that scope for the selected harnesses. Never substitute user-wide rules
-  when project rules are unsupported. Native restrictions still apply.
+  when project rules are unsupported, and do not replace ask/deny rules.
+  Native restrictions still apply.
 - **No:** leave permission settings unchanged and continue with existing prompts.
 - **No answer:** make no settings change, infer no consent and continue with
   existing prompts. Do not keep asking during this setup.
+
+A recommendation is not consent. Broader filesystem/network access requires
+its own explicit choice; permission consent is separate from launch approval.
 
 Remember an explicit Yes or No in the existing onboarding/project context the
 agent already reads: choice, harnesses and scope. For Yes, record the exact files
@@ -55,14 +66,19 @@ an answered setup question or ask again for routine steps already authorized.
 
 | Choice | What the agent configures |
 | --- | --- |
-| Keep prompts | Preserve current native settings and handle requests when they arise. |
+| Keep prompts | Preserve current native settings and any existing explicit choice, and handle requests when they arise. |
 | Remember selected commands | Add native allow rules for the chosen family or narrower verbs, leaving other rules and sandbox settings intact. |
 | Broader permissive operation | Explain filesystem/network exposure and configure only the explicitly selected native mode and compatible launch settings. |
 
-**Allowing the whole `rig` family covers all its verbs**, including lifecycle,
+If repeated approvals later interrupt the work, name the actual commands and
+offer a scoped adjustment then. Keep the existing choice until the person
+accepts a change; do not promise to adjust later and silently leave the burden
+with them. Do not reopen an answered choice for each routine operation.
+
+**A whole-family allow matches all `rig` verbs**, including lifecycle,
 topology/config changes and commands that can launch other processes. It is not
-a read-only grant. Offer narrower prefixes such as `rig ps` or `rig queue list`
-when that better fits the request. Do not widen a choice to arbitrary shell
+a read-only grant, but stricter ask/deny rules still win. Offer narrower prefixes
+such as `rig ps` or `rig queue list` when that better fits the request. Do not widen a choice to arbitrary shell
 execution, an entire interpreter or a generic shell wrapper.
 
 ## Apply the choice for the user
@@ -95,7 +111,9 @@ execution, an entire interpreter or a generic shell wrapper.
    existing conversation loaded it.
 6. Verify an ordinary matching operation twice in the target conversation and
    check that an unrelated command gained no matching rule. Use harmless reads,
-   not destructive probes. Report effective settings and remaining prompts.
+   not destructive probes. Report effective settings, their source and remaining
+   prompts; a command already allowed by an existing rule does not prove a new
+   persistent rule loaded.
    A parser match alone does not establish native behavior.
 
 Give the user this short undo: **“Undo the OpenRig command allowances added by

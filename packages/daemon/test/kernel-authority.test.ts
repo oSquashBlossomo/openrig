@@ -17,6 +17,8 @@ import { CodexRuntimeAdapter } from "../src/adapters/codex-runtime-adapter.js";
 import { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
 import { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
 import { observeClaudePaneProcess } from "../src/domain/native-process-lineage.js";
+import { operationalLaunchArgs } from "../src/adapters/kernel-authority.js";
+import { shellQuote } from "../src/adapters/shell-quote.js";
 import type { NodeBinding, RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 
@@ -86,7 +88,9 @@ describe("kernel permission inheritance", () => {
     expect(b.kernelAuthority).toBe(false); expect(b.launchPosture).toBe("floor");
     const adapter = runtime === "codex" ? new CodexRuntimeAdapter(t) : new ClaudeCodeAdapter(t);
     await adapter.launchHarness(b, { name: "seat" }); const cmd = t.send.mock.calls[0]![1];
-    expect(cmd).not.toContain("--settings"); expect(cmd).not.toContain("notice.");
+    // Fork policy: no team launch default, so no session settings are added.
+    if (runtime === "claude-code") expect(cmd).not.toContain("--settings");
+    expect(cmd).not.toContain("notice.");
     expect(cmd).toContain(runtime === "codex" ? "-s workspace-write" : "--permission-mode acceptEdits");
   });
   it.each(["codex", "claude-code"])("%s explicit choices and authored policies precede the default", runtime => {
@@ -143,7 +147,8 @@ describe("kernel permission inheritance", () => {
   it("launch-only settings do not obscure exact Claude process identity; unrelated args still fail", async () => {
     const root = { pid: 10, ppid: 1, pgid: 10, tpgid: 10, executableName: "claude", startedAt: "start" };
     const input = { target: "seat", tmux: { getPanePid: async () => 10 }, expectedToken: "native-id" };
-    for (const settings of ['--settings \'{"permissions":{"allow":["Bash(rig:*)"]}}\'', '--settings={"permissions":{"allow":["Bash(rig:*)"]}}']) {
+    // ps output carries no shell quotes around the JSON argument.
+    for (const settings of ['--settings {"permissions":{"allow":["Bash(rig:*)"]}}', '--settings={"permissions":{"allow":["Bash(rig:*)"]}}']) {
       const command = `claude --permission-mode acceptEdits ${settings} --session-id native-id`;
       expect(await observeClaudePaneProcess({ ...input, listProcesses: async () => [{ ...root, command }] })).not.toBeNull();
       expect(await observeClaudePaneProcess({ ...input, listProcesses: async () => [{ ...root, command: command + " --unknown" }] })).toBeNull();
