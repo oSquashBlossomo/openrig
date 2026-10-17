@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import stringWidth from "string-width";
+import { projectNativeChatText, NATIVE_CHAT_COMPOSER_REFUSAL } from "../native-chat-composer-surface.js";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { TmuxAdapter, TmuxCursorPosition } from "../adapters/tmux.js";
@@ -41,9 +42,9 @@ const publicRequest = (r: RequestRow): NativeChatRequest => ({ requestId: r.requ
 /** A rendered TTY is not an editor-buffer API. Match only the demonstrated
  * single-line native projection, including its cursor, without flattening input.
  * Native soft wraps can look like external hard breaks; multiline stays Terminal-only. */
-export function nativeChatComposerMatches(pane: string, runtime: Runtime, cursor: TmuxCursorPosition, text: string): boolean {
-  if (/[\r\n]/.test(text) || !Number.isInteger(cursor.width) || cursor.width < 8
-    || !Number.isInteger(cursor.x) || !Number.isInteger(cursor.y) || cursor.y >= cursor.height || cursor.x < 0 || cursor.x >= cursor.width) return false;
+function nativeChatComposerLayout(pane: string, runtime: Runtime, cursor: TmuxCursorPosition) {
+  if (!Number.isInteger(cursor.width) || cursor.width < 8 || !Number.isInteger(cursor.height) || cursor.height < 1
+    || !Number.isInteger(cursor.x) || !Number.isInteger(cursor.y) || cursor.y >= cursor.height || cursor.x < 0 || cursor.x >= cursor.width) return null;
   const lines = pane.split("\n"), marker = runtime === "claude-code" ? "❯" : "[›»]";
   const prefix = new RegExp(`^([ ]*${marker}[ \u00a0])`);
   let at = -1, lead = "";
@@ -51,7 +52,7 @@ export function nativeChatComposerMatches(pane: string, runtime: Runtime, cursor
     const match = prefix.exec(lines[i]!);
     if (match) { at = i; lead = match[1]!; break; }
   }
-  if (at < 0 || cursor.y < at || cursor.y >= lines.length || /^[❯›»]\s*\d+\./.test(lines[at]!.trim())) return false;
+  if (at < 0 || cursor.y < at || cursor.y >= lines.length || /^[❯›»]\s*\d+\./.test(lines[at]!.trim())) return null;
   let end = -1;
   for (let i = at + 1; i < lines.length; i++) {
     if (runtime === "claude-code" ? /^[─═-]{10,}$/.test(lines[i]!.trim())
@@ -66,22 +67,34 @@ export function nativeChatComposerMatches(pane: string, runtime: Runtime, cursor
     if (last > cursor.y + 1 && codexModelFooter.test(lines[last]!)
       && lines.slice(cursor.y + 1, last).every(line => /^ *$/.test(line))) end = last;
   }
-  if (end < 0 || cursor.y >= end) return false;
-  if (runtime === "codex" && lines.slice(end + 1).some(line => !/^ *$/.test(line))) return false;
+  if (end < 0 || cursor.y >= end) return null;
+  if (runtime === "codex" && lines.slice(end + 1).some(line => !/^ *$/.test(line))) return null;
   if (runtime === "claude-code") {
     const footer = lines.slice(end + 1).filter(line => line.trim());
     // Noninteractive suffixes need a recognized mode row, never a warning alone.
     if (/^(?:-- [A-Z]+ -- )?(?:⏵⏵ (?:accept edits|bypass permissions|auto mode) on\b|⏸ plan mode on\b|\? for shortcuts\b)/.test(footer[0]?.trim() ?? "")) {
       while (footer.length > 1 && CLAUDE_STATUS_WARNINGS.some(pattern => pattern.test(footer.at(-1)!.trim()))) footer.pop();
     }
-    if (footer.length !== 1 || !/(?:shift\+tab to cycle|\? for shortcuts)/i.test(footer[0]!)) return false;
+    if (footer.length !== 1 || !/(?:shift\+tab to cycle|\? for shortcuts)/i.test(footer[0]!)) return null;
   }
   const below = lines.slice(cursor.y + 1, end);
   // Codex 0.161 places model/effort/cwd between a blank separator and shortcuts.
   // Never strip a metadata-looking row inside the composer or under its cursor.
   if (runtime === "codex" && below.length >= 2 && below.slice(0, -1).every(line => /^ *$/.test(line))
     && codexModelFooter.test(below.at(-1)!)) below.pop();
-  if (below.some(line => !/^ *$/.test(line))) return false;
+  if (below.some(line => !/^ *$/.test(line))) return null;
+  // Keep the observed prompt row and footer visible; do not assume scrolling.
+  let bottom = lines.length;
+  while (bottom > end && /^ *$/.test(lines[bottom - 1]!)) bottom--;
+  // Beyond the prompt, Claude reserves two cells; Codex 0.161 reserves one.
+  const columns = cursor.width - stringWidth(lead) - (runtime === "claude-code" ? 2 : 1);
+  return { lines, at, lead, columns, rows: cursor.height - at - (bottom - end) };
+}
+export function nativeChatComposerMatches(pane: string, runtime: Runtime, cursor: TmuxCursorPosition, text: string): boolean {
+  if (/[\r\n]/.test(text)) return false;
+  const layout = nativeChatComposerLayout(pane, runtime, cursor);
+  if (!layout) return false;
+  const { lines, at, lead, columns } = layout;
   const rows = lines.slice(at, cursor.y + 1);
   if (!text) {
     const body = rows[0]!.slice(lead.length);
@@ -89,32 +102,8 @@ export function nativeChatComposerMatches(pane: string, runtime: Runtime, cursor
       && (/^ *$/.test(body) || (runtime === "codex" && /^Ask Codex to do anything *$/.test(body)));
   }
   if (/\[Pasted text|Press up to edit queued messages/i.test(rows.join("\n"))) return false;
-  // Claude reserves two additional cells; Codex 0.161's composer_layout.rs
-  // reserves one right cell beyond LIVE_PREFIX_COLS (2). Unknown native layout
-  // still fails closed rather than adapting the requested text to fit it.
-  const capacity = cursor.width - stringWidth(lead) - (runtime === "claude-code" ? 2 : 1);
-  if (capacity <= 0 || stringWidth(text) > capacity * rows.length + rows.length - 1) return false;
-  let remaining = text;
-  const projected: string[] = [];
-  while (stringWidth(remaining) > capacity) {
-    let split = -1;
-    for (let i = 0; i < remaining.length; i++) {
-      if (remaining[i] === " " && stringWidth(remaining.slice(0, i)) <= capacity) split = i;
-      if (stringWidth(remaining.slice(0, i + 1)) > capacity) break;
-    }
-    // Only a single expected space at an actual word-wrap boundary is omitted.
-    // Long unsplittable words or ambiguous runs of spaces require Terminal.
-    if (split <= 0 || remaining[split - 1] === " " || remaining[split + 1] === " ") return false;
-    projected.push(remaining.slice(0, split));
-    // A final trailing space is editable content on the continuation row,
-    // unlike an interior separator hidden at a native word-wrap boundary.
-    remaining = remaining.slice(split + (split < remaining.length - 1 ? 1 : 0));
-    if (projected.length >= rows.length) return false;
-  }
-  projected.push(remaining);
-  // Codex textarea/wrapping.rs reserves an insertion row for a full final line.
-  if (runtime === "codex" && stringWidth(remaining) === capacity) projected.push("");
-  if (projected.length !== rows.length) return false;
+  const projected = projectNativeChatText(text, { columns, rows: rows.length }, runtime, stringWidth);
+  if (!projected || projected.length !== rows.length) return false;
   return rows.every((row, i) => {
     if (i > 0 && projected[i] === "") return /^ *$/.test(row);
     const expected = (i === 0 ? lead : " ".repeat(stringWidth(lead))) + projected[i]!;
@@ -207,7 +196,7 @@ export class NativeChatService {
     return readNativeChatHistory({ path, root: runtime === "codex" ? this.codexHome : join(this.claudeRoot(owner.node.cwd), "projects"),
       conversationId: owner.conversationId, runtime, before });
   }
-  private async readiness(owner: Awaited<ReturnType<NativeChatService["owner"]>>) {
+  private async readiness(owner: Awaited<ReturnType<NativeChatService["owner"]>>, text?: string) {
     const observation = await this.deps.tmux.capturePaneObservation(owner.binding.tmuxPane!);
     const pane = observation?.snapshot ?? null;
     const activity = classifyPaneActivity(pane ?? "");
@@ -221,8 +210,13 @@ export class NativeChatService {
     if (activity.state === "attention" || hook?.state === "needs_input" || probe.status === "attention_required" || probe.status === "failed") return { state: "needs_terminal" as const, detail: "A draft or native question needs your attention in Terminal.", canSend: false, canInterrupt: false };
     if (activity.state === "agent_active" || hook?.state === "running") return { state: "busy" as const, detail: "The native agent is working. Wait, or interrupt the current turn.", canSend: false, canInterrupt: activity.state === "agent_active" && empty };
     const ready = activity.state === "agent_idle" && empty;
+    const layout = ready && observation ? nativeChatComposerLayout(pane!, owner.runtime, observation.cursor) : null;
+    const composer = layout ? { columns: layout.columns, rows: layout.rows } : null;
+    if (ready && text !== undefined && (!composer || !projectNativeChatText(text, composer, owner.runtime, stringWidth))) {
+      throw new NativeChatError("message_too_large", NATIVE_CHAT_COMPOSER_REFUSAL);
+    }
     return { state: ready ? "ready" as const : "needs_terminal" as const,
-      detail: ready ? "The verified native conversation has an empty composer." : "The native composer is not positively ready. Open Terminal.", canSend: ready, canInterrupt: false };
+      detail: ready ? "The verified native conversation has an empty composer." : "The native composer is not positively ready. Open Terminal.", canSend: ready, canInterrupt: false, composer };
   }
   private async assertStaged(owner: Awaited<ReturnType<NativeChatService["owner"]>>, text: string) {
     const observation = await this.deps.tmux.capturePaneObservation(owner.binding.tmuxPane!);
@@ -301,7 +295,7 @@ export class NativeChatService {
         const owner = await this.owner(nodeId);
         if (owner.ownerKey !== input.ownerKey) throw new NativeChatError("owner_changed", "The native owner changed. Refresh before sending.");
         this.deps.db.prepare("UPDATE native_chat_requests SET conversation_id=? WHERE request_id=?").run(owner.conversationId, input.requestId);
-        const ready = await this.readiness(owner);
+        const ready = await this.readiness(owner, kind === "message" ? text : undefined);
         if (!(kind === "message" ? ready.canSend : ready.canInterrupt)) throw new NativeChatError("not_ready", ready.detail);
         // A positively identified fresh native conversation may not have emitted
         // its first transcript yet. Sending does not depend on telemetry existence.
@@ -318,7 +312,7 @@ export class NativeChatService {
           if (boundaryOwner.ownerKey !== owner.ownerKey) throw new NativeChatError("owner_changed", "The native owner changed at the input boundary.");
           if (submitting) await this.assertStaged(boundaryOwner, text);
           else {
-            const boundary = await this.readiness(boundaryOwner);
+            const boundary = await this.readiness(boundaryOwner, kind === "message" ? text : undefined);
             if (!(kind === "message" ? boundary.canSend : boundary.canInterrupt)) throw new NativeChatError("not_ready", boundary.detail);
           }
           if (this.current(nodeId).stamp !== owner.stamp) throw new NativeChatError("owner_changed", "The native owner changed before input.");
