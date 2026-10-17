@@ -27,6 +27,7 @@ import { ArrowDown, ArrowUp, ChevronRight, Square, SquareTerminal } from "lucide
 import { DisplayTime } from "../time/DisplayTime.js";
 import type { StagedCommand } from "../terminal/FocusedTerminal.js";
 import { cn } from "../../lib/utils.js";
+import { createBrowserUuid } from "../../lib/browser-uuid.js";
 import {
   NATIVE_CHAT_VIEW_LIMIT,
   chatSlotKey,
@@ -117,7 +118,7 @@ export function SeatChatTerminal({ target, layout, terminal }: { target: SeatCha
     onDismiss: (id) => setHandoff((h) => (h?.id === id ? null : h)),
   } : null;
   const openCommand = (text: string, binding: CommandBinding) => {
-    setHandoff({ id: crypto.randomUUID(), seatKey, text, binding, pasted: false });
+    setHandoff({ id: createBrowserUuid(), seatKey, text, binding, pasted: false });
     setView("terminal");
   };
   return (
@@ -410,8 +411,8 @@ function ChatBody({ target, nodeId, layout, onOpenTerminal, onOpenCommand, paste
     if (prior && prior.phase !== "submitted") return;
     const text = slot.draft.replace(/\r\n?/g, "\n");
     const ownerKey = data.identity.ownerKey;
-    const requestId = crypto.randomUUID();
-    updateChatSlot(key, (s) => ({ ...s, draft: text, notice: null, pending: { requestId, text, ownerKey, phase: "posting", detail: "" } }));
+    const requestId = createBrowserUuid();
+    updateChatSlot(key, (s) => ({ ...s, draft: text, notice: null, pending: { requestId, text, ownerKey, draftRevision: s.draftRevision, phase: "posting", detail: "" } }));
     followRef.current = true;
     const outcome = await postNativeChatMessage(nodeId, { requestId, ownerKey, text });
     settlePending(key, requestId, outcome);
@@ -456,8 +457,8 @@ function ChatBody({ target, nodeId, layout, onOpenTerminal, onOpenCommand, paste
   const sendInterrupt = async () => {
     if (!data || !slotKey || identityBlocked || interruptBlocked || interruptUnresolved(readChatSlot(slotKey))) return;
     const key = slotKey;
-    const request = { requestId: crypto.randomUUID(), ownerKey: data.identity.ownerKey };
-    updateChatSlot(key, (s) => ({ ...s, interrupt: { ...request, text: "", phase: "posting", detail: "" } }));
+    const request = { requestId: createBrowserUuid(), ownerKey: data.identity.ownerKey };
+    updateChatSlot(key, (s) => ({ ...s, interrupt: { ...request, text: "", draftRevision: s.draftRevision, phase: "posting", detail: "" } }));
     settleInterrupt(key, request.requestId, await postNativeChatInterrupt(nodeId, request));
     void queryClient.invalidateQueries({ queryKey });
   };

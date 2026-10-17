@@ -103,6 +103,49 @@ async function type(text: string) {
 }
 
 describe("native chat: send and reply", () => {
+  it.each(["message", "interrupt", "command"] as const)("supports %s without secure-context randomUUID", async action => {
+    vi.stubGlobal("crypto", { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) });
+    pages.set("n1", page("n1", action === "interrupt" ? { availability: { state: "busy", detail: "Working", canSend: false, canInterrupt: true } } : {}));
+    postReplies.push(body => ({ status: 200, body: { request: { ...receipt(String(body.requestId), "", "submitted"), kind: action === "interrupt" ? "interrupt" : "message" } } }));
+    renderChat(target("n1"));
+    if (action === "interrupt") fireEvent.click(await screen.findByTestId("native-chat-interrupt"));
+    else {
+      await type(action === "command" ? "/help" : "plain HTTP message");
+      fireEvent.click(action === "command" ? screen.getByRole("button", { name: "Open native command" }) : sendButton());
+    }
+    if (action === "command") {
+      await screen.findByTestId("fake-command");
+      expect(lastCommand?.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+      expect(lastCommand?.text).toBe("/help");
+      expect(posts).toHaveLength(0);
+    } else {
+      await waitFor(() => expect(posts).toHaveLength(1));
+      expect(posts[0]!.body.requestId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+      expect(posts[0]!.url).toBe(`/api/native-chat/n1/${action === "message" ? "messages" : "interrupt"}`);
+    }
+  });
+
+  it.each(["submitted", "observed"] as const)("keeps a retyped matching draft when a late %s receipt settles", async state => {
+    pages.set("n1", page("n1"));
+    const view = renderChat(target("n1"));
+    let release!: (reply: Reply) => void;
+    postReplies.push(new Promise(resolve => { release = resolve; }));
+    await type("repeat this request");
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(posts).toHaveLength(1));
+    const id = String(posts[0]!.body.requestId);
+    pages.set("n1", page("n1", { requests: [receipt(id, "", "submitted")] }));
+    await act(async () => { await view.client.invalidateQueries({ queryKey: ["native-chat"] }); });
+    await waitFor(() => expect(input().value).toBe(""));
+    await type("repeat this request");
+    await act(async () => { release({ status: 200, body: { request: receipt(id, "", state) } }); });
+    expect(input().value).toBe("repeat this request");
+    pages.set("n1", page("n1", { requests: [receipt(id, "", "observed")] }));
+    await act(async () => { await view.client.invalidateQueries({ queryKey: ["native-chat"] }); });
+    expect(input().value).toBe("repeat this request");
+    expect(posts).toHaveLength(1);
+  });
+
   it("reads receipts without prompt text", async () => {
     const request = { requestId: "receipt-without-text", kind: "message", state: "submitted", detail: "Sent", createdAt: "now", updatedAt: "now" };
     pages.set("n1", { status: 200, body: { ...page("n1"), requests: [request] } });

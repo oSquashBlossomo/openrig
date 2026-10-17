@@ -217,11 +217,13 @@ export interface PendingSend {
   requestId: string;
   text: string;
   ownerKey: string;
+  draftRevision: number;
   phase: PendingPhase;
   detail: string;
 }
 export interface ChatSlot {
   draft: string;
+  draftRevision: number;
   /** The latest message request still being resolved. */
   pending: PendingSend | null;
   /** The latest interrupt request (text is empty); kept after it settles so
@@ -231,7 +233,7 @@ export interface ChatSlot {
   notice: string | null;
 }
 
-const EMPTY_SLOT: ChatSlot = { draft: "", pending: null, interrupt: null, notice: null };
+const EMPTY_SLOT: ChatSlot = { draft: "", draftRevision: 0, pending: null, interrupt: null, notice: null };
 const slots = new Map<string, ChatSlot>();
 const listeners = new Set<() => void>();
 const dismissed = new Set<string>();
@@ -246,7 +248,8 @@ export function updateChatSlot(key: string, fn: (slot: ChatSlot) => ChatSlot): v
   const prev = readChatSlot(key);
   const next = fn(prev);
   if (next === prev) return;
-  if (!next.draft && !next.pending && !next.interrupt && !next.notice) slots.delete(key); else slots.set(key, next);
+  const revised = next.draft === prev.draft ? next : { ...next, draftRevision: prev.draftRevision + 1 };
+  if (!revised.draft && !revised.pending && !revised.interrupt && !revised.notice) slots.delete(key); else slots.set(key, revised);
   for (const l of listeners) l();
 }
 function subscribe(listener: () => void) {
@@ -284,9 +287,9 @@ export function settlePending(key: string, requestId: string, outcome: NativeCha
     }
     const r = outcome.request;
     if (r.state === "failed") return { ...slot, pending: null, notice: `Not sent: ${r.detail || "the daemon refused this message"}` };
-    if (r.state === "observed") return { ...slot, draft: slot.draft === pending.text ? "" : slot.draft, pending: null, notice: null };
+    if (r.state === "observed") return { ...slot, draft: slot.draftRevision === pending.draftRevision ? "" : slot.draft, pending: null, notice: null };
     if (r.state === "submitted") {
-      return { ...slot, draft: slot.draft === pending.text ? "" : slot.draft, pending: { ...pending, phase: "submitted", detail: r.detail }, notice: null };
+      return { ...slot, draft: slot.draftRevision === pending.draftRevision ? "" : slot.draft, pending: { ...pending, phase: "submitted", detail: r.detail }, notice: null };
     }
     return { ...slot, pending: { ...pending, phase: r.state, detail: r.detail } };
   });
