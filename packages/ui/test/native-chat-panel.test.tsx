@@ -700,19 +700,20 @@ describe("native chat: interrupt", () => {
   });
 });
 
+function holdOlderPages() {
+  const original = vi.mocked(fetch).getMockImplementation()!;
+  const held: Array<{ signal: AbortSignal; resolve: (body: NativeChatResponse) => void; reject: () => void }> = [];
+  vi.mocked(fetch).mockImplementation((url, init) => {
+    if (!String(url).includes("?before=")) return original(url, init);
+    return new Promise<Response>((resolve, reject) => held.push({
+      signal: init!.signal as AbortSignal,
+      resolve: body => resolve(json(200, body)), reject: () => reject(new Error("stale read failed")),
+    }));
+  });
+  return held;
+}
+
 describe("native chat: bounded and verified reads", () => {
-  function holdOlderPages() {
-    const original = vi.mocked(fetch).getMockImplementation()!;
-    const held: Array<{ signal: AbortSignal; resolve: (body: NativeChatResponse) => void; reject: () => void }> = [];
-    vi.mocked(fetch).mockImplementation((url, init) => {
-      if (!String(url).includes("?before=")) return original(url, init);
-      return new Promise<Response>((resolve, reject) => held.push({
-        signal: init!.signal as AbortSignal,
-        resolve: body => resolve(json(200, body)), reject: () => reject(new Error("stale read failed")),
-      }));
-    });
-    return held;
-  }
   it.each(["resolve", "reject"] as const)("resets earlier-page loading on conversation change and ignores the old %s", async outcome => {
     pages.set("n1", page("n1", { messages: [msg("m2", "assistant", "original latest")], history: { state: "available", detail: "", olderCursor: "old-cursor" } }));
     const view = renderChat(target("n1"));
@@ -845,6 +846,31 @@ describe("native chat: review follow-ups", () => {
     expect(posts).toHaveLength(0);
   });
 
+  it("keeps paging through empty windows across latest polls and held older reads", async () => {
+    const latest = page("n1", { history: { state: "available", detail: "", olderCursor: "c1" } });
+    pages.set("n1", latest);
+    const view = renderChat(target("n1"));
+    await screen.findByTestId("native-chat-older");
+    const held = holdOlderPages();
+    fireEvent.click(screen.getByTestId("native-chat-older"));
+    await waitFor(() => expect(held).toHaveLength(1));
+    await act(async () => { held[0]!.resolve(page("n1", { history: { state: "available", detail: "", olderCursor: "c2" } })); });
+    await waitFor(() => expect((screen.getByTestId("native-chat-older") as HTMLButtonElement).disabled).toBe(false));
+    pages.set("n1", { ...latest, history: { ...latest.history, detail: "fresh native scan" } });
+    await act(async () => { await view.client.invalidateQueries({ queryKey: latestKey }); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    fireEvent.click(screen.getByTestId("native-chat-older"));
+    await waitFor(() => expect(held).toHaveLength(2));
+    expect(String(vi.mocked(fetch).mock.calls.at(-1)![0])).toContain("before=c2");
+    await act(async () => { view.client.setQueryData(latestKey, { ...latest, history: { ...latest.history, detail: "polled again" } }); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(held[1]!.signal.aborted).toBe(false);
+    await act(async () => { held[1]!.resolve(page("n1", { messages: [msg("old", "assistant", "past the empty windows")] })); });
+    await screen.findByText("past the empty windows");
+    expect(screen.queryByTestId("native-chat-older")).toBeNull();
+    expect(posts).toHaveLength(0);
+  });
+
   it("an empty view adopts the first populated page and its cursor, with no gap note", async () => {
     pages.set("n1", page("n1"));
     const view = renderChat(target("n1"));
@@ -944,6 +970,34 @@ describe("native chat: review follow-ups", () => {
     await waitFor(() => expect(screen.getByTestId("native-chat-pending").getAttribute("data-phase")).toBe("unknown"));
     expect(screen.queryByTestId("native-chat-notice")).toBeNull();
     expect(input().value).toBe("hello");
+  });
+
+  it("refuses a paragraph above Claude's collapse length without posting or losing the draft", async () => {
+    pages.set("n1", page("n1"));
+    renderChat(target("n1"));
+    const text = "ordinary paragraph ".repeat(50);
+    await type(text);
+    expect(sendButton().disabled).toBe(true);
+    expect(screen.getByTestId("native-chat-blocked").textContent).toMatch(/Shorten it or use Terminal/);
+    fireEvent.submit(input().closest("form")!);
+    expect(posts).toHaveLength(0);
+    expect(input().value).toBe(text);
+  });
+
+  it.each(["codex", "claude-code"] as const)("uses the observed %s composer budget before posting", async runtime => {
+    const current = page("n1", { availability: { state: "ready", detail: "", canSend: true, canInterrupt: false, composer: { columns: 20, rows: 2 } } });
+    current.identity.runtime = runtime;
+    pages.set("n1", current);
+    renderChat(target("n1"));
+    const text = "word ".repeat(12).trim();
+    await type(text);
+    expect(sendButton().disabled).toBe(true);
+    expect(screen.getByTestId("native-chat-blocked").textContent).toMatch(/Shorten it or use Terminal/);
+    fireEvent.submit(input().closest("form")!);
+    expect(posts).toHaveLength(0);
+    expect(input().value).toBe(text);
+    await type("one two");
+    expect(sendButton().disabled).toBe(false);
   });
 
   it("refuses the same control characters as the daemon (tab, C0, DEL, C1) and any line break", () => {

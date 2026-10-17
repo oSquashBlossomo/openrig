@@ -211,7 +211,7 @@ const HISTORY_HEIGHT: Record<SeatChatLayout, string> = {
  *  cursor no longer meets it and earlier pages stop here. `jumped`: a latest
  *  page shared no message with the view (more arrived than one page while
  *  reads were paused), so the view restarted at that page and its cursor. */
-interface Timeline { conv: string | null; generation: number; messages: NativeChatMessage[]; olderCursor: string | null; trimmed: boolean; jumped: boolean }
+interface Timeline { initialized: boolean; conv: string | null; generation: number; messages: NativeChatMessage[]; olderCursor: string | null; trimmed: boolean; jumped: boolean }
 
 function ChatBody({ target, nodeId, layout, onOpenTerminal, onOpenCommand, pastedCommand }: PanelProps & { nodeId: string }) {
   const { hostId, rigId } = target;
@@ -233,14 +233,14 @@ function ChatBody({ target, nodeId, layout, onOpenTerminal, onOpenCommand, paste
   const [, rerender] = useReducer((n: number) => n + 1, 0);
 
   // Accumulated timeline for the current conversation only.
-  const [timeline, setTimeline] = useState<Timeline>({ conv: null, generation: 0, messages: [], olderCursor: null, trimmed: false, jumped: false });
+  const [timeline, setTimeline] = useState<Timeline>({ initialized: false, conv: null, generation: 0, messages: [], olderCursor: null, trimmed: false, jumped: false });
   useLayoutEffect(() => {
     if (!data) return;
     setTimeline((t) => {
-      // A new conversation, or an empty view (e.g. its first record just
-      // arrived): adopt the page and its cursor; there is no gap to report.
-      if (t.conv !== data.identity.conversationId || t.messages.length === 0) {
-        return { conv: data.identity.conversationId, generation: t.generation + 1, messages: data.messages, olderCursor: data.history.olderCursor, trimmed: false, jumped: false };
+      // Empty native-record windows can still have older pages in flight.
+      if (!t.initialized || t.conv !== data.identity.conversationId
+        || t.messages.length === 0 && t.olderCursor === null && data.messages.length > 0) {
+        return { initialized: true, conv: data.identity.conversationId, generation: t.generation + 1, messages: data.messages, olderCursor: data.history.olderCursor, trimmed: false, jumped: false };
       }
       const known = new Set(t.messages.map((m) => m.id));
       if (known.size > 0 && data.messages.length > 0 && !data.messages.some((m) => known.has(m.id))) {
@@ -388,7 +388,7 @@ function ChatBody({ target, nodeId, layout, onOpenTerminal, onOpenCommand, paste
 
   // Why Send is off (first reason wins). Reading never stops for these.
   const inFlight = slot.pending && slot.pending.phase !== "submitted" ? slot.pending : null;
-  const draftRefusal = composeRefusal(slot.draft);
+  const draftRefusal = composeRefusal(slot.draft, data?.availability.composer, data?.identity.runtime);
   const identityBlocked: string | null =
     target.blockedReason
     ?? (query.status === "error" ? "The latest chat read failed, so the seat's current state is unknown. Sending resumes after a successful read." : null)

@@ -13,6 +13,7 @@
 // inherits them, and private prompts are not written to localStorage.
 
 import { useSyncExternalStore } from "react";
+import { projectNativeChatText, NATIVE_CHAT_COMPOSER_REFUSAL, type NativeChatComposerSize } from "@openrig/daemon/native-chat-composer";
 import { terminalAuthHeaders } from "../components/mission-control/missionControlAuth.js";
 import { boundedJsonRead } from "./bounded-json-read.js";
 import { isObject, isText, OperatorReadError } from "./operator-read.js";
@@ -49,6 +50,7 @@ export interface NativeChatResponse {
     detail: string;
     canSend: boolean;
     canInterrupt: boolean;
+    composer?: NativeChatComposerSize | null;
   };
   history: { state: "available" | "partial" | "unavailable"; detail: string; olderCursor: string | null };
   messages: NativeChatMessage[];
@@ -88,6 +90,8 @@ function isResponse(v: unknown, nodeId: string): v is NativeChatResponse {
     && nonEmpty(id.conversationId) && nonEmpty(id.ownerKey)
     && oneOf("ready", "busy", "needs_terminal", "unavailable")(a.state) && isText(a.detail)
     && typeof a.canSend === "boolean" && typeof a.canInterrupt === "boolean"
+    && (a.composer == null || isObject(a.composer) && Number.isSafeInteger(a.composer.columns) && Number(a.composer.columns) > 0
+      && Number.isSafeInteger(a.composer.rows) && Number(a.composer.rows) > 0)
     && oneOf("available", "partial", "unavailable")(h.state) && isText(h.detail) && isNullableText(h.olderCursor)
     && Array.isArray(v.messages) && v.messages.every(isMessage)
     && Array.isArray(v.requests) && v.requests.every(isNativeChatRequest);
@@ -179,7 +183,7 @@ export function postNativeChatInterrupt(nodeId: string, body: { requestId: strin
 }
 
 /** Why this text must go through the Terminal instead (null: chat can send). */
-export function composeRefusal(text: string): string | null {
+export function composeRefusal(text: string, composer?: NativeChatComposerSize | null, runtime: "codex" | "claude-code" = "claude-code"): string | null {
   if (text.trimStart().startsWith("/")) return "Slash commands run in the native terminal, where their prompts and pickers are visible.";
   // Same set the daemon refuses: C0 (tab included) except LF, DEL and C1.
   // CR is checked after the CRLF→LF normalization a send applies.
@@ -189,6 +193,8 @@ export function composeRefusal(text: string): string | null {
   // draft, unchanged, for the Terminal.
   if (/[\r\n]/.test(text)) return "Multi-line input goes through the Terminal. Your draft stays here; send one paragraph in Chat or open Terminal for multiple lines.";
   if (new TextEncoder().encode(text).length > NATIVE_CHAT_MAX_BYTES) return "Messages are limited to 32 KiB; paste longer input in the Terminal.";
+  // shortcut: UTF-8 bytes conservatively bound cells; use a browser-safe cell counter if Unicode drafts need the full pane budget.
+  if (!projectNativeChatText(text, composer ?? { columns: NATIVE_CHAT_MAX_BYTES, rows: 1 }, runtime, value => new TextEncoder().encode(value).length)) return NATIVE_CHAT_COMPOSER_REFUSAL;
   return null;
 }
 
