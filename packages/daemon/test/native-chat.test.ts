@@ -8,7 +8,8 @@ import { dirname, join } from "node:path";
 import { createFullTestDb } from "./helpers/test-app.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
-import { NativeChatService } from "../src/domain/native-chat.js";
+import { NativeChatService, nativeChatComposerMatches } from "../src/domain/native-chat.js";
+import growth from "./fixtures/native-chat-growth.json";
 import { nativeChatRoutes } from "../src/routes/native-chat.js";
 import { nativeChatTextHash } from "../src/domain/native-chat-history.js";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
@@ -390,22 +391,22 @@ it.each(["codex", "claude-code"] as const)("refuses %s pane overflow before any 
   expect(f.tmux.sendKeys).not.toHaveBeenCalled();
   expect(f.db.prepare("SELECT effects_started FROM native_chat_requests WHERE request_id=?").get(requestId)).toEqual({ effects_started: 0 });
 });
-it("refuses Claude's collapse length before paste even in a large pane", async () => {
-  const f = fixture("claude-code"), view = await f.service.read(f.node.id);
+it.each([["claude-code", 801], ["codex", 1001]] as const)("refuses %s collapse length before paste even in a large pane", async (runtime, length) => {
+  const f = fixture(runtime), view = await f.service.read(f.node.id);
   const observation = await f.tmux.capturePaneObservation();
   f.tmux.capturePaneObservation.mockResolvedValue({ ...observation, cursor: { ...observation.cursor, width: 2000 } });
   const requestId = randomUUID();
-  expect((await f.service.send(f.node.id, { requestId, ownerKey: view.identity.ownerKey, text: "x".repeat(801) })).state).toBe("failed");
+  expect((await f.service.send(f.node.id, { requestId, ownerKey: view.identity.ownerKey, text: "x".repeat(length) })).state).toBe("failed");
   expect(f.tmux.sendText).not.toHaveBeenCalled();
   expect(f.tmux.sendKeys).not.toHaveBeenCalled();
   expect(f.db.prepare("SELECT effects_started FROM native_chat_requests WHERE request_id=?").get(requestId)).toEqual({ effects_started: 0 });
 });
-it.each(["codex", "claude-code"] as const)("refuses a short %s paragraph that needs more than the observed single row", async runtime => {
+it.each(["codex", "claude-code"] as const)("refuses a short %s paragraph that cannot fit a small pane", async runtime => {
   const f = fixture(runtime), observation = await f.tmux.capturePaneObservation();
   f.tmux.capturePaneObservation.mockResolvedValue({ ...observation, cursor: { ...observation.cursor, width: 20, height: runtime === "codex" ? 3 : 5 } });
   const view = await f.service.read(f.node.id), requestId = randomUUID();
-  expect(view.availability).toMatchObject({ canSend: true, composer: { rows: 1 } });
-  expect((await f.service.send(f.node.id, { requestId, ownerKey: view.identity.ownerKey, text: "one two three four" })).state).toBe("failed");
+  expect(view.availability).toMatchObject({ canSend: true, composer: { rows: runtime === "codex" ? 1 : 2 } });
+  expect((await f.service.send(f.node.id, { requestId, ownerKey: view.identity.ownerKey, text: "one two three four five six seven eight" })).state).toBe("failed");
   expect(f.tmux.sendText).not.toHaveBeenCalled();
   expect(f.tmux.sendKeys).not.toHaveBeenCalled();
   expect(f.db.prepare("SELECT effects_started FROM native_chat_requests WHERE request_id=?").get(requestId)).toEqual({ effects_started: 0 });
@@ -423,31 +424,54 @@ it.each(["codex", "claude-code"] as const)("rechecks %s pane capacity at the pas
   expect(f.tmux.sendKeys).not.toHaveBeenCalled();
   expect(f.db.prepare("SELECT effects_started FROM native_chat_requests WHERE request_id=?").get(requestId)).toEqual({ effects_started: 0 });
 });
-it("sends a fitting Claude paste at the collapse boundary", async () => {
-  const f = fixture("claude-code"), original = f.tmux.capturePaneObservation.getMockImplementation()!;
+it.each([["claude-code", 800, 1996, 21], ["codex", 1000, 1997, 22]] as const)("sends a fitting %s paste at the collapse boundary", async (runtime, length, columns, rows) => {
+  const f = fixture(runtime), original = f.tmux.capturePaneObservation.getMockImplementation()!;
   f.tmux.capturePaneObservation.mockImplementation(async () => { const observation = await original(); return { ...observation, cursor: { ...observation.cursor, width: 2000 } }; });
   const view = await f.service.read(f.node.id), requestId = randomUUID();
-  expect(view.availability).toMatchObject({ composer: { columns: 1996, rows: 20 } });
-  expect((await f.service.send(f.node.id, { requestId, ownerKey: view.identity.ownerKey, text: "x".repeat(800) })).state).toBe("submitted");
+  expect(view.availability).toMatchObject({ composer: { columns, rows } });
+  expect((await f.service.send(f.node.id, { requestId, ownerKey: view.identity.ownerKey, text: "x".repeat(length) })).state).toBe("submitted");
   expect(f.tmux.sendText).toHaveBeenCalledTimes(1);
   expect(f.tmux.sendKeys).toHaveBeenCalledTimes(1);
   expect(f.db.prepare("SELECT effects_started FROM native_chat_requests WHERE request_id=?").get(requestId)).toEqual({ effects_started: 1 });
 });
-it.each([[4, true], [24, true], [4, false], [24, false]] as const)("reserves the complete Codex footer in a %i-row pane with shortcuts=%s", async (height, shortcuts) => {
+it.each([[4, true], [24, true], [4, false], [24, false]] as const)("budgets the full Codex screen after its footer in a %i-row pane with shortcuts=%s", async (height, shortcuts) => {
   const f = fixture(), at = height - 4;
   const snapshot = [...Array.from({ length: at }, () => "prior output"), "› Ask Codex to do anything", "", "  GPT-6.1-Sol high · /tmp/proof", shortcuts ? "? for shortcuts" : ""].join("\n");
   f.setPane(snapshot);
   f.tmux.capturePaneObservation.mockResolvedValue({ snapshot, cursor: { x: 2, y: at, width: 40, height } });
   const view = await f.service.read(f.node.id), requestId = randomUUID();
-  expect(view.availability).toMatchObject({ canSend: true, composer: { columns: 37, rows: shortcuts ? 1 : 2 } });
-  expect((await f.service.send(f.node.id, { requestId, ownerKey: view.identity.ownerKey, text: "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen" })).state).toBe("failed");
+  expect(view.availability).toMatchObject({ canSend: true, composer: { columns: 37, rows: height - (shortcuts ? 3 : 2) } });
+  expect((await f.service.send(f.node.id, { requestId, ownerKey: view.identity.ownerKey, text: "word ".repeat(height * 8).trim() })).state).toBe("failed");
   expect(f.tmux.sendText).not.toHaveBeenCalled();
   expect(f.tmux.sendKeys).not.toHaveBeenCalled();
   expect(f.db.prepare("SELECT effects_started FROM native_chat_requests WHERE request_id=?").get(requestId)).toEqual({ effects_started: 0 });
 });
-it("refuses collapsed staged pastes and human edits without Enter", async () => {
-  const f = fixture("claude-code"), view = await f.service.read(f.node.id);
-  f.tmux.sendText.mockImplementation(async (_target, _text, before, options) => { await before?.(); options?.onWrite?.(); f.setPane("Prior answer\n────────────────────\n❯ [Pasted text #1 +2 lines]\n────────────────────\n⏵⏵ auto mode on (shift+tab to cycle)"); return { ok: true }; });
+it.each(["codex", "claude-code"] as const)("accepts a multi-row %s paragraph after full native history scrolls upward", async runtime => {
+  const capture = growth.cases.find(c => c.runtime === runtime)!;
+  expect(nativeChatComposerMatches(capture.before.snapshot, runtime, capture.before.cursor, "")).toBe(true);
+  expect(nativeChatComposerMatches(capture.after.snapshot, runtime, capture.after.cursor, capture.text)).toBe(true);
+  const f = fixture(runtime);
+  f.setPane(capture.before.snapshot);
+  f.tmux.capturePaneObservation.mockResolvedValue(capture.before);
+  const view = await f.service.read(f.node.id);
+  expect(view.availability.canSend).toBe(true);
+  f.tmux.sendText.mockImplementation(async (_target, text, before, options) => {
+    await before?.(); options?.onWrite?.();
+    expect(text).toBe(capture.text);
+    f.setPane(capture.after.snapshot);
+    f.tmux.capturePaneObservation.mockResolvedValue(capture.after);
+    return { ok: true };
+  });
+  const requestId = randomUUID();
+  expect((await f.service.send(f.node.id, { requestId, ownerKey: view.identity.ownerKey, text: capture.text })).state).toBe("submitted");
+  expect(view.availability).toMatchObject({ canSend: true, composer: { rows: 21 } });
+  expect(f.tmux.sendText).toHaveBeenCalledTimes(1);
+  expect(f.tmux.sendKeys).toHaveBeenCalledWith("%1", ["Enter"], expect.any(Function), expect.any(Function));
+  expect(f.db.prepare("SELECT effects_started FROM native_chat_requests WHERE request_id=?").get(requestId)).toEqual({ effects_started: 1 });
+});
+it.each(["codex", "claude-code"] as const)("refuses unexpected %s paste collapse without Enter", async runtime => {
+  const f = fixture(runtime), view = await f.service.read(f.node.id);
+  f.tmux.sendText.mockImplementation(async (_target, _text, before, options) => { await before?.(); options?.onWrite?.(); f.setPane(runtime === "claude-code" ? "Prior answer\n────────────────────\n❯ [Pasted text #1 +2 lines]\n────────────────────\n⏵⏵ auto mode on (shift+tab to cycle)" : "› [Pasted Content 13 chars]\n\n? for shortcuts"); return { ok: true }; });
   expect((await f.service.send(f.node.id, { requestId: randomUUID(), ownerKey: view.identity.ownerKey, text: "one two three" })).state).toBe("indeterminate");
   expect(f.tmux.sendKeys).not.toHaveBeenCalled();
 });

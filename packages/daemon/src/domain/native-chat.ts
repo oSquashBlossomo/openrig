@@ -84,14 +84,15 @@ function nativeChatComposerLayout(pane: string, runtime: Runtime, cursor: TmuxCu
     && codexModelFooter.test(below.at(-1)!);
   if (modelAboveFooter) below.pop();
   if (below.some(line => !/^ *$/.test(line))) return null;
-  // Keep the observed prompt row and footer visible; do not assume scrolling.
+  // Captured native composers grow upward and scroll prior output out of view.
   let bottom = lines.length;
   while (bottom > end && /^ *$/.test(lines[bottom - 1]!)) bottom--;
   // Beyond the prompt, Claude reserves two cells; Codex 0.161 reserves one.
   const columns = cursor.width - stringWidth(lead) - (runtime === "claude-code" ? 2 : 1);
   // Codex keeps a blank separator and, with shortcuts, a separate model row.
   const footerRows = bottom - end + (runtime === "codex" ? 1 + Number(modelAboveFooter) : 0);
-  return { lines, at, lead, columns, rows: cursor.height - at - footerRows };
+  const topBorderRows = runtime === "claude-code" ? 1 : 0;
+  return { lines, at, lead, columns, rows: cursor.height - footerRows - topBorderRows };
 }
 export function nativeChatComposerMatches(pane: string, runtime: Runtime, cursor: TmuxCursorPosition, text: string): boolean {
   if (/[\r\n]/.test(text)) return false;

@@ -4,8 +4,9 @@ export const NATIVE_CHAT_COMPOSER_REFUSAL = "This message cannot be verified in 
 
 export function projectNativeChatText(text: string, size: NativeChatComposerSize, runtime: "codex" | "claude-code", width: (text: string) => number): string[] | null {
   const { columns: capacity, rows } = size;
-  // Claude Code 2.1.302 collapses single-line bracketed pastes above 800 UTF-16 units.
-  if (runtime === "claude-code" && text.length > 800) return null;
+  // Observed paste-collapse limits: Claude 2.1.302 at 800, Codex 0.161 at 1000.
+  // UTF-16 length conservatively bounds the native character counts.
+  if (text.length > (runtime === "claude-code" ? 800 : 1000)) return null;
   if (/[\r\n]/.test(text) || capacity <= 0 || rows <= 0 || width(text) > capacity * rows + rows - 1) return null;
   let remaining = text;
   const projected: string[] = [];
