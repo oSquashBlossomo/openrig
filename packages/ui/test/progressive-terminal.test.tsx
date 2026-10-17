@@ -7,8 +7,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 
 vi.mock("../src/components/terminal/FocusedTerminal.js", () => ({
-  FocusedTerminal: ({ sessionName, fit }: { sessionName: string; fit?: string }) => (
-    <div data-testid={`live-${sessionName}`} data-fit={fit}>live terminal</div>
+  FocusedTerminal: ({ sessionName, fit, command }: { sessionName: string; fit?: string; command?: { text: string } | null }) => (
+    <div data-testid={`live-${sessionName}`} data-fit={fit} data-command={command?.text}>live terminal</div>
   ),
 }));
 vi.mock("../src/components/preview/SessionPreviewPane.js", () => ({
@@ -30,6 +30,22 @@ beforeEach(() => {
 });
 
 describe("ProgressiveTerminal (OPR.0.4.0.1 interaction model)", () => {
+  it("a command staged from Chat opens this terminal live and forwards it; without one it stays static", () => {
+    const command = { id: "c1", text: "/help", sessionName: "a@r", check: async () => true as const, onPasted: () => {}, onDismiss: () => {} };
+    const { rerender } = render(
+      <LiveTerminalProvider cap={2}>
+        <ProgressiveTerminal sessionName="a@r" terminalKey="a" command={null} />
+      </LiveTerminalProvider>,
+    );
+    expect(screen.getByTestId("preview-a@r")).toBeTruthy();
+    rerender(
+      <LiveTerminalProvider cap={2}>
+        <ProgressiveTerminal sessionName="a@r" terminalKey="a" command={command} />
+      </LiveTerminalProvider>,
+    );
+    expect(screen.getByTestId("live-a@r").getAttribute("data-command")).toBe("/help");
+  });
+
   it("AC-1: defaults to the STATIC preview on render (no live terminal)", () => {
     render(
       <LiveTerminalProvider cap={2}>

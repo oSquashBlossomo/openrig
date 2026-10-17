@@ -26,6 +26,11 @@ it("discards a late body after cancellation, preserving cancellation over decode
   vi.useFakeTimers();let reject!:(e:unknown)=>void;const caller=new AbortController(),cancel=vi.fn(async()=>{});vi.stubGlobal("fetch",vi.fn(async()=>({ok:true,json:()=>new Promise((_done,fail)=>{reject=fail;}),body:{cancel}})));
   const pending=boundedJsonRead("/read",{signal:caller.signal}).catch(e=>e);await Promise.resolve();await Promise.resolve();caller.abort();expect(await pending).toMatchObject({code:"cancelled"});reject(new SyntaxError("late"));await Promise.resolve();expect(cancel).toHaveBeenCalledOnce();expect(vi.getTimerCount()).toBe(0);
 });
+it("passes an explicit cache policy and adds none to ordinary reads",async()=>{
+  const fetch=vi.fn(async(_url:string,_init?:RequestInit)=>Response.json({ok:true}));vi.stubGlobal("fetch",fetch);
+  await boundedJsonRead("/fresh",{cache:"no-store"});await boundedJsonRead("/ordinary");
+  expect(fetch.mock.calls[0]?.[1]?.cache).toBe("no-store");expect(fetch.mock.calls[1]?.[1]).not.toHaveProperty("cache");
+});
 it("refuses an already-aborted caller before fetch",async()=>{
   const fetch=vi.fn();vi.stubGlobal("fetch",fetch);const caller=new AbortController();caller.abort();await expect(boundedJsonRead("/read",{signal:caller.signal})).rejects.toMatchObject({code:"cancelled"});expect(fetch).not.toHaveBeenCalled();
 });

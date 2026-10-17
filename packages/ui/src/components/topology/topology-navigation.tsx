@@ -36,6 +36,7 @@ import {
 } from "../../lib/topology-location.js";
 import { stringifyTopologySearch } from "../../lib/topology-search.js";
 import { cn } from "../../lib/utils.js";
+import { createBrowserUuid } from "../../lib/browser-uuid.js";
 
 // ---------------------------------------------------------------------------
 // Visit identity (history state, never URL)
@@ -50,12 +51,7 @@ export function readTopologyVisitId(state: unknown): string | null {
   return typeof value === "string" && VISIT_ID_PATTERN.test(value) ? value : null;
 }
 
-/** getRandomValues works in insecure contexts too (randomUUID does not). */
-export function createTopologyVisitId(): string {
-  const bytes = new Uint8Array(12);
-  globalThis.crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-}
+export const createTopologyVisitId = createBrowserUuid;
 
 function withVisit(state: HistoryState, visitId: string): HistoryState {
   return { ...state, [TOPOLOGY_VISIT_STATE_KEY]: visitId } as HistoryState;

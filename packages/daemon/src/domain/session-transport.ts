@@ -148,9 +148,10 @@ function findCurrentClaudeQuestion(paneContent: string): string | null {
   return null;
 }
 
-// Claude can leave these noninteractive warnings BELOW the input box and mode bar.
+// Claude can leave these noninteractive warnings/hints BELOW the input box and mode bar.
 // Recognize the complete input block, never a warning or historical prompt alone.
-const CLAUDE_STATUS_WARNINGS = [
+export const CLAUDE_STATUS_WARNINGS = [
+  /^control this session from your phone · \/remote-control$/,
   /^✘ Auto-update failed: no write permission to npm prefix · Run claude doctor$/,
   /^tmux focus-events off · add 'set -g focus-events on' to ~\/\.tmux\.conf and re…$/,
   /^You've used (?:\d|[1-9]\d)% of your weekly limit · resets \d{1,2}(?::\d{2})?(?:am|pm) \(UTC\)$/,
@@ -172,9 +173,10 @@ export interface ClassifyPaneOptions {
 
 function findClaudeComposer(paneContent: string, options: ClassifyPaneOptions = {}) {
   // Preserve columns: a multiline draft may contain indented border/prompt text.
-  // This classifier scans at most 20 physical lines; captures can be taller.
+  // Discard only bottom terminal padding before scanning 20 physical lines.
+  // Internal blank rows still consume the bound; captures can be taller.
   // Exhausting the scan without reaching the status head is unknown, not idle.
-  const lines = paneContent.split("\n").slice(-20)
+  const lines = paneContent.trimEnd().split("\n").slice(-20)
     .map((line) => line.trimEnd()).filter((line) => line.trim().length > 0);
   let bar = lines.length - 1;
   while (bar >= 0 && CLAUDE_STATUS_WARNINGS.some((pattern) => pattern.test(lines[bar]!.trim()))) bar--;

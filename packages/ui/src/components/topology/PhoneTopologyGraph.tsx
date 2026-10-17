@@ -79,7 +79,7 @@ import { cn } from "../../lib/utils.js";
 import { LOCAL_HOST_ID } from "../../lib/host-param.js";
 import { GraphPartialNotice } from "./GraphPartialNotice.js";
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "../ui/dialog.js";
-import { SeatLiveTerminal, useSeatDetailQuery } from "./spatial/SpatialAgentWorkspace.js";
+import { SeatChatAndTerminal, useSeatDetailQuery } from "./spatial/SpatialAgentWorkspace.js";
 // The guarded dock's frame/button styles (class-scoped; no three.js).
 import "./spatial/spatial.css";
 import { useTopologyOverlay } from "./topology-overlay-context.js";
@@ -683,7 +683,9 @@ function PhoneSeatTerminal({ agent, hostId, tone, seatTarget, from, onClose }: {
         onEscapeKeyDown={(e) => { if (e.target instanceof Element && e.target.closest(".xterm")) e.preventDefault(); }}
         // The dock's terminal ground normally comes from the 3D atelier theme.
         style={{ "--spatial-terminal-ground": "24 10% 4.5%" } as CSSProperties}
-        className="inset-0 left-0 top-0 flex h-[100dvh] max-h-none w-full max-w-none translate-x-0 translate-y-0 flex-col gap-0 border-0 !bg-background p-0 pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)] shadow-none [&_.spatial-terminal-frame--stacked]:h-[max(13rem,calc(100dvh-9rem))]"
+        // The dialog scrolls, so the chat composer stays reachable above a soft
+        // keyboard; chat history leaves room for the composer below it.
+        className="inset-0 left-0 top-0 flex h-[100dvh] max-h-none w-full max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-y-auto border-0 !bg-background p-0 pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)] shadow-none [&_.spatial-terminal-frame.spatial-terminal-frame--stacked]:h-[max(13rem,calc(100dvh-9rem))] [&_.native-chat-history]:h-[max(13rem,calc(100dvh-17rem))]"
       >
         <header className="sticky top-0 z-10 flex min-h-12 shrink-0 items-center gap-2 border-b border-outline-variant bg-background pl-3">
           <ToneDot tone={tone} />
@@ -704,7 +706,7 @@ function PhoneSeatTerminal({ agent, hostId, tone, seatTarget, from, onClose }: {
           </DialogClose>
         </header>
         <div className="pb-3">
-          <SeatLiveTerminal
+          <SeatChatAndTerminal
             key={`${hostId}|${agent.rigId}|${agent.nodeId}`}
             agent={agent}
             hostId={hostId}

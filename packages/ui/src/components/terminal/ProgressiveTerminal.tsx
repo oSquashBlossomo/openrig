@@ -8,7 +8,7 @@
 // Static previews are uncapped (cheap polling). Used by all three surfaces.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { FocusedTerminal } from "./FocusedTerminal.js";
+import { FocusedTerminal, type StagedCommand } from "./FocusedTerminal.js";
 import { StaticTerminalPlate } from "./StaticTerminalPlate.js";
 import { ScaleToFitTerminal } from "./ScaleToFitTerminal.js";
 import { useLiveTerminal } from "./LiveTerminalProvider.js";
@@ -40,6 +40,9 @@ interface ProgressiveTerminalProps {
   /** OPR.0.4.4.20 delta-C: forwarded to FocusedTerminal when this terminal goes
    *  live — one pre-populated text frame, no Enter (see FocusedTerminal). */
   initialText?: string;
+  /** A command staged from Chat: the operator asked for this terminal, so it
+   *  goes live (no bytes sent) and FocusedTerminal offers the command. */
+  command?: StagedCommand | null;
 }
 
 export function ProgressiveTerminal({
@@ -52,6 +55,7 @@ export function ProgressiveTerminal({
   onLiveChange,
   fit = "width",
   initialText,
+  command = null,
 }: ProgressiveTerminalProps) {
   // Live mode belongs to the exact cap key + session it was opened for: a host
   // that reuses this component for another seat or session starts static
@@ -82,6 +86,11 @@ export function ProgressiveTerminal({
     setLiveIdentity(identity);
   }, [live, terminalKey, identity, goStatic]);
 
+  const commandId = command?.id ?? null;
+  useEffect(() => {
+    if (commandId) goLive();
+  }, [commandId, goLive]);
+
   // Free the registry slot whenever we leave live (unmount or revert-to-static).
   // release() is idempotent, so an eviction (which already removed the key) is safe.
   useEffect(() => {
@@ -99,7 +108,7 @@ export function ProgressiveTerminal({
         data-testid={`${testIdPrefix}-live`}
         className={[fit === "contain" ? "h-full w-full min-w-0" : "w-full min-w-0", className].filter(Boolean).join(" ")}
       >
-        <FocusedTerminal sessionName={sessionName} fit={fit} initialText={initialText} />
+        <FocusedTerminal sessionName={sessionName} fit={fit} initialText={initialText} command={command} />
       </div>
     );
   }

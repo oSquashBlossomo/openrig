@@ -1,0 +1,51 @@
+{
+  "provenance": "Captured from installed native TUIs in an isolated 80x24 tmux fixture using fictional saved history, dummy credentials and denied networking. Literal bracketed paste only; no Enter or provider call. Paths sanitized at equal width; cells/cursors preserved.",
+  "cases": [
+    {
+      "runtime": "codex",
+      "version": "codex-cli 0.161.0",
+      "text": "Composer growth proof: this ordinary paragraph wraps across several native input rows while prior fictional history scrolls upward. The native prompt and footer must remain visible, with every word preserved.",
+      "before": {
+        "snapshot": "› Fictional history fixture. Do not act.\n  Fictional history line 59: prior output for composer geometry only.           \n  Fictional history line 60: prior output for composer geometry only.           \n  Fictional history line 61: prior output for composer geometry only.           \n  Fictional history line 62: prior output for composer geometry only.           \n  Fictional history line 63: prior output for composer geometry only.           \n  Fictional history line 64: prior output for composer geometry only.           \n  Fictional history line 65: prior output for composer geometry only.           \n  Fictional history line 66: prior output for composer geometry only.           \n  Fictional history line 67: prior output for composer geometry only.           \n  Fictional history line 68: prior output for composer geometry only.           \n  Fictional history line 69: prior output for composer geometry only.           \n  Fictional history line 70: prior output for composer geometry only.           \n  Fictional history line 71: prior output for composer geometry only.           \n  Fictional history line 72: prior output for composer geometry only.           \n  Fictional history line 73: prior output for composer geometry only.           \n  Fictional history line 74: prior output for composer geometry only.           \n  Fictional history line 75: prior output for composer geometry only.           \n\n\n› Ask Codex to do anything              \n\n  GPT-6.1-Sol default · /tmp/composer-proof------------------------/work-codex  \n  ? for shortcuts   \n",
+        "cursor": {
+          "x": 2,
+          "y": 20,
+          "width": 80,
+          "height": 24
+        }
+      },
+      "after": {
+        "snapshot": "› Fictional history fixture. Do not act.\n  Fictional history line 61: prior output for composer geometry only.           \n  Fictional history line 62: prior output for composer geometry only.           \n  Fictional history line 63: prior output for composer geometry only.           \n  Fictional history line 64: prior output for composer geometry only.           \n  Fictional history line 65: prior output for composer geometry only.           \n  Fictional history line 66: prior output for composer geometry only.           \n  Fictional history line 67: prior output for composer geometry only.           \n  Fictional history line 68: prior output for composer geometry only.           \n  Fictional history line 69: prior output for composer geometry only.           \n  Fictional history line 70: prior output for composer geometry only.           \n  Fictional history line 71: prior output for composer geometry only.           \n  Fictional history line 72: prior output for composer geometry only.           \n  Fictional history line 73: prior output for composer geometry only.           \n  Fictional history line 74: prior output for composer geometry only.           \n  Fictional history line 75: prior output for composer geometry only.           \n                                                                                \n                                                                                \n› Composer growth proof: this ordinary paragraph wraps across several native    \n  input rows while prior fictional history scrolls upward. The native prompt    \n  and footer must remain visible, with every word preserved.                    \n\n  GPT-6.1-Sol default · /tmp/composer-proof------------------------/work-codex  \n                    \n",
+        "cursor": {
+          "x": 60,
+          "y": 20,
+          "width": 80,
+          "height": 24
+        }
+      }
+    },
+    {
+      "runtime": "claude-code",
+      "version": "2.1.302 (Claude Code)",
+      "text": "Composer growth proof: this ordinary paragraph wraps across several native input rows while prior fictional history scrolls upward. The native prompt and footer must remain visible, with every word preserved.",
+      "before": {
+        "snapshot": "  Fictional history line 61: prior output for composer geometry only.           \n  Fictional history line 62: prior output for composer geometry only.           \n  Fictional history line 63: prior output for composer geometry only.           \n  Fictional history line 64: prior output for composer geometry only.           \n  Fictional history line 65: prior output for composer geometry only.           \n  Fictional history line 66: prior output for composer geometry only.           \n  Fictional history line 67: prior output for composer geometry only.           \n  Fictional history line 68: prior output for composer geometry only.           \n  Fictional history line 69: prior output for composer geometry only.           \n  Fictional history line 70: prior output for composer geometry only.           \n  Fictional history line 71: prior output for composer geometry only.           \n  Fictional history line 72: prior output for composer geometry only.           \n  Fictional history line 73: prior output for composer geometry only.           \n  Fictional history line 74: prior output for composer geometry only.           \n  Fictional history line 75: prior output for composer geometry only.           \n\n❯ Fictional completion control.                                                 \n\n⏺ Completed fictional history.          \n                                                              ● high · /effort  \n────────────────────────────────────────────────────────────────────────────────\n❯                   \n────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents                           \n",
+        "cursor": {
+          "x": 2,
+          "y": 21,
+          "width": 80,
+          "height": 24
+        }
+      },
+      "after": {
+        "snapshot": "  Fictional history line 63: prior output for composer geometry only.           \n  Fictional history line 64: prior output for composer geometry only.           \n  Fictional history line 65: prior output for composer geometry only.           \n  Fictional history line 66: prior output for composer geometry only.           \n  Fictional history line 67: prior output for composer geometry only.           \n  Fictional history line 68: prior output for composer geometry only.           \n  Fictional history line 69: prior output for composer geometry only.           \n  Fictional history line 70: prior output for composer geometry only.           \n  Fictional history line 71: prior output for composer geometry only.           \n  Fictional history line 72: prior output for composer geometry only.           \n  Fictional history line 73: prior output for composer geometry only.           \n  Fictional history line 74: prior output for composer geometry only.           \n  Fictional history line 75: prior output for composer geometry only.           \n                                                                                \n❯ Fictional completion control.                                                 \n\n⏺ Completed fictional history.                                                  \n                                                              ● high · /effort  \n────────────────────────────────────────────────────────────────────────────────\n❯ Composer growth proof: this ordinary paragraph wraps across several native    \n  input rows while prior fictional history scrolls upward. The native prompt    \n  and footer must remain visible, with every word preserved.                    \n────────────────────────────────────────────────────────────────────────────────\n  ⏵⏵ auto mode on (shift+tab to cycle)                                          \n",
+        "cursor": {
+          "x": 60,
+          "y": 21,
+          "width": 80,
+          "height": 24
+        }
+      }
+    }
+  ]
+}

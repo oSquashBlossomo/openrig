@@ -23,7 +23,7 @@ import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion.js"
 import { spatialKey, type SpatialAgent, type SpatialScope } from "../../lib/spatial-topology.js";
 import { LOCAL_HOST_ID } from "../../lib/host-param.js";
 import type { TopologyScope } from "../../lib/topology-location.js";
-import { SeatLiveTerminal, useSeatDetailQuery } from "./spatial/SpatialAgentWorkspace.js";
+import { SeatChatAndTerminal, useSeatDetailQuery } from "./spatial/SpatialAgentWorkspace.js";
 // The guarded dock's frame/button styles (class-scoped; no three.js).
 import "./spatial/spatial.css";
 import { TopologyLink, topologyTarget, useKnownSelectedHost } from "./topology-navigation.js";
@@ -96,7 +96,7 @@ export function GraphSeatDock({ seat, reveal, from, onClose }: {
       ref={ref}
       data-testid="graph-seat-dock"
       data-seat-key={seatKey}
-      aria-label={`Terminal: ${name}`}
+      aria-label={`Chat and terminal: ${name}`}
       // Reserve the stacked frame plus dock chrome while detail is pending,
       // so the explicit reveal can reach its final position before it mounts.
       // The dock's stacked frame is taller than the shared default (the 3D
@@ -143,7 +143,7 @@ export function GraphSeatDock({ seat, reveal, from, onClose }: {
 function DockTerminal({ agent, hostId }: { agent: SpatialAgent; hostId: string }) {
   const { detailKey, detailQuery } = useSeatDetailQuery(agent, hostId);
   return (
-    <SeatLiveTerminal
+    <SeatChatAndTerminal
       agent={agent}
       hostId={hostId}
       isRemote={hostId !== LOCAL_HOST_ID}

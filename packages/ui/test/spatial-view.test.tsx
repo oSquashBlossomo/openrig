@@ -11,6 +11,9 @@ import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet
 import SpatialTopologyView from "../src/components/topology/spatial/SpatialTopologyView.js";
 import { parseTopologySearch, stringifyTopologySearch } from "../src/lib/topology-search.js";
 import type { SpatialScope } from "../src/lib/spatial-topology.js";
+import { setPreferredSeatView } from "../src/components/native-chat/NativeChatPanel.js";
+// These cover the terminal; seats open in Chat by default (native-chat-panel.test.tsx).
+setPreferredSeatView("terminal");
 
 const controller = vi.hoisted(() => ({
   fit: vi.fn(),
