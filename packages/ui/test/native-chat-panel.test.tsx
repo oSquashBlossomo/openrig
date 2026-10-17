@@ -9,6 +9,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { SeatChatTerminal, setPreferredSeatView, splitFences, type SeatChatTarget } from "../src/components/native-chat/NativeChatPanel.js";
 import type { StagedCommand } from "../src/components/terminal/FocusedTerminal.js";
 import { NATIVE_CHAT_VIEW_LIMIT, composeRefusal, mergeMessages, readNativeChat, resetNativeChatStore, type NativeChatMessage, type NativeChatRequest, type NativeChatResponse } from "../src/lib/native-chat.js";
+import growth from "../../daemon/test/fixtures/native-chat-growth.json";
 
 type Page = NativeChatResponse | { status: number; body: unknown };
 const pages = new Map<string, Page>();
@@ -846,6 +847,38 @@ describe("native chat: review follow-ups", () => {
     expect(posts).toHaveLength(0);
   });
 
+  it.each([false, true])("refreshes an unpaged empty timeline's latest cursor before its first older read (visible latest=%s)", async visible => {
+    pages.set("n1", page("n1", { history: { state: "partial", detail: "initial unsupported records", olderCursor: "c1" } }));
+    const view = renderChat(target("n1"));
+    await screen.findByTestId("native-chat-older");
+    const latest = page("n1", { messages: visible ? [msg("latest-visible", "assistant", "latest visible record")] : [], history: { state: "partial", detail: "latest window advanced", olderCursor: "c2" } });
+    await act(async () => { view.client.setQueryData(latestKey, latest); });
+    await screen.findByText(/latest window advanced/);
+    const held = holdOlderPages();
+    fireEvent.click(screen.getByTestId("native-chat-older"));
+    await waitFor(() => expect(held).toHaveLength(1));
+    expect(String(vi.mocked(fetch).mock.calls.at(-1)![0])).toContain("before=c2");
+    await act(async () => { held[0]!.resolve(page("n1", { messages: [msg("intervening", "assistant", "intervening visible record")] })); });
+    await screen.findByText("intervening visible record");
+    expect(posts).toHaveLength(0);
+  });
+
+  it("keeps the first held older read when a new latest cursor arrives", async () => {
+    pages.set("n1", page("n1", { history: { state: "partial", detail: "initial unsupported records", olderCursor: "c1" } }));
+    const view = renderChat(target("n1"));
+    await screen.findByTestId("native-chat-older");
+    const held = holdOlderPages();
+    fireEvent.click(screen.getByTestId("native-chat-older"));
+    await waitFor(() => expect(held).toHaveLength(1));
+    await act(async () => { view.client.setQueryData(latestKey, page("n1", { history: { state: "partial", detail: "latest changed during first older read", olderCursor: "c2" } })); });
+    await screen.findByText(/latest changed during first older read/);
+    expect(held[0]!.signal.aborted).toBe(false);
+    expect((screen.getByTestId("native-chat-older") as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => { held[0]!.resolve(page("n1", { messages: [msg("older", "assistant", "first older result retained")] })); });
+    await screen.findByText("first older result retained");
+    expect(posts).toHaveLength(0);
+  });
+
   it("keeps paging through empty windows across latest polls and held older reads", async () => {
     const latest = page("n1", { history: { state: "available", detail: "", olderCursor: "c1" } });
     pages.set("n1", latest);
@@ -993,16 +1026,32 @@ describe("native chat: review follow-ups", () => {
     expect(input().value).toBe("hello");
   });
 
-  it("refuses a paragraph above Claude's collapse length without posting or losing the draft", async () => {
-    pages.set("n1", page("n1"));
+  it.each([["claude-code", 801], ["codex", 1001]] as const)("refuses text above %s collapse length without posting or losing the draft", async (runtime, length) => {
+    const current = page("n1", { availability: { state: "ready", detail: "", canSend: true, canInterrupt: false, composer: { columns: 1996, rows: 21 } } });
+    current.identity.runtime = runtime;
+    pages.set("n1", current);
     renderChat(target("n1"));
-    const text = "ordinary paragraph ".repeat(50);
+    const text = "x".repeat(length);
     await type(text);
     expect(sendButton().disabled).toBe(true);
     expect(screen.getByTestId("native-chat-blocked").textContent).toMatch(/Shorten it or use Terminal/);
     fireEvent.submit(input().closest("form")!);
     expect(posts).toHaveLength(0);
     expect(input().value).toBe(text);
+  });
+
+  it.each(["codex", "claude-code"] as const)("sends a multi-row %s paragraph using the full-history screen budget", async runtime => {
+    const capture = growth.cases.find(c => c.runtime === runtime)!;
+    const current = page("n1", { availability: { state: "ready", detail: "", canSend: true, canInterrupt: false, composer: { columns: runtime === "codex" ? 77 : 76, rows: 21 } } });
+    current.identity.runtime = runtime;
+    pages.set("n1", current);
+    renderChat(target("n1"));
+    await type(capture.text);
+    expect(sendButton().disabled).toBe(false);
+    postReplies.push(body => ({ status: 200, body: { request: receipt(String(body.requestId), "", "submitted") } }));
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]!.body.text).toBe(capture.text);
   });
 
   it.each(["codex", "claude-code"] as const)("uses the observed %s composer budget before posting", async runtime => {

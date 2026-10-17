@@ -239,11 +239,10 @@ function ChatBody({ target, nodeId, layout, onOpenTerminal, onOpenCommand, paste
     setTimeline((t) => {
       // Empty native-record windows can still have older pages in flight.
       if (!t.initialized || t.conv !== data.identity.conversationId
+        || !t.pagingStarted && t.messages.length === 0
         || t.messages.length === 0 && t.olderCursor === null && data.messages.length > 0) {
         return { initialized: true, pagingStarted: false, conv: data.identity.conversationId, generation: t.generation + 1, messages: data.messages, olderCursor: data.history.olderCursor, trimmed: false, jumped: false };
       }
-      // A history read can recover before any displayable native record arrives.
-      if (!t.pagingStarted && t.messages.length === 0 && t.olderCursor === null && data.history.olderCursor !== null) return { ...t, olderCursor: data.history.olderCursor };
       const known = new Set(t.messages.map((m) => m.id));
       if (known.size > 0 && data.messages.length > 0 && !data.messages.some((m) => known.has(m.id))) {
         // Not continuous with the view: never stitch the two together.
@@ -304,6 +303,7 @@ function ChatBody({ target, nodeId, layout, onOpenTerminal, onOpenCommand, paste
     olderAbortRef.current?.abort();
     const controller = new AbortController();
     olderAbortRef.current = controller;
+    setTimeline(t => t.conv === forConv && t.generation === generation && t.olderCursor === olderCursor ? { ...t, pagingStarted: true } : t);
     setOlder({ loading: true, error: null });
     try {
       const page = await readNativeChat(nodeId, { before: olderCursor, signal: controller.signal });
