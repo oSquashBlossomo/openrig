@@ -80,15 +80,18 @@ function nativeChatComposerLayout(pane: string, runtime: Runtime, cursor: TmuxCu
   const below = lines.slice(cursor.y + 1, end);
   // Codex 0.161 places model/effort/cwd between a blank separator and shortcuts.
   // Never strip a metadata-looking row inside the composer or under its cursor.
-  if (runtime === "codex" && below.length >= 2 && below.slice(0, -1).every(line => /^ *$/.test(line))
-    && codexModelFooter.test(below.at(-1)!)) below.pop();
+  const modelAboveFooter = runtime === "codex" && below.length >= 2 && below.slice(0, -1).every(line => /^ *$/.test(line))
+    && codexModelFooter.test(below.at(-1)!);
+  if (modelAboveFooter) below.pop();
   if (below.some(line => !/^ *$/.test(line))) return null;
   // Keep the observed prompt row and footer visible; do not assume scrolling.
   let bottom = lines.length;
   while (bottom > end && /^ *$/.test(lines[bottom - 1]!)) bottom--;
   // Beyond the prompt, Claude reserves two cells; Codex 0.161 reserves one.
   const columns = cursor.width - stringWidth(lead) - (runtime === "claude-code" ? 2 : 1);
-  return { lines, at, lead, columns, rows: cursor.height - at - (bottom - end) };
+  // Codex keeps a blank separator and, with shortcuts, a separate model row.
+  const footerRows = bottom - end + (runtime === "codex" ? 1 + Number(modelAboveFooter) : 0);
+  return { lines, at, lead, columns, rows: cursor.height - at - footerRows };
 }
 export function nativeChatComposerMatches(pane: string, runtime: Runtime, cursor: TmuxCursorPosition, text: string): boolean {
   if (/[\r\n]/.test(text)) return false;

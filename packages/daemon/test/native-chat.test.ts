@@ -402,7 +402,7 @@ it("refuses Claude's collapse length before paste even in a large pane", async (
 });
 it.each(["codex", "claude-code"] as const)("refuses a short %s paragraph that needs more than the observed single row", async runtime => {
   const f = fixture(runtime), observation = await f.tmux.capturePaneObservation();
-  f.tmux.capturePaneObservation.mockResolvedValue({ ...observation, cursor: { ...observation.cursor, width: 20, height: runtime === "codex" ? 2 : 5 } });
+  f.tmux.capturePaneObservation.mockResolvedValue({ ...observation, cursor: { ...observation.cursor, width: 20, height: runtime === "codex" ? 3 : 5 } });
   const view = await f.service.read(f.node.id), requestId = randomUUID();
   expect(view.availability).toMatchObject({ canSend: true, composer: { rows: 1 } });
   expect((await f.service.send(f.node.id, { requestId, ownerKey: view.identity.ownerKey, text: "one two three four" })).state).toBe("failed");
@@ -432,6 +432,18 @@ it("sends a fitting Claude paste at the collapse boundary", async () => {
   expect(f.tmux.sendText).toHaveBeenCalledTimes(1);
   expect(f.tmux.sendKeys).toHaveBeenCalledTimes(1);
   expect(f.db.prepare("SELECT effects_started FROM native_chat_requests WHERE request_id=?").get(requestId)).toEqual({ effects_started: 1 });
+});
+it.each([[4, true], [24, true], [4, false], [24, false]] as const)("reserves the complete Codex footer in a %i-row pane with shortcuts=%s", async (height, shortcuts) => {
+  const f = fixture(), at = height - 4;
+  const snapshot = [...Array.from({ length: at }, () => "prior output"), "› Ask Codex to do anything", "", "  GPT-6.1-Sol high · /tmp/proof", shortcuts ? "? for shortcuts" : ""].join("\n");
+  f.setPane(snapshot);
+  f.tmux.capturePaneObservation.mockResolvedValue({ snapshot, cursor: { x: 2, y: at, width: 40, height } });
+  const view = await f.service.read(f.node.id), requestId = randomUUID();
+  expect(view.availability).toMatchObject({ canSend: true, composer: { columns: 37, rows: shortcuts ? 1 : 2 } });
+  expect((await f.service.send(f.node.id, { requestId, ownerKey: view.identity.ownerKey, text: "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen" })).state).toBe("failed");
+  expect(f.tmux.sendText).not.toHaveBeenCalled();
+  expect(f.tmux.sendKeys).not.toHaveBeenCalled();
+  expect(f.db.prepare("SELECT effects_started FROM native_chat_requests WHERE request_id=?").get(requestId)).toEqual({ effects_started: 0 });
 });
 it("refuses collapsed staged pastes and human edits without Enter", async () => {
   const f = fixture("claude-code"), view = await f.service.read(f.node.id);
