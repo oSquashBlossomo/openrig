@@ -211,7 +211,7 @@ const HISTORY_HEIGHT: Record<SeatChatLayout, string> = {
  *  cursor no longer meets it and earlier pages stop here. `jumped`: a latest
  *  page shared no message with the view (more arrived than one page while
  *  reads were paused), so the view restarted at that page and its cursor. */
-interface Timeline { initialized: boolean; conv: string | null; generation: number; messages: NativeChatMessage[]; olderCursor: string | null; trimmed: boolean; jumped: boolean }
+interface Timeline { initialized: boolean; pagingStarted: boolean; conv: string | null; generation: number; messages: NativeChatMessage[]; olderCursor: string | null; trimmed: boolean; jumped: boolean }
 
 function ChatBody({ target, nodeId, layout, onOpenTerminal, onOpenCommand, pastedCommand }: PanelProps & { nodeId: string }) {
   const { hostId, rigId } = target;
@@ -233,20 +233,22 @@ function ChatBody({ target, nodeId, layout, onOpenTerminal, onOpenCommand, paste
   const [, rerender] = useReducer((n: number) => n + 1, 0);
 
   // Accumulated timeline for the current conversation only.
-  const [timeline, setTimeline] = useState<Timeline>({ initialized: false, conv: null, generation: 0, messages: [], olderCursor: null, trimmed: false, jumped: false });
+  const [timeline, setTimeline] = useState<Timeline>({ initialized: false, pagingStarted: false, conv: null, generation: 0, messages: [], olderCursor: null, trimmed: false, jumped: false });
   useLayoutEffect(() => {
     if (!data) return;
     setTimeline((t) => {
       // Empty native-record windows can still have older pages in flight.
       if (!t.initialized || t.conv !== data.identity.conversationId
         || t.messages.length === 0 && t.olderCursor === null && data.messages.length > 0) {
-        return { initialized: true, conv: data.identity.conversationId, generation: t.generation + 1, messages: data.messages, olderCursor: data.history.olderCursor, trimmed: false, jumped: false };
+        return { initialized: true, pagingStarted: false, conv: data.identity.conversationId, generation: t.generation + 1, messages: data.messages, olderCursor: data.history.olderCursor, trimmed: false, jumped: false };
       }
+      // A history read can recover before any displayable native record arrives.
+      if (!t.pagingStarted && t.messages.length === 0 && t.olderCursor === null && data.history.olderCursor !== null) return { ...t, olderCursor: data.history.olderCursor };
       const known = new Set(t.messages.map((m) => m.id));
       if (known.size > 0 && data.messages.length > 0 && !data.messages.some((m) => known.has(m.id))) {
         // Not continuous with the view: never stitch the two together.
         followRef.current = true;
-        return { ...t, generation: t.generation + 1, messages: data.messages, olderCursor: data.history.olderCursor, trimmed: false, jumped: true };
+        return { ...t, pagingStarted: false, generation: t.generation + 1, messages: data.messages, olderCursor: data.history.olderCursor, trimmed: false, jumped: true };
       }
       const merged = mergeMessages(t.messages, data.messages, "newer");
       return merged.length > NATIVE_CHAT_VIEW_LIMIT
@@ -315,8 +317,8 @@ function ChatBody({ target, nodeId, layout, onOpenTerminal, onOpenCommand, paste
         anchorRef.current = scrollRef.current?.scrollHeight ?? null;
         const merged = mergeMessages(t.messages, page.messages, "older");
         return merged.length > NATIVE_CHAT_VIEW_LIMIT
-          ? { ...t, messages: merged.slice(-NATIVE_CHAT_VIEW_LIMIT), olderCursor: null, trimmed: true, jumped: false }
-          : { ...t, messages: merged, olderCursor: page.history.olderCursor, jumped: false };
+          ? { ...t, pagingStarted: true, messages: merged.slice(-NATIVE_CHAT_VIEW_LIMIT), olderCursor: null, trimmed: true, jumped: false }
+          : { ...t, pagingStarted: true, messages: merged, olderCursor: page.history.olderCursor, jumped: false };
       });
       setOlder({ loading: false, error: null });
     } catch (err) {

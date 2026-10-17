@@ -871,6 +871,27 @@ describe("native chat: review follow-ups", () => {
     expect(posts).toHaveLength(0);
   });
 
+  it.each(["unavailable", "available"] as const)("acquires the first older cursor from an empty %s history without restarting an exhausted traversal", async state => {
+    pages.set("n1", page("n1", { history: { state, detail: "initial empty history", olderCursor: null } }));
+    const view = renderChat(target("n1"));
+    await waitFor(() => expect(input().disabled).toBe(false));
+    expect(screen.queryByTestId("native-chat-older")).toBeNull();
+    const recovered = page("n1", { history: { state: "partial", detail: "unsupported recent records; older history exists", olderCursor: "first-older-window" } });
+    pages.set("n1", recovered);
+    await act(async () => { view.client.setQueryData(latestKey, recovered); });
+    await screen.findByText(/unsupported recent records; older history exists/);
+    const held = holdOlderPages();
+    fireEvent.click(screen.getByTestId("native-chat-older"));
+    await waitFor(() => expect(held).toHaveLength(1));
+    await act(async () => { held[0]!.resolve(page("n1")); });
+    await waitFor(() => expect(screen.queryByTestId("native-chat-older")).toBeNull());
+    const polled = { ...recovered, history: { ...recovered.history, detail: "latest poll after exhaustion" } };
+    await act(async () => { view.client.setQueryData(latestKey, polled); });
+    await screen.findByText(/latest poll after exhaustion/);
+    expect(screen.queryByTestId("native-chat-older")).toBeNull();
+    expect(posts).toHaveLength(0);
+  });
+
   it("an empty view adopts the first populated page and its cursor, with no gap note", async () => {
     pages.set("n1", page("n1"));
     const view = renderChat(target("n1"));
