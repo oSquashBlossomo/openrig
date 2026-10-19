@@ -8,6 +8,8 @@ name: Tests
 # Runs for pull requests against any base branch, so stacked PRs are tested too. Safe for
 # external forks: pull_request gets no secrets and this workflow only has read access.
 on:
+  push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -15,7 +17,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: tests-${{ github.ref }}
+  group: tests-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -76,6 +78,7 @@ jobs:
       - run: npm run test:repo
 
   package-tests:
+    if: ${{ github.event_name != 'push' }}
     # macOS, the platform OpenRig runs on: several daemon and cli tests read macOS ps columns,
     # file-inode behaviour and release tags.
     runs-on: macos-latest

@@ -6,13 +6,14 @@ import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { nativeChatTextHash } from "../src/domain/native-chat-history.js";
 
-it("installs Chat last on a fresh database, after the upstream resume-rotation schema", () => {
+it("installs Chat in name order on a fresh database, right after the upstream resume-rotation schema", () => {
   const db = new Database(":memory:");
   try {
     db.pragma("foreign_keys = ON");
     migrate(db, ALL_MIGRATIONS);
     const names = (db.prepare("SELECT name FROM schema_migrations ORDER BY rowid").all() as { name: string }[]).map(row => row.name);
-    expect(names.slice(-2)).toEqual(["101_claude_resume_rotation.sql", "102_native_chat_requests.sql"]);
+    const chat = names.indexOf("102_native_chat_requests.sql");
+    expect(names.slice(chat - 1, chat + 1)).toEqual(["101_claude_resume_rotation.sql", "102_native_chat_requests.sql"]);
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='native_chat_requests_node'").get()).toBeDefined();
     expect(db.prepare("SELECT * FROM native_chat_requests").all()).toEqual([]);
     const columns = (db.pragma("table_info(native_chat_requests)") as { name: string }[]).map(column => column.name);
@@ -23,13 +24,15 @@ it("installs Chat last on a fresh database, after the upstream resume-rotation s
   } finally { db.close(); }
 });
 
-it("adds only Chat to a 0.6.10 database while preserving the native session and topology", () => {
+it("adds only Chat to an upstream-only database while preserving the native session and topology", () => {
   const db = new Database(":memory:");
   try {
     db.pragma("foreign_keys = ON");
     const upstream = ALL_MIGRATIONS.filter(migration => !migration.name.includes("_native_chat_requests"));
     migrate(db, upstream);
-    expect(db.prepare("SELECT name FROM schema_migrations ORDER BY rowid DESC LIMIT 1").get()).toEqual({ name: "101_claude_resume_rotation.sql" });
+    const upstreamLatest = upstream.map(migration => migration.name).sort((a, b) => a.localeCompare(b)).at(-1);
+    expect(upstreamLatest! > "102_native_chat_requests.sql").toBe(true);
+    expect(db.prepare("SELECT name FROM schema_migrations ORDER BY rowid DESC LIMIT 1").get()).toEqual({ name: upstreamLatest });
     const repo = new RigRepository(db), rig = repo.createRig("upgrade-fixture");
     const node = repo.addNode(rig.id, "owner", { runtime: "claude-code" });
     const session = new SessionRegistry(db).registerSession(node.id, "owner@upgrade-fixture");

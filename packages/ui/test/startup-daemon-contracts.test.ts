@@ -57,7 +57,7 @@ describe("new startup/fleet clients against isolated daemon route contracts", ()
       const setup = createTestApp(db); const rig = setup.rigRepo.createRig("private-context");
       const node = setup.rigRepo.addNode(rig.id, "operator.agent", { runtime: "codex" });
       setup.tmuxAdapter.probeSession = vi.fn(async () => ({ state: "absent" as const }));
-      const continuation = vi.spyOn(SeatLifecycleService.prototype, "continueFreshStartup").mockResolvedValue({ ok: false, code: "attention_required", message: "Resolve native prerequisite first." } as never);
+      const continuation = vi.spyOn(SeatLifecycleService.prototype, "continueStartup").mockResolvedValue({ ok: false, code: "attention_required", message: "Resolve native prerequisite first." } as never);
       vi.stubGlobal("fetch", vi.fn((route: string, options?: RequestInit) => setup.app.request(route, options)));
       const observed = await readStartupRig(local, rig.id); const selection = selectStartupSeat(observed, node.id);
       const error = await performStartupAction(local, { selection, action: "continue" }).catch(e => e);
