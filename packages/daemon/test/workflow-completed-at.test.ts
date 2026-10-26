@@ -48,8 +48,11 @@ describe("explicit completedAt store contract", () => {
     const store = new WorkflowInstanceStore(database());
     const instance = store.create({ workflowName: "private", workflowVersion: "01", createdBySession: "human@rig" });
     store.updateFrontier(instance.instanceId, [], "failed", { completedAt: FIRST });
-    store.updateFrontier(instance.instanceId, ["redrive"], "active", options);
+    store.updateFrontier(instance.instanceId, [], "failed", options);
     expect(store.getByIdOrThrow(instance.instanceId).completedAt).toBe(FIRST);
+    // Upstream's reopen rule: an active or waiting run never keeps an old completion marker.
+    store.updateFrontier(instance.instanceId, ["redrive"], "active", options);
+    expect(store.getByIdOrThrow(instance.instanceId).completedAt).toBeNull();
   });
   it("clears with explicit null and accepts a new terminal timestamp without clearing other recorded fields", () => {
     const store = new WorkflowInstanceStore(database());

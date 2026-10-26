@@ -113,7 +113,7 @@ describe("startup view observes Claude's exact current native identity", () => {
 
   it.each([
     ["Accessing workspace:\nYes, I trust this folder", "workspace trust"],
-    ["Not logged in · Run /login", "logs in"],
+    ["● Not logged in · Please run /login", "logs in"],
     ["new MCP servers found in .mcp.json\nSelect any you wish to enable\nEnter to confirm", "MCP server approval"],
     ["How would you like to resume?\n❯ Resume from summary\n  Resume full session as-is", "resume-selection"],
     ["Running in Bypass Permissions mode.\n❯ No, exit\nYes, I accept\nEnter to confirm · Esc to cancel", "bypass-permissions warning"],

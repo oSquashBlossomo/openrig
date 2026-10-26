@@ -101,4 +101,18 @@ describe("control-socket adapter (spike-adopted; arch boundary constraint)", () 
     expect(p).toBe(path.join(home, "run", "tui-tui-1.sock"));
     expect(Buffer.byteLength(p)).toBeLessThanOrEqual(MAX_SOCKET_PATH_BYTES);
   });
+
+  it("treats an empty OPENRIG_HOME as unset instead of a cwd-relative run/ directory", () => {
+    const prevOpenRigHome = process.env["OPENRIG_HOME"];
+    const prevSocket = process.env["OPENRIG_TUI_SOCKET"];
+    try {
+      process.env["OPENRIG_HOME"] = "";
+      delete process.env["OPENRIG_TUI_SOCKET"];
+      expect(defaultSocketPath("x")).toBe(path.join(os.homedir(), ".openrig", "run", "tui-x.sock"));
+    } finally {
+      if (prevOpenRigHome === undefined) delete process.env["OPENRIG_HOME"];
+      else process.env["OPENRIG_HOME"] = prevOpenRigHome;
+      if (prevSocket !== undefined) process.env["OPENRIG_TUI_SOCKET"] = prevSocket;
+    }
+  });
 });

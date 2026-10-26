@@ -39,6 +39,7 @@ import {
 } from "../lib/token-format.js";
 import {
   getActivityLabel,
+  isCurrentUsageLimit,
   getActivityStateWithSource,
   getTimeInState,
   type ActivityState,
@@ -64,9 +65,9 @@ function placeholderOrValue(value: ReactNode | null | undefined): ReactNode {
   return value;
 }
 
-function activityLabelFromState(state: ActivityState): string {
+function activityLabelFromState(state: ActivityState, activity: NodeDetailData["agentActivity"]): string {
   if (state === "running") return "active";
-  return getActivityLabel(state);
+  return getActivityLabel(state, activity);
 }
 
 function activityLabelFromVisualState(state: TopologyActivityVisual["state"]): string {
@@ -75,7 +76,9 @@ function activityLabelFromVisualState(state: TopologyActivityVisual["state"]): s
   return state;
 }
 
-export function SeatOverviewTable({ data, activityVisual }: SeatOverviewTableProps) {
+export function SeatOverviewTable({ data, activityVisual: recentVisual }: SeatOverviewTableProps) {
+  const activityVisual = isCurrentUsageLimit(data.agentActivity)
+    && recentVisual?.state !== "needs_input" && recentVisual?.state !== "blocked" ? null : recentVisual;
   const { state: fallbackActivityState, source: fallbackActivitySource } = getActivityStateWithSource(data.agentActivity, data.terminalActive);
   // The topology ring falls back to a quiet, non-animated "idle" when there is
   // no observation. That is a visual default, not evidence: when no recent
@@ -91,7 +94,7 @@ export function SeatOverviewTable({ data, activityVisual }: SeatOverviewTablePro
   const activityState = ringVisual?.state ?? fallbackActivityState;
   const activityLabel = ringVisual
     ? activityLabelFromVisualState(ringVisual.state)
-    : activityLabelFromState(fallbackActivityState);
+    : activityLabelFromState(fallbackActivityState, data.agentActivity);
   const activityIsActive = ringVisual
     ? ringVisual.state === "active"
     : fallbackActivityState === "running";
