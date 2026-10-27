@@ -60,6 +60,7 @@ export type AttentionItem = {
 };
 
 export type Host = {
+  terminalProxy?: boolean;
   id: string;
   transport: string;
   url?: string;

@@ -21,7 +21,7 @@ function terminalToken(): string | null {
   try { return window.localStorage.getItem("openrig.terminalBearerToken")?.trim() || null; } catch { return null; }
 }
 
-export function SeatTerminal({ session }: { session: string }) {
+export function SeatTerminal({ session, hostId = "local" }: { session: string; hostId?: string }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
@@ -99,7 +99,9 @@ export function SeatTerminal({ session }: { session: string }) {
       if (!alive) return;
       const token = terminalToken();
       const base = window.location.origin.replace(/^http/, "ws");
-      const ws = new WebSocket(`${base}/api/terminal/${encodeURIComponent(session)}${token ? `?token=${encodeURIComponent(token)}` : ""}`);
+      const params = new URLSearchParams({ host: hostId });
+      if (token) params.set("token", token);
+      const ws = new WebSocket(`${base}/api/terminal/${encodeURIComponent(session)}?${params}`);
       wsRef.current = ws;
       ws.onopen = () => { offsetRef.current = 0; setStatus({ state: "live" }); };
       ws.onmessage = (ev) => { if (typeof ev.data === "string") term.write(ev.data); };
@@ -128,7 +130,7 @@ export function SeatTerminal({ session }: { session: string }) {
       termRef.current = null;
       probe.remove();
     };
-  }, [session, send, scrollBy]);
+  }, [session, hostId, send, scrollBy]);
 
   return (
     <div className="term">
