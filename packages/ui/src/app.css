@@ -253,3 +253,20 @@ button.primary:disabled { opacity: 0.5; cursor: default; }
   .tl-meta { grid-column: 1 / -1; }
   .gsummary { margin-left: 0; }
 }
+
+/* Wide screens: a navigation you can see from across the desk, and more room for the fleet. */
+@media (min-width: 1200px) {
+  .top { gap: 28px; padding-top: 12px; padding-bottom: 12px; }
+  .brand { font-size: 20px; }
+  .nav { gap: 8px; }
+  .nav a { font-size: 17px; padding: 9px 18px; border-radius: 10px; }
+  .nav a.active { background: var(--panel-2); box-shadow: inset 0 -2px 0 var(--accent); }
+  .host, .host-one, .live { font-size: 14px; }
+  main { max-width: 1400px; padding-left: 24px; padding-right: 24px; }
+}
+@media (min-width: 1800px) {
+  .brand { font-size: 22px; }
+  .nav a { font-size: 19px; padding: 10px 22px; }
+  main { max-width: 1600px; }
+  .rigs { grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); }
+}
