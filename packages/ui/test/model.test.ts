@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { contextPercent, resolveIds, seatStatusLabel, seatTone, sortAttention, timeAgo } from "../src/model.js";
 import { mapXtermInput } from "../src/terminal-input.js";
 import type { SeatNode } from "../src/api.js";
+import { REFRESH_TYPES } from "../src/events.js";
 
 const base = {
   nodeId: "n", rigId: "r", rigName: "rig", logicalId: "dev.owner", podNamespace: "dev",
@@ -65,5 +66,14 @@ describe("labels", () => {
     expect(seatStatusLabel({ ...base, lifecycleState: "attention_required" })).toBe("needs attention");
     expect(seatStatusLabel({ ...base, sessionStatus: "not_started" })).toBe("not started");
     expect(resolveIds("seat / r / n", [base])).toBe("seat / rig / dev-owner@rig");
+  });
+});
+
+describe("REFRESH_TYPES", () => {
+  it("refreshes on fleet changes, not on snapshot chatter", () => {
+    expect(REFRESH_TYPES.test("seat.activity_changed")).toBe(true);
+    expect(REFRESH_TYPES.test("node.launched")).toBe(true);
+    expect(REFRESH_TYPES.test("snapshot.created")).toBe(false);
+    expect(REFRESH_TYPES.test("transcript.captured")).toBe(false);
   });
 });
