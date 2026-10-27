@@ -6,6 +6,9 @@ import type { QueryClient } from "@tanstack/react-query";
 export type RigEvent = { seq: number; type: string; rigId?: string; createdAt?: string; [k: string]: unknown };
 
 const RING = 400;
+const REFRESH_MS = 4000;
+/** Event families that change the fleet or attention pages; snapshots and transcript chatter do not. */
+export const REFRESH_TYPES = /^(rig|node|session|restore|bootstrap|seat|pod|health|queue|attention)\./;
 let events: RigEvent[] = [];
 let connected = false;
 let source: EventSource | null = null;
@@ -20,13 +23,18 @@ function emit() {
 export function startEvents(qc: QueryClient): () => void {
   if (source) return () => {};
   source = new EventSource("/api/events?replay=80");
+  // A busy fleet emits several events a second. Refetch at most once every
+  // REFRESH_MS, only for events that change what the pages show, and never
+  // cancel a fetch already in flight (that is what floods the connection pool).
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let last = 0;
   const invalidate = () => {
     if (timer) return;
     timer = setTimeout(() => {
       timer = null;
-      for (const key of ["ps", "nodes", "attention"]) void qc.invalidateQueries({ queryKey: [key] });
-    }, 500);
+      last = Date.now();
+      for (const key of ["ps", "nodes", "attention"]) void qc.invalidateQueries({ queryKey: [key] }, { cancelRefetch: false });
+    }, Math.max(0, last + REFRESH_MS - Date.now()));
   };
   source.onopen = () => { connected = true; emit(); invalidate(); };
   source.onerror = () => { if (connected) { connected = false; emit(); } };
@@ -36,7 +44,7 @@ export function startEvents(qc: QueryClient): () => void {
       if (events.length && events[events.length - 1]!.seq >= ev.seq) return;
       events = events.length >= RING ? [...events.slice(events.length - RING + 1), ev] : [...events, ev];
       emit();
-      invalidate();
+      if (REFRESH_TYPES.test(ev.type)) invalidate();
     } catch { /* ignore malformed */ }
   };
   return () => { source?.close(); source = null; connected = false; emit(); };
