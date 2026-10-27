@@ -1,3 +1,4 @@
+import { remoteTerminalHandlers, terminalProxyAdmission } from "../domain/hosts/terminal-proxy.js";
 import type { Hono } from "hono";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import { constantTimeEqual } from "../middleware/auth-bearer-token.js";
@@ -62,8 +63,11 @@ export function registerTerminalWs(
   (app as any).get(
     "/api/terminal/:sessionName",
     terminalAuth,
+    terminalProxyAdmission(opts.bearerToken),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (upgradeWebSocket as any)((c: any) => {
+      const target = c.get("terminalProxyTarget");
+      if (target) return remoteTerminalHandlers(target);
       const sessionName = c.req.param("sessionName")!;
       let broker: TerminalSessionBroker | null = null;
       let subscriber: TerminalSubscriber | null = null;

@@ -48,7 +48,7 @@ function rawUpgrade(path: string, extraHeaders?: Record<string, string>): Promis
       headers: {
         Upgrade: "websocket",
         Connection: "Upgrade",
-        "Sec-WebSocket-Key": Buffer.from("test-key-12345678").toString("base64"),
+        "Sec-WebSocket-Key": Buffer.from("test-key-1234567").toString("base64"),
         "Sec-WebSocket-Version": "13",
         ...extraHeaders,
       },
@@ -74,6 +74,11 @@ describe("terminal WebSocket route (production path)", () => {
       { Origin: `http://127.0.0.1:${PORT}` },
     );
     expect(result.statusCode, `expected non-404, got ${result.statusCode}: ${result.body}`).not.toBe(404);
+  });
+
+  it("admits a daemon-to-daemon upgrade with header bearer and no Origin for an unmanaged tmux name", async () => {
+    const result = await rawUpgrade("/api/terminal/disposable-unmanaged-shell", { Authorization: `Bearer ${TOKEN}` });
+    expect(result.statusCode).toBe(101);
   });
 
   it("missing token returns 401", async () => {
@@ -144,7 +149,7 @@ describe("terminal WebSocket DNS rebinding and origin protection", () => {
         headers: {
           Upgrade: "websocket",
           Connection: "Upgrade",
-          "Sec-WebSocket-Key": Buffer.from("test-key-12345678").toString("base64"),
+          "Sec-WebSocket-Key": Buffer.from("test-key-1234567").toString("base64"),
           "Sec-WebSocket-Version": "13",
           ...extraHeaders,
         },

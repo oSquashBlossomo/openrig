@@ -811,7 +811,7 @@ export function createApp(deps: AppDeps): Hono {
   // are deliberately open (pre-token bootstrap).
   app.route(
     "/api/hosts",
-    hostsRoutes({ bearerToken: deps.missionControlBearerToken ?? null }),
+    hostsRoutes({ bearerToken: deps.missionControlBearerToken ?? null, terminalBearerToken: deps.terminalBearerToken ?? null, terminalProxyEnabled: deps.enableNodeWebSocket === true && deps.webUiEnabled === true }),
   );
   // Slice Story View v0 — slice indexer + per-tab payload routes.
   app.route("/api/slices", slicesRoutes());
