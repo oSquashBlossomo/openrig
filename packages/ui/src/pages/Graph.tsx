@@ -1,127 +1,133 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useFleet, useRigGraphs } from "../api.js";
 import { useEvents } from "../events.js";
-import { curve, layoutFleet, messageOf, workingSession } from "../graph.js";
-import { seatStatusLabel, seatTone } from "../model.js";
-import { Empty } from "../components/bits.js";
-import { navigate, seatPath } from "../router.js";
+import { Empty, ErrorNote } from "../components/bits.js";
+import { buildModel, histogram, messageOf, type GNode, type Message, type Model } from "../graph/model.js";
+import { applyModel, createSim } from "../graph/sim.js";
+import { GraphView, type Signals } from "../graph/GraphView.js";
+import { Timeline, WINDOW_MS } from "../graph/Timeline.js";
+import { SeatPanel } from "../graph/SeatPanel.js";
 
-const PULSE_MS = 1600;
-const TRAFFIC_MS = 90_000;
-const WORKING_MS = 20_000;
+const EMPTY: Model = { rigs: [], nodes: [], links: [] };
+const REPLAY_SPEED = 12;
 
-function useWidth<T extends HTMLElement>() {
-  const ref = useRef<T>(null);
-  const [w, setW] = useState(0);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => setW(el.clientWidth));
-    ro.observe(el);
-    setW(el.clientWidth);
-    return () => ro.disconnect();
-  }, []);
-  return [ref, w] as const;
-}
-
-/** Re-render while something is animating so finished pulses drop out. */
-function useClock(active: boolean) {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (!active) return;
-    const t = setInterval(() => setNow(Date.now()), 400);
-    return () => clearInterval(t);
-  }, [active]);
-  return active ? now : Date.now();
+function signature(m: Model): string {
+  return m.nodes.map((n) => n.id).join("|") + "#" + m.links.map((l) => `${typeof l.source === "string" ? l.source : l.source.id}>${typeof l.target === "string" ? l.target : l.target.id}:${l.kind}`).join("|");
 }
 
 export function GraphPage({ hostId }: { hostId: string }) {
   const fleet = useFleet(hostId);
   const graphs = useRigGraphs(fleet.rigs.map((r) => r.rigId), hostId);
-  const { events } = useEvents();
-  const [ref, width] = useWidth<HTMLDivElement>();
+  const { events, connected } = useEvents();
+  const [selected, setSelected] = useState<string | null>(null);
+  const [fitToken, setFitToken] = useState(0);
+  const [focusRig, setFocusRig] = useState<{ token: number; nodeIds: string[] } | null>(null);
+  const [mode, setMode] = useState<"live" | "replay">("live");
+  const [cursor, setCursor] = useState(Date.now());
+  const [playing, setPlaying] = useState(false);
+  const [clock, setClock] = useState(Date.now());
 
-  const layout = useMemo(() => layoutFleet(
-    fleet.rigs.map((r) => ({ rigId: r.rigId, name: r.name, seats: fleet.byRig.get(r.rigId) ?? [] })),
-    Math.max(320, width - 2),
-  ), [fleet.rigs, fleet.byRig, width]);
+  const simRef = useRef(createSim());
+  const modelRef = useRef<Model>(EMPTY);
+  const sigRef = useRef("");
+  const signalsRef = useRef<Signals>({ messages: [], now: () => Date.now() });
 
-  // Delegation edges from the rig graphs, by session name.
-  const staticEdges = useMemo(() => {
-    const byNodeId = new Map<string, string>();
-    for (const seats of fleet.byRig.values()) for (const s of seats) byNodeId.set(s.nodeId, s.canonicalSessionName);
-    const out: { from: string; to: string; label: string }[] = [];
-    for (const g of graphs) for (const e of g?.edges ?? []) {
-      const from = byNodeId.get(e.source), to = byNodeId.get(e.target);
-      if (from && to) out.push({ from, to, label: e.label });
+  // Rebuild the model when the fleet or its graphs change; keep positions and
+  // only restart the physics when a seat or link appears or disappears.
+  const activityEpoch = useMemo(() => {
+    let last = 0;
+    for (const e of events) if (e.type === "agent.activity") last = e.seq;
+    return last;
+  }, [events]);
+  const model = useMemo(() => {
+    const prev = new Map(modelRef.current.nodes.map((n) => [n.id, n]));
+    return buildModel(fleet.rigs, fleet.byRig, graphs, events, prev, Date.now());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fleet.rigs, fleet.byRig, graphs, activityEpoch, clock]);
+  useEffect(() => {
+    const sig = signature(model);
+    if (sig !== sigRef.current) {
+      sigRef.current = sig;
+      modelRef.current = model;
+      applyModel(simRef.current, model);
+    } else {
+      // Same shape: carry the live fields onto the simulated nodes.
+      const live = new Map(model.nodes.map((n) => [n.id, n]));
+      for (const n of modelRef.current.nodes) {
+        const u = live.get(n.id);
+        if (!u) continue;
+        n.seat = u.seat; n.tone = u.tone; n.ctx = u.ctx; n.working = u.working; n.needsInput = u.needsInput;
+        n.activity = u.activity; n.inProgress = u.inProgress; n.pending = u.pending; n.blocked = u.blocked; n.qitems = u.qitems;
+      }
+      modelRef.current = { ...modelRef.current, rigs: model.rigs };
     }
-    return out;
-  }, [graphs, fleet.byRig]);
+  }, [model]);
+  // The working flag decays with time, so refresh the model every 10 s.
+  useEffect(() => { const t = setInterval(() => setClock(Date.now()), 10_000); return () => clearInterval(t); }, []);
 
-  const recent = useMemo(() => events.filter((e) => e.seenAt > Date.now() - TRAFFIC_MS), [events]);
-  const now = useClock(recent.some((e) => e.seenAt > Date.now() - PULSE_MS));
-  const pulses = recent.filter((e) => e.seenAt > now - PULSE_MS).map((e) => ({ e, m: messageOf(e) })).filter((p) => p.m);
-  const traffic = new Map<string, number>();
-  for (const e of recent) { const m = messageOf(e); if (m) traffic.set(`${m.from}→${m.to}`, (traffic.get(`${m.from}→${m.to}`) ?? 0) + 1); }
-  const working = new Set(recent.filter((e) => e.seenAt > now - WORKING_MS).map(workingSession).filter(Boolean) as string[]);
+  // Messages on two clocks: when this browser saw them (live) and when the daemon logged them (replay/timeline).
+  const liveMessages = useMemo(() => events.map((e) => messageOf(e, "seen")).filter(Boolean) as Message[], [events]);
+  const loggedMessages = useMemo(() => events.map((e) => messageOf(e, "logged")).filter(Boolean) as Message[], [events]);
+  signalsRef.current = mode === "live"
+    ? { messages: liveMessages, now: () => Date.now() }
+    : { messages: loggedMessages, now: () => cursor };
+  const bars = useMemo(() => histogram(loggedMessages, clock), [loggedMessages, clock]);
 
-  const unknownEnds = pulses.filter((p) => !layout.nodes.has(p.m!.from) || !layout.nodes.has(p.m!.to)).length;
+  // Replay playback.
+  useEffect(() => {
+    if (!playing || mode !== "live" && !playing) return;
+    const t = setInterval(() => setCursor((c) => {
+      const next = c + 100 * REPLAY_SPEED;
+      if (next >= Date.now()) { setPlaying(false); setMode("live"); return Date.now(); }
+      return next;
+    }), 100);
+    return () => clearInterval(t);
+  }, [playing, mode]);
+  const scrub = useCallback((t: number) => { setMode("replay"); setCursor(Math.max(Date.now() - WINDOW_MS, Math.min(Date.now(), t))); }, []);
+  const goLive = useCallback(() => { setMode("live"); setPlaying(false); }, []);
+
+  const selectedNode: GNode | undefined = modelRef.current.nodes.find((n) => n.id === selected) ?? model.nodes.find((n) => n.id === selected);
+  const rigColor = model.rigs.find((r) => r.rigId === selectedNode?.rigId)?.color ?? "var(--accent)";
+  const working = model.nodes.filter((n) => n.working).length;
+  const needs = model.nodes.filter((n) => n.tone === "warn").length;
 
   return (
-    <div className="page">
-      <div className="toolbar graph-legend">
-        <span><i className="dot dot-busy" /> working</span>
-        <span><i className="dot dot-warn" /> needs you</span>
-        <span><i className="swatch swatch-edge" /> delegates to</span>
-        <span><i className="swatch swatch-msg" /> messages (last 90 s)</span>
+    <div className="page page-graph">
+      <div className="gtoolbar">
+        <div className="gchips">
+          {model.rigs.map((r) => (
+            <button key={r.rigId} type="button" className="gchip" style={{ "--chip": r.color } as React.CSSProperties}
+              onClick={() => setFocusRig({ token: Date.now(), nodeIds: r.nodeIds })} title={`zoom to ${r.name}`}>
+              <i />{r.name}<span className="muted">{r.nodeIds.length}</span>
+            </button>
+          ))}
+          {model.rigs.length > 1 && <button type="button" className="gchip" onClick={() => setFitToken((t) => t + 1)}>all</button>}
+        </div>
+        <div className="gsummary">
+          <span>{model.nodes.length} seats</span>
+          <span className="busy">{working} working</span>
+          <span className={needs ? "warn" : ""}>{needs} need you</span>
+          <span className={`live ${connected ? "live-on" : "live-off"}`}>{connected ? "live" : "polling"}</span>
+        </div>
       </div>
-      <div className="graph" ref={ref}>
+      <ErrorNote error={fleet.error} />
+      <div className={`gstage ${selectedNode ? "has-panel" : ""}`}>
         {fleet.isLoading && <Empty>Loading fleet…</Empty>}
-        {width > 0 && layout.clusters.length > 0 && (
-          <svg width={layout.width} height={layout.height + 4} viewBox={`0 0 ${layout.width} ${layout.height + 4}`} role="img" aria-label="fleet graph">
-            {layout.clusters.map((c) => (
-              <g key={c.rigId} className="cluster">
-                <rect x={c.x + 0.5} y={c.y + 0.5} width={c.w - 1} height={c.h - 1} rx="10" />
-                <text x={c.x + 12} y={c.y + 18}>{c.name}</text>
-              </g>
-            ))}
-            {staticEdges.map((e, i) => {
-              const a = layout.nodes.get(e.from), b = layout.nodes.get(e.to);
-              return a && b ? <path key={`s${i}`} className="gedge" d={curve(a, b)} /> : null;
-            })}
-            {[...traffic.entries()].map(([key, count]) => {
-              const [from, to] = key.split("→");
-              const a = layout.nodes.get(from!), b = layout.nodes.get(to!);
-              return a && b ? <path key={key} className="gtraffic" d={curve(a, b)} strokeWidth={Math.min(4, 1 + count)}><title>{`${from} → ${to}: ${count} in the last 90 s`}</title></path> : null;
-            })}
-            {pulses.map(({ e, m }) => {
-              const a = layout.nodes.get(m!.from), b = layout.nodes.get(m!.to);
-              if (!a || !b) return null;
-              return (
-                <g key={e.seq}>
-                  <path className="gpulse-edge" d={curve(a, b)} />
-                  <circle className="gpulse" r="5">
-                    <animateMotion dur={`${PULSE_MS / 1000}s`} fill="freeze" path={curve(a, b)} />
-                  </circle>
-                </g>
-              );
-            })}
-            {[...layout.nodes.entries()].map(([session, n]) => {
-              const tone = working.has(session) ? "busy" : seatTone(n.seat);
-              return (
-                <g key={session} className={`gnode gnode-${tone}`} transform={`translate(${n.x} ${n.y})`} onClick={() => navigate(seatPath(session))} role="link" tabIndex={0}
-                  onKeyDown={(ev) => { if (ev.key === "Enter") navigate(seatPath(session)); }}>
-                  <title>{`${session} · ${seatStatusLabel(n.seat)}`}</title>
-                  {tone === "busy" && <circle className="ghalo" r="14" />}
-                  <circle r="11" />
-                  <text y="25">{n.seat.logicalId}</text>
-                </g>
-              );
-            })}
-          </svg>
+        <GraphView modelRef={modelRef} sim={simRef.current} signalsRef={signalsRef} selected={selected} onSelect={setSelected} fitToken={fitToken} focusRig={focusRig} />
+        {selectedNode && (
+          <SeatPanel node={selectedNode} color={rigColor} messages={loggedMessages} local={hostId === "local"} onClose={() => setSelected(null)} onSelect={setSelected} />
         )}
       </div>
-      {unknownEnds > 0 && <div className="meta">{unknownEnds} message{unknownEnds > 1 ? "s" : ""} involve a seat not on this host.</div>}
+      <Timeline bars={bars} now={clock} mode={mode} cursor={cursor} playing={playing} onScrub={scrub} onLive={goLive} onTogglePlay={() => setPlaying((p) => !p)} />
+      <div className="glegend">
+        <span><i className="dot dot-busy" /> working (rings breathe)</span>
+        <span><i className="dot dot-warn" /> needs you</span>
+        <span><i className="swatch" style={{ borderTopColor: "#5aa9ff" }} /> new work</span>
+        <span><i className="swatch" style={{ borderTopColor: "#b48cff" }} /> handoff</span>
+        <span><i className="swatch" style={{ borderTopColor: "#f0a35e" }} /> rerouted</span>
+        <span><i className="swatch" /> delegates to</span>
+        <span>arc = context used · drag seats · scroll or pinch to zoom · double-click a seat to frame its rig</span>
+      </div>
     </div>
   );
 }

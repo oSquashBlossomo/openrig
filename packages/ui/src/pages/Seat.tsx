@@ -23,7 +23,7 @@ function Facts({ n }: { n: SeatNode }) {
   );
 }
 
-function Composer({ session }: { session: string }) {
+export function Composer({ session }: { session: string }) {
   const [text, setText] = useState("");
   const send = useSend();
   const result = send.data;

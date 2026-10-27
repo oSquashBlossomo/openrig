@@ -153,7 +153,22 @@ export function useFleet(hostId: string) {
   };
 }
 
-export type RigGraph = { nodes: { id: string; type: string }[]; edges: { id: string; source: string; target: string; label: string }[] };
+export type GraphSeatData = {
+  canonicalSessionName: string | null;
+  agentActivity: { state: string; reason: string | null; evidence: string | null; sampledAt: string | null } | null;
+  contextUsedPercentage: number | null;
+  contextFresh: boolean;
+  terminalActive: boolean | null;
+  pendingWorkCount: number;
+  inProgressWorkCount: number;
+  blockedWorkCount: number;
+  heldReason: string | null;
+  currentQitems: { qitemId: string; bodyExcerpt: string; tier: string | null }[];
+};
+export type RigGraph = {
+  nodes: { id: string; type: string; data?: Partial<GraphSeatData> }[];
+  edges: { id: string; source: string; target: string; label: string }[];
+};
 
 /** The delegation edges of each rig, keyed in `rigIds` order. */
 export function useRigGraphs(rigIds: string[], hostId: string): (RigGraph | undefined)[] {

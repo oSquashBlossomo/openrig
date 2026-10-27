@@ -22,7 +22,7 @@ function emit() {
 
 export function startEvents(qc: QueryClient): () => void {
   if (source) return () => {};
-  source = new EventSource("/api/events?replay=80");
+  source = new EventSource("/api/events?replay=300");
   // A busy fleet emits several events a second. Refetch at most once every
   // REFRESH_MS, only for events that change what the pages show, and never
   // cancel a fetch already in flight (that is what floods the connection pool).
