@@ -15,11 +15,12 @@ type Props = {
   onSelect: (id: string | null) => void;
   fitToken: number;
   focusRig: { token: number; nodeIds: string[] } | null;
+  onResize?: (w: number, h: number) => void;
 };
 
 const MIN_K = 0.15, MAX_K = 4;
 
-export function GraphView({ modelRef, sim, signalsRef, selected, onSelect, fitToken, focusRig }: Props) {
+export function GraphView({ modelRef, sim, signalsRef, selected, onSelect, fitToken, focusRig, onResize }: Props) {
   const boxRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const viewRef = useRef<View>({ x: 0, y: 0, k: 1 });
@@ -27,6 +28,8 @@ export function GraphView({ modelRef, sim, signalsRef, selected, onSelect, fitTo
   const sizeRef = useRef({ w: 0, h: 0, dpr: 1 });
   const measureRef = useRef<() => void>(() => {});
   const framesRef = useRef(0);
+  const onResizeRef = useRef(onResize);
+  onResizeRef.current = onResize;
   const themeRef = useRef(readTheme());
   const userMovedRef = useRef(false);
   const fittedRef = useRef(false);
@@ -46,6 +49,7 @@ export function GraphView({ modelRef, sim, signalsRef, selected, onSelect, fitTo
       const w = box.clientWidth, h = box.clientHeight;
       if (w === sizeRef.current.w && h === sizeRef.current.h && dpr === sizeRef.current.dpr) return;
       sizeRef.current = { w, h, dpr };
+      onResizeRef.current?.(w, h);
       canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
       canvas.style.width = `${w}px`; canvas.style.height = `${h}px`;
       themeRef.current = readTheme();

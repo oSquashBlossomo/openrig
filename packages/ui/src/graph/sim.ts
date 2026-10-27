@@ -20,19 +20,29 @@ export function createSim(): Sim {
   return sim;
 }
 
-export function applyModel(sim: Sim, model: Model): void {
+function clusterForce(model: Model): (alpha: number) => void {
   const anchorOf = new Map<string, GRig>();
   for (const r of model.rigs) anchorOf.set(r.rigId, r);
-  sim.nodes(model.nodes);
-  (sim.force("link") as ReturnType<typeof forceLink<GNode, GLink>>).links(model.links as SimulationLinkDatum<GNode>[] as GLink[]);
-  sim.force("cluster", (alpha: number) => {
+  return (alpha: number) => {
     for (const n of model.nodes) {
       const a = anchorOf.get(n.rigId)?.anchor;
       if (!a) continue;
       n.vx = (n.vx ?? 0) + (a.x - n.x) * 0.07 * alpha;
       n.vy = (n.vy ?? 0) + (a.y - n.y) * 0.07 * alpha;
     }
-  });
+  };
+}
+
+export function applyModel(sim: Sim, model: Model): void {
+  sim.nodes(model.nodes);
+  (sim.force("link") as ReturnType<typeof forceLink<GNode, GLink>>).links(model.links as SimulationLinkDatum<GNode>[] as GLink[]);
+  sim.force("cluster", clusterForce(model));
   sim.alpha(0.8).restart();
   sim.stop();
+}
+
+/** Same seats, new rig anchors (the stage changed shape): drift there without a full restart. */
+export function reanchor(sim: Sim, model: Model): void {
+  sim.force("cluster", clusterForce(model));
+  sim.alpha(Math.max(sim.alpha(), 0.35));
 }
