@@ -31,11 +31,11 @@ export const WORKING_MS = 20_000;
 
 /** Rig anchors on a sunflower spiral: large rigs first, close to the middle. */
 export function rigAnchors(sizes: number[]): { x: number; y: number }[] {
-  const spacing = 135 + 8 * Math.max(0, ...sizes);
+  const spacing = 170 + 11 * Math.max(0, ...sizes);
   return sizes.map((_, i) => {
     if (i === 0) return { x: 0, y: 0 };
     const a = i * 2.399963;
-    const r = spacing * Math.sqrt(i) * 0.78;
+    const r = spacing * Math.sqrt(i) * 0.85;
     return { x: r * Math.cos(a), y: r * Math.sin(a) };
   });
 }

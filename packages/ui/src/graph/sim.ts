@@ -7,9 +7,11 @@ export type Sim = Simulation<GNode, GLink>;
 
 export function createSim(): Sim {
   const sim = forceSimulation<GNode, GLink>([])
-    .force("link", forceLink<GNode, GLink>([]).id((d) => d.id).distance((l) => (l.kind === "delegates_to" ? 70 : 110)).strength((l) => (l.kind === "delegates_to" ? 0.5 : 0.08)))
-    .force("charge", forceManyBody<GNode>().strength(-240).distanceMax(420))
-    .force("collide", forceCollide<GNode>(22).strength(0.9))
+    // Spacing is set so a seat's label (two lines under it, ~90px wide at 1x) never overlaps a neighbour:
+    // the collision radius covers the label box, and charge keeps a little air beyond that.
+    .force("link", forceLink<GNode, GLink>([]).id((d) => d.id).distance((l) => (l.kind === "delegates_to" ? 96 : 140)).strength((l) => (l.kind === "delegates_to" ? 0.45 : 0.06)))
+    .force("charge", forceManyBody<GNode>().strength(-360).distanceMax(520))
+    .force("collide", forceCollide<GNode>(40).strength(1))
     .force("x", forceX<GNode>(0).strength(0.01))
     .force("y", forceY<GNode>(0).strength(0.01))
     .alphaDecay(0.035)
@@ -27,8 +29,8 @@ export function applyModel(sim: Sim, model: Model): void {
     for (const n of model.nodes) {
       const a = anchorOf.get(n.rigId)?.anchor;
       if (!a) continue;
-      n.vx = (n.vx ?? 0) + (a.x - n.x) * 0.09 * alpha;
-      n.vy = (n.vy ?? 0) + (a.y - n.y) * 0.09 * alpha;
+      n.vx = (n.vx ?? 0) + (a.x - n.x) * 0.07 * alpha;
+      n.vy = (n.vy ?? 0) + (a.y - n.y) * 0.07 * alpha;
     }
   });
   sim.alpha(0.8).restart();
