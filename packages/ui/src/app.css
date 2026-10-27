@@ -192,3 +192,29 @@ button.primary:disabled { opacity: 0.5; cursor: default; }
   .seat-title h2 { font-size: 15px; }
   .seat-title { flex-wrap: wrap; }
 }
+
+/* Graph */
+.graph { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 8px; }
+.graph svg { display: block; max-width: 100%; height: auto; }
+.graph-legend { font-size: 12px; color: var(--muted); gap: 16px; flex-wrap: wrap; }
+.graph-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.swatch { display: inline-block; width: 18px; height: 0; border-top: 2px solid var(--line); }
+.swatch-msg { border-top-color: var(--accent); }
+.cluster rect { fill: var(--panel-2); stroke: var(--line); }
+.cluster text { fill: var(--muted); font-size: 12px; font-weight: 600; }
+.gedge { fill: none; stroke: var(--line); stroke-width: 1.5; }
+.gtraffic { fill: none; stroke: var(--accent); stroke-opacity: 0.45; stroke-linecap: round; }
+.gpulse-edge { fill: none; stroke: var(--accent); stroke-width: 2; animation: gfade 1.6s ease-out forwards; }
+.gpulse { fill: var(--accent); filter: drop-shadow(0 0 6px var(--accent)); }
+@keyframes gfade { from { stroke-opacity: 0.9; } to { stroke-opacity: 0; } }
+.gnode { cursor: pointer; }
+.gnode circle { fill: var(--c-off); stroke: var(--panel); stroke-width: 2; }
+.gnode-ok circle { fill: var(--c-ok); }
+.gnode-busy circle { fill: var(--c-busy); }
+.gnode-warn circle { fill: var(--c-warn); }
+.gnode-bad circle { fill: var(--c-bad); }
+.gnode text { fill: var(--text); font-size: 11px; font-family: var(--mono); text-anchor: middle; }
+.gnode:hover circle { stroke: var(--text); }
+.ghalo { fill: var(--c-busy) !important; stroke: none !important; opacity: 0.35; animation: ghalo 1.6s ease-out infinite; transform-origin: center; }
+@keyframes ghalo { 0% { transform: scale(0.8); opacity: 0.5; } 100% { transform: scale(1.9); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .ghalo, .gpulse-edge { animation: none; } }

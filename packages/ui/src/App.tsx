@@ -7,6 +7,7 @@ import { Link } from "./components/bits.js";
 import { FleetPage } from "./pages/Fleet.js";
 import { SeatPage } from "./pages/Seat.js";
 import { ActivityPage } from "./pages/Activity.js";
+import { GraphPage } from "./pages/Graph.js";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 2_000, refetchOnWindowFocus: true } },
@@ -44,6 +45,7 @@ function Shell() {
   const nav = (
     <nav className="nav" aria-label="primary">
       <Link href="/" className={route.page === "fleet" || route.page === "seat" ? "active" : ""}>Fleet</Link>
+      <Link href="/graph" className={route.page === "graph" ? "active" : ""}>Graph</Link>
       <Link href="/activity" className={route.page === "activity" ? "active" : ""}>Activity</Link>
     </nav>
   );
@@ -60,6 +62,7 @@ function Shell() {
       <main>
         {route.page === "fleet" && <FleetPage hostId={host} />}
         {route.page === "seat" && <SeatPage key={route.session} session={route.session} hostId={host} />}
+        {route.page === "graph" && <GraphPage hostId={host} />}
         {route.page === "activity" && <ActivityPage hostId={host} />}
       </main>
       <footer className="tabs">{nav}</footer>

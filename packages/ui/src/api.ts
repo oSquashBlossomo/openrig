@@ -153,6 +153,20 @@ export function useFleet(hostId: string) {
   };
 }
 
+export type RigGraph = { nodes: { id: string; type: string }[]; edges: { id: string; source: string; target: string; label: string }[] };
+
+/** The delegation edges of each rig, keyed in `rigIds` order. */
+export function useRigGraphs(rigIds: string[], hostId: string): (RigGraph | undefined)[] {
+  return useQueries({
+    queries: rigIds.map((rigId) => ({
+      queryKey: ["graph", hostId, rigId],
+      queryFn: () => getJson<RigGraph>(withHost(`/api/rigs/${encodeURIComponent(rigId)}/graph`, hostId)),
+      staleTime: 60_000,
+    })),
+    combine: (results) => results.map((r) => r.data),
+  });
+}
+
 export function useAttention() {
   return useQuery({
     queryKey: ["attention"],

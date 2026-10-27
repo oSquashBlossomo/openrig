@@ -6,7 +6,7 @@ import { Empty, Link } from "../components/bits.js";
 import { seatPath } from "../router.js";
 
 function detail(ev: RigEvent): string {
-  const skip = new Set(["type", "rigId", "seq", "createdAt", "timestamp", "at"]);
+  const skip = new Set(["type", "rigId", "seq", "createdAt", "timestamp", "at", "seenAt"]);
   return Object.entries(ev)
     .filter(([k, v]) => !skip.has(k) && v !== null && v !== undefined && typeof v !== "object")
     .map(([k, v]) => `${k}=${String(v)}`)

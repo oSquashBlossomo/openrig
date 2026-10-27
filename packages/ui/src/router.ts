@@ -4,12 +4,14 @@ import { useEffect, useState } from "react";
 export type Route =
   | { page: "fleet" }
   | { page: "seat"; session: string }
-  | { page: "activity" };
+  | { page: "activity" }
+  | { page: "graph" };
 
 export function parseRoute(pathname: string): Route {
   const seat = /^\/seat\/([^/]+)/.exec(pathname);
   if (seat) return { page: "seat", session: decodeURIComponent(seat[1]!) };
   if (pathname.startsWith("/activity")) return { page: "activity" };
+  if (pathname.startsWith("/graph")) return { page: "graph" };
   return { page: "fleet" };
 }
 
