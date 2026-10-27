@@ -3,7 +3,7 @@ import { useFleet, useRigGraphs } from "../api.js";
 import { useEvents } from "../events.js";
 import { Empty, ErrorNote } from "../components/bits.js";
 import { buildModel, histogram, messageOf, type GNode, type Message, type Model } from "../graph/model.js";
-import { applyModel, createSim } from "../graph/sim.js";
+import { applyModel, createSim, reanchor } from "../graph/sim.js";
 import { GraphView, type Signals } from "../graph/GraphView.js";
 import { Timeline, WINDOW_MS } from "../graph/Timeline.js";
 import { SeatPanel } from "../graph/SeatPanel.js";
@@ -26,10 +26,12 @@ export function GraphPage({ hostId }: { hostId: string }) {
   const [cursor, setCursor] = useState(Date.now());
   const [playing, setPlaying] = useState(false);
   const [clock, setClock] = useState(Date.now());
+  const [aspect, setAspect] = useState(1);
 
   const simRef = useRef(createSim());
   const modelRef = useRef<Model>(EMPTY);
   const sigRef = useRef("");
+  const anchorSigRef = useRef("");
   const signalsRef = useRef<Signals>({ messages: [], now: () => Date.now() });
 
   // Rebuild the model when the fleet or its graphs change; keep positions and
@@ -41,16 +43,22 @@ export function GraphPage({ hostId }: { hostId: string }) {
   }, [events]);
   const model = useMemo(() => {
     const prev = new Map(modelRef.current.nodes.map((n) => [n.id, n]));
-    return buildModel(fleet.rigs, fleet.byRig, graphs, events, prev, Date.now());
+    return buildModel(fleet.rigs, fleet.byRig, graphs, events, prev, Date.now(), aspect);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fleet.rigs, fleet.byRig, graphs, activityEpoch, clock]);
+  }, [fleet.rigs, fleet.byRig, graphs, activityEpoch, clock, aspect]);
   useEffect(() => {
     const sig = signature(model);
+    const anchorSig = model.rigs.map((r) => `${r.rigId}:${Math.round(r.anchor.x)},${Math.round(r.anchor.y)}`).join("|");
     if (sig !== sigRef.current) {
       sigRef.current = sig;
+      anchorSigRef.current = anchorSig;
       modelRef.current = model;
       applyModel(simRef.current, model);
     } else {
+      if (anchorSig !== anchorSigRef.current) {
+        anchorSigRef.current = anchorSig;
+        reanchor(simRef.current, { ...modelRef.current, rigs: model.rigs });
+      }
       // Same shape: carry the live fields onto the simulated nodes.
       const live = new Map(model.nodes.map((n) => [n.id, n]));
       for (const n of modelRef.current.nodes) {
@@ -113,7 +121,8 @@ export function GraphPage({ hostId }: { hostId: string }) {
       <ErrorNote error={fleet.error} />
       <div className={`gstage ${selectedNode ? "has-panel" : ""}`}>
         {fleet.isLoading && <Empty>Loading fleet…</Empty>}
-        <GraphView modelRef={modelRef} sim={simRef.current} signalsRef={signalsRef} selected={selected} onSelect={setSelected} fitToken={fitToken} focusRig={focusRig} />
+        <GraphView modelRef={modelRef} sim={simRef.current} signalsRef={signalsRef} selected={selected} onSelect={setSelected} fitToken={fitToken} focusRig={focusRig}
+          onResize={(w, h) => { if (w > 0 && h > 0) setAspect(Math.round(Math.max(0.6, Math.min(2.6, w / h)) * 4) / 4); }} />
         {selectedNode && (
           <SeatPanel node={selectedNode} color={rigColor} messages={loggedMessages} local={hostId === "local"} onClose={() => setSelected(null)} onSelect={setSelected} />
         )}

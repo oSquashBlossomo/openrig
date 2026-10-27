@@ -26,6 +26,9 @@ describe("buildModel", () => {
     const m2 = buildModel([rig("a", 2), rig("b", 1)], byRig, graphs, [], prev, 0);
     expect(m2.nodes.find((n) => n.id === "x@a")!.x).toBe(123);
     expect(rigAnchors([3, 1, 1]).length).toBe(3);
+    const wide = rigAnchors([3, 1, 1], 2.25), square = rigAnchors([3, 1, 1], 1);
+    expect(Math.abs(wide[1]!.x)).toBeGreaterThan(Math.abs(square[1]!.x));
+    expect(Math.abs(wide[1]!.y)).toBeLessThan(Math.abs(square[1]!.y));
   });
 });
 

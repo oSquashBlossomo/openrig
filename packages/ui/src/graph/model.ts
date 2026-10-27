@@ -30,13 +30,14 @@ export const RIG_COLORS = ["#5aa9ff", "#f0a35e", "#8bd17c", "#d98cf0", "#f06e8c"
 export const WORKING_MS = 20_000;
 
 /** Rig anchors on a sunflower spiral: large rigs first, close to the middle. */
-export function rigAnchors(sizes: number[]): { x: number; y: number }[] {
+export function rigAnchors(sizes: number[], aspect = 1): { x: number; y: number }[] {
   const spacing = 170 + 11 * Math.max(0, ...sizes);
+  const stretch = Math.sqrt(Math.max(0.5, Math.min(3, aspect)));
   return sizes.map((_, i) => {
     if (i === 0) return { x: 0, y: 0 };
     const a = i * 2.399963;
     const r = spacing * Math.sqrt(i) * 0.85;
-    return { x: r * Math.cos(a), y: r * Math.sin(a) };
+    return { x: r * Math.cos(a) * stretch, y: (r * Math.sin(a)) / stretch };
   });
 }
 
@@ -47,9 +48,10 @@ export function buildModel(
   events: RigEvent[],
   previous: Map<string, GNode>,
   now: number,
+  aspect = 1,
 ): Model {
   const ordered = [...rigs].map((r, i) => ({ r, i, size: byRig.get(r.rigId)?.length ?? 0 })).sort((a, b) => b.size - a.size);
-  const anchors = rigAnchors(ordered.map((o) => o.size));
+  const anchors = rigAnchors(ordered.map((o) => o.size), aspect);
   const recentlyWorking = new Set<string>();
   for (const ev of events) {
     if (ev.type === "agent.activity" && ev.seenAt > now - WORKING_MS) {
