@@ -85,6 +85,8 @@ const MH3_BOUNDARY_MESSAGE =
  *  passes everything else through untouched. */
 export function hostReadThrough() {
   return async (c: Context, next: Next) => {
+    // Terminal upgrades have their own authenticated, opt-in MH-3 proxy lane.
+    if (c.req.method === "GET" && /^\/api\/terminal\/[^/]+$/.test(c.req.path) && c.req.header("upgrade")?.toLowerCase() === "websocket") return next();
     const hostParam = c.req.query("host");
     // local / absent host param short-circuits to the existing handler. 51-09
     // incr 2: the daemon's OWN self-host id resolves home too (a distinct

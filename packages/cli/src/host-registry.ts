@@ -75,6 +75,7 @@ export interface SshHostEntry {
    */
   hostId?: string;
   transport: "ssh";
+  terminal_proxy?: boolean;
   target: string;
   user?: string;
   notes?: string;
@@ -88,6 +89,8 @@ export interface HttpHostEntry {
   url: string;
   bearer_env?: string;
   bearer_file?: string;
+  /** Explicit opt-in for interactive terminals through another daemon. */
+  terminal_proxy?: boolean;
   notes?: string;
 }
 
@@ -211,6 +214,10 @@ export function validateHostRegistry(parsed: unknown, sourcePath: string): HostR
         error: `${prefix}.transport: must be one of ${[...KNOWN_TRANSPORTS].sort().join(", ")} (got ${JSON.stringify(transport)})`,
       };
     }
+    const terminalProxy = entry["terminal_proxy"];
+    if (terminalProxy !== undefined && typeof terminalProxy !== "boolean") {
+      return { ok: false, error: `${prefix}.terminal_proxy: optional, but if present must be a boolean` };
+    }
     const notes = entry["notes"];
     if (notes !== undefined && typeof notes !== "string") {
       return { ok: false, error: `${prefix}.notes: optional, but if present must be a string` };
@@ -251,6 +258,7 @@ export function validateHostRegistry(parsed: unknown, sourcePath: string): HostR
         transport: "ssh",
         target,
         ...(user !== undefined ? { user: user as string } : {}),
+        ...(terminalProxy !== undefined ? { terminal_proxy: terminalProxy as boolean } : {}),
         ...(notes !== undefined ? { notes: notes as string } : {}),
       });
     } else if (transport === "http") {
@@ -281,6 +289,7 @@ export function validateHostRegistry(parsed: unknown, sourcePath: string): HostR
         url: url as string,
         ...(hasEnv ? { bearer_env: bearerEnv as string } : {}),
         ...(hasFile ? { bearer_file: bearerFile as string } : {}),
+        ...(terminalProxy !== undefined ? { terminal_proxy: terminalProxy as boolean } : {}),
         ...(notes !== undefined ? { notes: notes as string } : {}),
       });
     }

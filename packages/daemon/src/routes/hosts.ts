@@ -34,6 +34,7 @@
 // daemon restart kills pending pairs), the token file is deleted if the
 // registry write fails, and the approval item simply goes stale.
 
+import { terminalProxyEligible } from "../domain/hosts/terminal-proxy.js";
 import { Hono } from "hono";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -79,7 +80,7 @@ function deriveHostId(url: URL): string {
   return raw.replace(/^-+|-+$/g, "") || "paired-host";
 }
 
-export function hostsRoutes(opts?: { bearerToken?: string | null; humanRegistry?: () => LoadResult }): Hono {
+export function hostsRoutes(opts?: { bearerToken?: string | null; terminalBearerToken?: string | null; terminalProxyEnabled?: boolean; humanRegistry?: () => LoadResult }): Hono {
   const router = new Hono();
   const bearerToken = opts?.bearerToken ?? null;
   const issued = new Map<string, IssuedPair>();
@@ -143,7 +144,7 @@ export function hostsRoutes(opts?: { bearerToken?: string | null; humanRegistry?
     return c.json({
       ownName,
       selected,
-      hosts: loaded.registry.hosts.map((h, i) => ({ ...h, selected: h.id === selected, status: statuses[i] })),
+      hosts: loaded.registry.hosts.map((h, i) => ({ ...h, terminalProxy: opts?.terminalProxyEnabled === true && terminalProxyEligible(h, opts?.terminalBearerToken ?? null), selected: h.id === selected, status: statuses[i] })),
     });
   });
 
