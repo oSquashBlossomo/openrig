@@ -1,7 +1,7 @@
 // OPR.0.4.6.MH1 FR-8 — the session-name parse contract, parity-pinned
-// across all three packages (arch B2 ruling: workspaces do not
-// cross-import, so daemon/cli/ui each carry a copy; THIS shared vector
-// set is the pin — a divergence here means a copy drifted).
+// across daemon and cli. The redesigned UI exposes display splitting
+// through sessionParts instead of a routing/classification contract;
+// its overlapping display behavior is checked with the same vectors.
 //
 // The three arch teeth are NAMED tests below:
 //   TOOTH 1 — human-seat classification runs BEFORE any parse at the
@@ -14,8 +14,6 @@
 //             session name (and keeps carrying NO rig binding).
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import type Database from "better-sqlite3";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
@@ -28,7 +26,7 @@ import { QueueRepository, QueueRepositoryError } from "../src/domain/queue-repos
 import { HUMAN_SEAT_SESSION_PATTERN } from "../src/domain/human-route-enforcer.js";
 import * as daemonCopy from "../src/domain/session-name.js";
 import * as cliCopy from "../../cli/src/session-name.js";
-import * as uiCopy from "../../ui/src/lib/session-name.js";
+import { sessionParts } from "../../ui/src/model.js";
 
 type ContractCopy = {
   parseSessionName: typeof daemonCopy.parseSessionName;
@@ -40,7 +38,6 @@ type ContractCopy = {
 const COPIES: Array<[string, ContractCopy]> = [
   ["daemon", daemonCopy],
   ["cli", cliCopy],
-  ["ui", uiCopy],
 ];
 
 const malformed = (input: string) =>
@@ -175,7 +172,7 @@ const SHARED_VECTORS = [
   },
 ] as const;
 
-describe("session-name contract — three-copy parity (shared vectors)", () => {
+describe("session-name contract — daemon/cli parity (shared vectors)", () => {
   for (const [pkg, copy] of COPIES) {
     describe(`${pkg} copy`, () => {
       for (const v of SHARED_VECTORS) {
@@ -189,10 +186,12 @@ describe("session-name contract — three-copy parity (shared vectors)", () => {
     });
   }
 
-  it("cli and ui copies are byte-identical files (the verbatim-mirror pin)", () => {
-    const cliSrc = readFileSync(resolve(import.meta.dirname, "../../cli/src/session-name.ts"), "utf8");
-    const uiSrc = readFileSync(resolve(import.meta.dirname, "../../ui/src/lib/session-name.ts"), "utf8");
-    expect(cliSrc).toBe(uiSrc);
+  it.each(SHARED_VECTORS)("UI display splitting: $label", (v) => {
+    const parts = sessionParts(v.input);
+    expect(parts.member).toBe(v.memberLabel);
+    if (v.parsed.kind === "canonical") {
+      expect(parts.rig).toBe(v.rigOf);
+    }
   });
 
   it("the contract's human-CLASS predicate = the read-only enforcer human-seat pattern OR the A2 virtual-domain leg (intentional widening, pinned not silent)", () => {
