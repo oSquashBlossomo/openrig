@@ -97,6 +97,10 @@ export function GraphView({ modelRef, sim, signalsRef, selected, onSelect, fitTo
         viewRef.current = fitView(model.nodes, w, h);
         targetRef.current = null;
       }
+      // Until the person moves the view, keep the whole fleet framed while the physics settle.
+      if (fittedRef.current && !userMovedRef.current && sim.alpha() > 0.02 && ticks % 8 === 0 && w > 0) {
+        targetRef.current = fitView(model.nodes, w, h);
+      }
       const tgt = targetRef.current;
       if (tgt) {
         const v = viewRef.current;
