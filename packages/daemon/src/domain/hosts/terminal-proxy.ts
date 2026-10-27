@@ -35,7 +35,7 @@ export function terminalProxyAdmission(localToken: string | null) {
   };
 }
 
-type BrowserSocket = { send(data: string | Uint8Array): void; close(code: number, reason: string): void };
+type BrowserSocket = { readonly readyState: number; send(data: string | Uint8Array): void; close(code: number, reason: string): void };
 
 /** One connection, one outbound leg: early frames drain once; closed input is never replayed. */
 export function remoteTerminalHandlers(target: { url: string; token?: string }) {
@@ -67,6 +67,8 @@ export function remoteTerminalHandlers(target: { url: string; token?: string }) 
       } catch { close(1011, "remote terminal unavailable"); return; }
       remote.on("open", () => {
         if (closed) { remote?.terminate(); return; }
+        // Drop input as closing starts; onClose later supplies the actual close code.
+        if (browser?.readyState !== WebSocket.OPEN) { early.length = 0; bytes = 0; return; }
         for (const frame of early) remote!.send(frame);
         early.length = 0; bytes = 0;
       });
@@ -84,6 +86,7 @@ export function remoteTerminalHandlers(target: { url: string; token?: string }) 
     },
     onMessage(evt: { data: unknown }) {
       if (closed || typeof evt.data !== "string") return;
+      if (browser?.readyState !== WebSocket.OPEN) { early.length = 0; bytes = 0; return; }
       if (remote?.readyState === WebSocket.OPEN) { remote.send(evt.data); return; }
       const size = Buffer.byteLength(evt.data, "utf8");
       if (early.length >= 32 || bytes + size > 256 * 1024) { close(1009, "terminal input before ready exceeded buffer limit"); return; }

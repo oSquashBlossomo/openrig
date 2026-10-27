@@ -8,6 +8,7 @@ import WebSocket, { WebSocketServer } from "ws";
 import { browserBoundary } from "../src/middleware/browser-boundary.js";
 import { hostReadThrough } from "../src/domain/hosts/read-through.js";
 import { getSelfHostId } from "../src/domain/hosts/fanout-contract.js";
+import { remoteTerminalHandlers } from "../src/domain/hosts/terminal-proxy.js";
 import { registerTerminalWs } from "../src/routes/terminal-ws.js";
 import { validateHostRegistry, type HostEntry } from "../src/domain/hosts/hosts-registry-reader.js";
 
@@ -59,7 +60,7 @@ async function fixture(options: { localToken?: string | null; host?: Record<stri
     const ws = new WebSocket(url + query, { headers: { Origin: `http://127.0.0.1:${port}`, ...extra } });
     ws.on("error", () => {}); cleanup.push(() => ws.terminate()); return ws;
   };
-  return { app, url, connect, received, headers, localInputs, remote: () => remote!, accept: () => pending!() };
+  return { app, url, remoteUrl: `ws://127.0.0.1:${address.port}/api/terminal/scratch`, connect, received, headers, localInputs, remote: () => remote!, accept: () => pending!() };
 }
 
 async function refusal(ws: WebSocket) {
@@ -146,4 +147,37 @@ it("maps an abrupt remote transport loss to a legal no-reconnect close without r
 });
 it("resolves missing credentials before dialing and never forwards the local token",async()=>{
   const f=await fixture();vi.stubEnv("PROXY_REMOTE_TOKEN","");expect(await refusal(f.connect())).toBe(502);expect(f.headers).toHaveLength(0);
+});
+
+
+it.each([WebSocket.CLOSING, WebSocket.CLOSED])("drops queued text and Enter when the browser is state %s before its close callback", async state => {
+  const f = await fixture({ delay: true });
+  const browser = { readyState: WebSocket.OPEN as number, send: vi.fn(), close: vi.fn() };
+  const relay = remoteTerminalHandlers({ url: f.remoteUrl, token: REMOTE });
+  relay.onOpen(null, browser);
+  relay.onMessage({ data: JSON.stringify({ type: "text", text: "must not replay" }) });
+  relay.onMessage({ data: JSON.stringify({ type: "keys", keys: ["Enter"] }) });
+  await vi.waitFor(() => expect(f.headers).toHaveLength(1));
+  browser.readyState = state;
+  f.accept();
+  await vi.waitFor(() => expect(f.remote()).toBeDefined());
+  await new Promise(resolve => setTimeout(resolve, 50));
+  expect(f.received).toEqual([]);
+  const remoteClosed = once(f.remote(), "close");
+  relay.onClose({ code: 1000, reason: "viewer left" });
+  expect((await remoteClosed)[0]).toBe(1000);
+});
+it("does not forward new input while the browser is closing before its final callback", async () => {
+  const f = await fixture();
+  const browser = { readyState: WebSocket.OPEN as number, send: vi.fn(), close: vi.fn() };
+  const relay = remoteTerminalHandlers({ url: f.remoteUrl, token: REMOTE });
+  relay.onOpen(null, browser);
+  await vi.waitFor(() => expect(browser.send).toHaveBeenCalled());
+  browser.readyState = WebSocket.CLOSING;
+  relay.onMessage({ data: JSON.stringify({ type: "keys", keys: ["Enter"] }) });
+  await new Promise(resolve => setTimeout(resolve, 50));
+  expect(f.received).toEqual([]);
+  const remoteClosed = once(f.remote(), "close");
+  relay.onClose({ code: 1001, reason: "leaving" });
+  expect((await remoteClosed)[0]).toBe(1001);
 });
