@@ -274,15 +274,30 @@ export function draw(ctx: CanvasRenderingContext2D, s: Scene): void {
     label(parts.join(" · "), sx, sy + 14, `10.5px ${FONT}`, T.muted);
   }
   if (view.k >= 0.55) {
-    for (const n of s.model.nodes) {
+    // Labels are screen-sized while spacing is world-sized, so at low zoom they can collide.
+    // Place them greedily: selected and hovered first, then working, then the rest; a label that
+    // would overlap one already placed is skipped until the person zooms in.
+    ctx.font = `12px ${MONO}`;
+    const tiers = view.k >= 1.25 ? (view.k >= 1.8 ? 3 : 2) : 1;
+    const boxH = 14 + (tiers - 1) * 12;
+    const rank = (n: GNode) => (n.id === s.selected || n.id === s.hovered ? 0 : n.working || n.needsInput ? 1 : n.tone === "warn" ? 2 : 3);
+    const placed: { x: number; y: number; w: number; h: number }[] = [];
+    const overlaps = (r: { x: number; y: number; w: number; h: number }) =>
+      placed.some((p) => r.x < p.x + p.w && r.x + r.w > p.x && r.y < p.y + p.h && r.y + r.h > p.y);
+    const ordered = [...s.model.nodes].sort((a, b) => rank(a) - rank(b));
+    for (const n of ordered) {
       const dim = focus && !focus.has(n.id);
-      const sx = n.x * view.k + view.x, sy = n.y * view.k + view.y + (NODE_R + 8) * view.k + 11;
-      label(n.seat.logicalId, sx, sy, `11px ${MONO}`, rgba(T.text, dim ? 0.35 : 0.9));
-      if (view.k >= 1.25) {
+      const sx = n.x * view.k + view.x, sy = n.y * view.k + view.y + (NODE_R + 8) * view.k + 12;
+      const w = ctx.measureText(n.seat.logicalId).width + 8;
+      const box = { x: sx - w / 2, y: sy - 11, w, h: boxH };
+      if (rank(n) > 0 && overlaps(box)) continue;
+      placed.push(box);
+      label(n.seat.logicalId, sx, sy, `12px ${MONO}`, rgba(T.text, dim ? 0.35 : 0.92));
+      if (tiers >= 2) {
         const bits = [n.seat.runtime ?? "", shortModel(n.seat.model)].filter(Boolean);
         if (n.ctx !== null) bits.push(`${n.ctx}%`);
-        label(bits.join(" · "), sx, sy + 12, `10px ${FONT}`, rgba(T.muted, dim ? 0.4 : 1));
-        if (view.k >= 1.8 && n.activity) label(n.activity.slice(0, 36), sx, sy + 24, `10px ${FONT}`, rgba(T.busy, dim ? 0.4 : 0.95));
+        label(bits.join(" · "), sx, sy + 12, `10.5px ${FONT}`, rgba(T.muted, dim ? 0.4 : 1));
+        if (tiers >= 3 && n.activity) label(n.activity.slice(0, 36), sx, sy + 24, `10.5px ${FONT}`, rgba(T.busy, dim ? 0.4 : 0.95));
       }
     }
   }
