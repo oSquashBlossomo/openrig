@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useFleet, useSend, type SeatNode } from "../api.js";
+import { useFleet, useHosts, useSend, type SeatNode } from "../api.js";
 import { contextPercent, seatStatusLabel, seatTone, sessionParts, timeAgo } from "../model.js";
 import { Dot, Empty, Link, Pill, Ring } from "../components/bits.js";
 import { SeatTerminal } from "../components/Terminal.js";
@@ -63,6 +63,8 @@ export function SeatPage({ session, hostId }: { session: string; hostId: string 
   const node = [...fleet.byRig.values()].flat().find((n) => n.canonicalSessionName === session);
   const [showFacts, setShowFacts] = useState(false);
   const local = hostId === "local";
+  const hosts = useHosts();
+  const terminal = local || hosts.data?.hosts.some((h) => h.id === hostId && h.terminalProxy === true);
   return (
     <div className="page page-seat">
       <header className="seat-head">
@@ -82,10 +84,10 @@ export function SeatPage({ session, hostId }: { session: string; hostId: string 
       {node?.latestError && <div className="note note-bad">{node.latestError}</div>}
       {node?.recoveryGuidance && <div className="note note-warn">{node.recoveryGuidance}</div>}
       {showFacts && node && <Facts n={node} />}
-      {local ? (
+      {terminal ? (
         <>
-          <SeatTerminal session={session} />
-          <Composer session={session} />
+          <SeatTerminal session={session} hostId={hostId} />
+          {local && <Composer session={session} />}
         </>
       ) : (
         <Empty>Terminals and sends are served by the local daemon only. Switch the host to local to interact with a seat here.</Empty>
