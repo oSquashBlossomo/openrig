@@ -3,7 +3,7 @@
 import { useSyncExternalStore } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 
-export type RigEvent = { seq: number; type: string; rigId?: string; createdAt?: string; [k: string]: unknown };
+export type RigEvent = { seq: number; type: string; rigId?: string; createdAt?: string; seenAt: number; [k: string]: unknown };
 
 const RING = 400;
 const REFRESH_MS = 4000;
@@ -33,14 +33,14 @@ export function startEvents(qc: QueryClient): () => void {
     timer = setTimeout(() => {
       timer = null;
       last = Date.now();
-      for (const key of ["ps", "nodes", "attention"]) void qc.invalidateQueries({ queryKey: [key] }, { cancelRefetch: false });
+      for (const key of ["ps", "nodes", "attention", "graph"]) void qc.invalidateQueries({ queryKey: [key] }, { cancelRefetch: false });
     }, Math.max(0, last + REFRESH_MS - Date.now()));
   };
   source.onopen = () => { connected = true; emit(); invalidate(); };
   source.onerror = () => { if (connected) { connected = false; emit(); } };
   source.onmessage = (msg) => {
     try {
-      const ev = JSON.parse(msg.data) as RigEvent;
+      const ev = { ...(JSON.parse(msg.data) as Omit<RigEvent, "seenAt">), seenAt: Date.now() } as RigEvent;
       if (events.length && events[events.length - 1]!.seq >= ev.seq) return;
       events = events.length >= RING ? [...events.slice(events.length - RING + 1), ev] : [...events, ev];
       emit();
