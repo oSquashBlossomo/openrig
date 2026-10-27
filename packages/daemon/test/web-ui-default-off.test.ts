@@ -3,6 +3,7 @@
 // CLI and TUI use answer exactly as they do with the UI on.
 import { describe, it, expect, afterEach } from "vitest";
 import http from "node:http";
+import vm from "node:vm";
 import fs from "node:fs";
 import os from "node:os";
 import nodePath from "node:path";
@@ -112,6 +113,26 @@ describe("web UI default off (ui.enabled)", () => {
     expect(res.status).toBe(200);
     expect(await res.text()).toBe(UI_INDEX_HTML);
     expect((await app.request("/assets/app.js")).status).toBe(200);
+  });
+
+  it.each(["/", "/index.html", "/seat/fixture"])("bootstraps fresh terminal credentials at %s", async (path) => {
+    const app = createApp(fixture({ webUiEnabled: true, terminalBearerToken: TOKEN }));
+    const res = await app.request(path);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const html = await res.text();
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+    expect(scripts).toHaveLength(1);
+    const stored = new Map<string, string>();
+    vm.runInNewContext(scripts[0][1], { window: { localStorage: {
+      getItem: (key: string) => stored.get(key) ?? null,
+      setItem: (key: string, value: string) => stored.set(key, value),
+    } } });
+    expect(stored.get("openrig.terminalBearerToken")).toBe(TOKEN);
+    const asset = await app.request("/assets/app.js");
+    expect(await asset.text()).toBe("console.log('rig');");
+    expect(await (await app.request("/assets/missing.js")).text()).not.toContain(TOKEN);
+    expect(await (await app.request("/api/unknown")).text()).not.toContain(TOKEN);
   });
 
   it("answers health, API and HTTP terminal routes the same with the UI off and on", async () => {

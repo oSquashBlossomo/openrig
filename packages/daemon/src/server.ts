@@ -862,7 +862,7 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   const uiDistDir = deps.uiDistDir ?? resolveDefaultUiDistDir();
-  const uiIndexPath = nodePath.join(uiDistDir, "index.html");
+  const uiIndexPath = nodePath.resolve(uiDistDir, "index.html");
   const hasUiBundle = !!uiDistDir && fs.existsSync(uiIndexPath);
 
   app.get("*", (c) => {
@@ -882,7 +882,7 @@ export function createApp(deps: AppDeps): Hono {
     }
 
     const requestedFile = safeResolveUiPath(uiDistDir, requestPath);
-    if (requestedFile && fs.existsSync(requestedFile) && fs.statSync(requestedFile).isFile()) {
+    if (requestedFile && requestedFile !== uiIndexPath && fs.existsSync(requestedFile) && fs.statSync(requestedFile).isFile()) {
       return fileResponse(requestedFile);
     }
 
