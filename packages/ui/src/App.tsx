@@ -1,58 +1,76 @@
-import { RouterProvider } from "@tanstack/react-router";
-import { useState } from "react";
-import { router } from "./routes.js";
+import { useEffect, useState } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { useHosts, LOCAL_HOST } from "./api.js";
+import { startEvents, useEvents } from "./events.js";
+import { useRoute } from "./router.js";
+import { Link } from "./components/bits.js";
+import { FleetPage } from "./pages/Fleet.js";
+import { SeatPage } from "./pages/Seat.js";
+import { ActivityPage } from "./pages/Activity.js";
 
-export const UI_MAINTENANCE_NOTICE_STORAGE_KEY = "openrig.uiMaintenanceNoticeDismissed";
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: 1, staleTime: 2_000, refetchOnWindowFocus: true } },
+});
 
-const UI_MAINTENANCE_NOTICE =
-  "The OpenRig UI is experimental and in maintenance mode. It is not under active development; support is best-effort. The CLI is the primary supported interface. Contributions welcome.";
+const HOST_KEY = "openrig.host";
 
-function wasMaintenanceNoticeDismissed(): boolean {
-  try {
-    return localStorage.getItem(UI_MAINTENANCE_NOTICE_STORAGE_KEY) === "1";
-  } catch {
-    return false;
-  }
+function useHostSelection(): [string, (id: string) => void] {
+  const [host, setHost] = useState(() => { try { return localStorage.getItem(HOST_KEY) || LOCAL_HOST; } catch { return LOCAL_HOST; } });
+  return [host, (id) => { setHost(id); try { localStorage.setItem(HOST_KEY, id); } catch { /* fine */ } }];
 }
 
-export function UiMaintenanceNotice() {
-  const [dismissed, setDismissed] = useState(wasMaintenanceNoticeDismissed);
-
-  if (dismissed) return null;
-
-  const dismiss = () => {
-    try {
-      localStorage.setItem(UI_MAINTENANCE_NOTICE_STORAGE_KEY, "1");
-    } catch {
-      // localStorage can be unavailable; dismissal still works for this load.
-    }
-    setDismissed(true);
-  };
-
+function HostPicker({ host, onChange }: { host: string; onChange: (id: string) => void }) {
+  const hosts = useHosts();
+  const list = hosts.data?.hosts ?? [];
+  const own = hosts.data?.ownName ?? "this Mac";
+  if (list.length === 0) return <span className="host-one">{own}</span>;
   return (
-    <div
-      className="fixed inset-x-0 top-0 z-[100] flex items-start justify-between gap-3 border-b border-amber-500/40 bg-amber-50 px-4 py-2 text-sm text-amber-950 shadow-sm dark:bg-amber-950 dark:text-amber-50"
-      data-testid="ui-maintenance-notice"
-      role="status"
-    >
-      <span>{UI_MAINTENANCE_NOTICE}</span>
-      <button
-        aria-label="Dismiss maintenance notice"
-        className="shrink-0 rounded px-1.5 font-semibold hover:bg-amber-200/60 dark:hover:bg-amber-900"
-        onClick={dismiss}
-        type="button"
-      >
-        ×
-      </button>
+    <select className="host" value={host} onChange={(e) => onChange(e.target.value)} aria-label="host">
+      <option value={LOCAL_HOST}>{own} (local)</option>
+      {list.map((h) => (
+        <option key={h.id} value={h.id} disabled={h.transport !== "http"}>
+          {h.id}{h.status !== "reachable" ? ` · ${h.status}` : ""}{h.transport !== "http" ? " · ssh" : ""}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function Shell() {
+  const route = useRoute();
+  const [host, setHost] = useHostSelection();
+  const { connected } = useEvents();
+  useEffect(() => startEvents(queryClient), []);
+  const nav = (
+    <nav className="nav" aria-label="primary">
+      <Link href="/" className={route.page === "fleet" || route.page === "seat" ? "active" : ""}>Fleet</Link>
+      <Link href="/activity" className={route.page === "activity" ? "active" : ""}>Activity</Link>
+    </nav>
+  );
+  return (
+    <div className="shell">
+      <header className="top">
+        <Link href="/" className="brand">OpenRig</Link>
+        {nav}
+        <div className="top-right">
+          <span className={`live ${connected ? "live-on" : "live-off"}`} title={connected ? "event stream connected" : "event stream disconnected; polling"}>{connected ? "live" : "polling"}</span>
+          <HostPicker host={host} onChange={setHost} />
+        </div>
+      </header>
+      <main>
+        {route.page === "fleet" && <FleetPage hostId={host} />}
+        {route.page === "seat" && <SeatPage key={route.session} session={route.session} hostId={host} />}
+        {route.page === "activity" && <ActivityPage hostId={host} />}
+      </main>
+      <footer className="tabs">{nav}</footer>
     </div>
   );
 }
 
 export function App() {
   return (
-    <>
-      <UiMaintenanceNotice />
-      <RouterProvider router={router} />
-    </>
+    <QueryClientProvider client={queryClient}>
+      <Shell />
+    </QueryClientProvider>
   );
 }
