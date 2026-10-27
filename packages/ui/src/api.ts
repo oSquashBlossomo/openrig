@@ -102,10 +102,19 @@ export async function getJson<T>(path: string): Promise<T> {
   return body as T;
 }
 
+export function terminalToken(): string | null {
+  try { return window.localStorage.getItem("openrig.terminalBearerToken")?.trim() || null; } catch { return null; }
+}
+
 export async function postJson<T>(path: string, data: unknown): Promise<T> {
+  const token = terminalToken();
+  const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
+  if (token && path.startsWith("/") && !path.startsWith("//") && new URL(path, window.location.origin).origin === window.location.origin) {
+    headers.Authorization = `Bearer ${token}`;
+  }
   const res = await fetch(path, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    headers,
     body: JSON.stringify(data),
   });
   const body: unknown = await res.json().catch(() => null);

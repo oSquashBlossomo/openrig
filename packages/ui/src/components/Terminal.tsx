@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { KEY_BAR, mapXtermInput, type WsMessage } from "../terminal-input.js";
+import { terminalToken } from "../api.js";
 
 export const COLS = 90;
 export const ROWS = 27;
@@ -16,10 +17,6 @@ const FONT = "ui-monospace, 'SF Mono', Menlo, 'JetBrains Mono', monospace";
 const BG = "#0b0d10";
 
 type Status = { state: "connecting" | "live" | "reconnecting" | "closed"; detail?: string };
-
-function terminalToken(): string | null {
-  try { return window.localStorage.getItem("openrig.terminalBearerToken")?.trim() || null; } catch { return null; }
-}
 
 export function SeatTerminal({ session, hostId = "local" }: { session: string; hostId?: string }) {
   const hostRef = useRef<HTMLDivElement>(null);

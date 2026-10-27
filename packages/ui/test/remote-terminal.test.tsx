@@ -3,7 +3,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { SeatPage } from "../src/pages/Seat.js";
 import { SeatTerminal } from "../src/components/Terminal.js";
 const mocks = vi.hoisted(() => ({ hosts: [] as Array<{id: string; terminalProxy?: boolean}>, sockets: [] as any[] }));
-vi.mock("../src/api.js", () => ({ useFleet: () => ({ byRig: new Map(), isLoading: true }), useHosts: () => ({ data: { hosts: mocks.hosts } }), useSend: () => ({}) }));
+vi.mock("../src/api.js", async (importOriginal) => ({ ...await importOriginal<typeof import("../src/api.js")>(), useFleet: () => ({ byRig: new Map(), isLoading: true }), useHosts: () => ({ data: { hosts: mocks.hosts } }), useSend: () => ({}) }));
 vi.mock("@xterm/xterm", () => ({ Terminal: class { options = {}; open(){} onData(){} attachCustomWheelEventHandler(){} dispose(){} focus(){} write(){} } }));
 beforeEach(() => {
   mocks.hosts = []; mocks.sockets = []; localStorage.clear();
